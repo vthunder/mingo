@@ -51,11 +51,9 @@ pub async fn stream(from: u64, limit: Option<u64>, raw: bool) -> Result<()> {
 }
 
 /// Submit test payloads to DA
-pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathBuf>, count: Option<u32>) -> Result<()> {
-    println!("Connecting to Avail...");
-
-    let config = AvailConfig::default();
-    let client = AvailClient::connect(config).await?;
+pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathBuf>, count: Option<u32>, verbose: &[String]) -> Result<()> {
+    let show_raw = verbose.iter().any(|v| v == "raw-submissions");
+    let show_parsed = verbose.iter().any(|v| v == "parsed");
 
     let payloads = if let Some(preset) = preset {
         generate_preset(preset)?
@@ -67,9 +65,40 @@ pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathB
 
     let count = count.unwrap_or(1);
 
+    // If only showing raw, skip connection attempt
+    if show_raw && !show_parsed {
+        for i in 0..count {
+            for (j, payload) in payloads.iter().enumerate() {
+                println!("=== Payload {}/{} ({} bytes) ===",
+                    i * payloads.len() as u32 + j as u32 + 1,
+                    count * payloads.len() as u32,
+                    payload.len());
+                println!("{}", hex::encode(payload));
+
+                // Also try to show as UTF-8 if valid
+                if let Ok(s) = std::str::from_utf8(payload) {
+                    println!("\n--- ASCII ---\n{}", s);
+                }
+                println!();
+            }
+        }
+        return Ok(());
+    }
+
+    println!("Connecting to Avail...");
+    let config = AvailConfig::default();
+    let client = AvailClient::connect(config).await?;
+
     for i in 0..count {
         for (j, payload) in payloads.iter().enumerate() {
-            println!("Submitting payload {}/{} ({} bytes)...", i * payloads.len() as u32 + j as u32 + 1, count * payloads.len() as u32, payload.len());
+            println!("Submitting payload {}/{} ({} bytes)...",
+                i * payloads.len() as u32 + j as u32 + 1,
+                count * payloads.len() as u32,
+                payload.len());
+
+            if show_raw {
+                println!("  Raw: {}", hex::encode(payload));
+            }
 
             match client.submit(payload).await {
                 Ok(result) => {

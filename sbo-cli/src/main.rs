@@ -123,6 +123,9 @@ enum DaCommands {
         /// Submit multiple times
         #[arg(long)]
         count: Option<u32>,
+        /// Verbose output (comma-separated: raw-submissions,parsed)
+        #[arg(long, value_delimiter = ',')]
+        verbose: Vec<String>,
     },
 
     /// Check DA connection status
@@ -192,8 +195,8 @@ async fn main() -> anyhow::Result<()> {
                 DaCommands::Stream { from, limit, raw } => {
                     commands::da::stream(from, limit, raw).await?;
                 }
-                DaCommands::Submit { preset, file, count } => {
-                    commands::da::submit(preset, file, count).await?;
+                DaCommands::Submit { preset, file, count, verbose } => {
+                    commands::da::submit(preset, file, count, &verbose).await?;
                 }
                 DaCommands::Ping => {
                     commands::da::ping().await?;
