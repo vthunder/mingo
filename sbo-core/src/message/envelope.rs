@@ -148,3 +148,78 @@ impl std::fmt::Display for Path {
         write!(f, "{}", self.to_string())
     }
 }
+
+impl Message {
+    /// Build canonical signing content (headers without Signature + blank line)
+    pub fn canonical_signing_content(&self) -> Vec<u8> {
+        // Header order must match serializer for consistency
+        let order: &[&str] = &[
+            "SBO-Version", "Action", "Path", "ID", "Type",
+            "Content-Type", "Content-Encoding", "Content-Length", "Content-Hash",
+            "Attestation", "Content-Schema", "Creator", "New-ID", "New-Owner",
+            "New-Path", "Object-Path", "Origin", "Owner", "Policy-Ref",
+            "Proof", "Proof-Type", "Registry-Path", "Related", "Signing-Key",
+            // NOTE: Signature is NOT included in signing content
+        ];
+
+        let mut headers: Vec<(String, String)> = Vec::new();
+
+        headers.push(("SBO-Version".to_string(), "0.5".to_string()));
+        headers.push(("Action".to_string(), self.action.name().to_string()));
+        headers.push(("Path".to_string(), self.path.to_string()));
+        headers.push(("ID".to_string(), self.id.as_str().to_string()));
+        headers.push(("Type".to_string(), match self.object_type {
+            ObjectType::Object => "object",
+            ObjectType::Collection => "collection",
+        }.to_string()));
+
+        if let Some(ref ct) = self.content_type {
+            headers.push(("Content-Type".to_string(), ct.clone()));
+        }
+        if let Some(ref ce) = self.content_encoding {
+            headers.push(("Content-Encoding".to_string(), ce.clone()));
+        }
+        if let Some(ref payload) = self.payload {
+            headers.push(("Content-Length".to_string(), payload.len().to_string()));
+        }
+        if let Some(ref ch) = self.content_hash {
+            headers.push(("Content-Hash".to_string(), ch.to_string()));
+        }
+        if let Some(ref cs) = self.content_schema {
+            headers.push(("Content-Schema".to_string(), cs.clone()));
+        }
+        if let Some(ref creator) = self.creator {
+            headers.push(("Creator".to_string(), creator.as_str().to_string()));
+        }
+        if let Some(ref owner) = self.owner {
+            headers.push(("Owner".to_string(), owner.as_str().to_string()));
+        }
+        if let Some(ref pr) = self.policy_ref {
+            headers.push(("Policy-Ref".to_string(), pr.clone()));
+        }
+        headers.push(("Signing-Key".to_string(), self.signing_key.to_string()));
+        // NOTE: Signature is NOT included
+
+        // Sort by canonical order
+        headers.sort_by_key(|(name, _)| {
+            order.iter().position(|&h| h == name).unwrap_or(999)
+        });
+
+        let mut output = Vec::new();
+        for (name, value) in headers {
+            output.extend_from_slice(name.as_bytes());
+            output.extend_from_slice(b": ");
+            output.extend_from_slice(value.as_bytes());
+            output.push(b'\n');
+        }
+        output.push(b'\n');
+
+        output
+    }
+
+    /// Sign this message
+    pub fn sign(&mut self, signing_key: &crate::crypto::SigningKey) {
+        let content = self.canonical_signing_content();
+        self.signature = signing_key.sign(&content);
+    }
+}
