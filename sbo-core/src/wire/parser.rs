@@ -22,6 +22,35 @@ pub fn parse_header_line(line: &[u8]) -> Result<(&str, &str), ParseError> {
     Ok((name, value))
 }
 
+/// Split message into header lines and payload at blank line
+pub fn split_message(bytes: &[u8]) -> Result<(Vec<(&str, &str)>, &[u8]), ParseError> {
+    // Find blank line (double LF)
+    let mut pos = 0;
+    let mut headers = Vec::new();
+
+    while pos < bytes.len() {
+        // Find next LF
+        let line_end = bytes[pos..].iter().position(|&b| b == b'\n')
+            .map(|p| pos + p)
+            .unwrap_or(bytes.len());
+
+        let line = &bytes[pos..line_end];
+
+        // Empty line = end of headers
+        if line.is_empty() {
+            let payload = &bytes[line_end + 1..];
+            return Ok((headers, payload));
+        }
+
+        let (name, value) = parse_header_line(line)?;
+        headers.push((name, value));
+
+        pos = line_end + 1;
+    }
+
+    Err(ParseError::MissingBlankLine)
+}
+
 /// Parse raw bytes into a validated Message
 pub fn parse(_bytes: &[u8]) -> Result<Message, ParseError> {
     todo!("Implement wire format parsing")
