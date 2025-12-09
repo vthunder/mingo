@@ -154,7 +154,8 @@ fn generate_preset(preset: super::super::TestPreset) -> Result<Vec<Vec<u8>>> {
             Ok(vec![b"Hello, SBO!".to_vec()])
         }
         super::super::TestPreset::Genesis => {
-            Ok(presets::genesis(&signing_key))
+            // Genesis is a single batch containing both sys identity and root policy
+            Ok(vec![presets::genesis(&signing_key)])
         }
         super::super::TestPreset::Post => {
             Ok(vec![presets::post(

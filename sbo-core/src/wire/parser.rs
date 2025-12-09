@@ -22,21 +22,18 @@ pub fn parse_header_line(line: &[u8]) -> Result<(&str, &str), ParseError> {
     Ok((name, value))
 }
 
-/// Split message into header lines and payload at blank line
+/// Split message into header lines and payload at blank line (returns all remaining bytes as payload)
 pub fn split_message(bytes: &[u8]) -> Result<(Vec<(&str, &str)>, &[u8]), ParseError> {
-    // Find blank line (double LF)
     let mut pos = 0;
-    let mut headers = Vec::new();
+    let mut headers: Vec<(&str, &str)> = Vec::new();
 
     while pos < bytes.len() {
-        // Find next LF
         let line_end = bytes[pos..].iter().position(|&b| b == b'\n')
             .map(|p| pos + p)
             .unwrap_or(bytes.len());
 
         let line = &bytes[pos..line_end];
 
-        // Empty line = end of headers
         if line.is_empty() {
             let payload = &bytes[line_end + 1..];
             return Ok((headers, payload));
@@ -51,13 +48,78 @@ pub fn split_message(bytes: &[u8]) -> Result<(Vec<(&str, &str)>, &[u8]), ParseEr
     Err(ParseError::MissingBlankLine)
 }
 
+/// Split message starting at offset, returns (headers, payload, end_position)
+/// Uses Content-Length to determine payload size for batch parsing
+fn split_message_at(bytes: &[u8], start: usize) -> Result<(Vec<(&str, &str)>, &[u8], usize), ParseError> {
+    let mut pos = start;
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+
+    while pos < bytes.len() {
+        // Find next LF
+        let line_end = bytes[pos..].iter().position(|&b| b == b'\n')
+            .map(|p| pos + p)
+            .unwrap_or(bytes.len());
+
+        let line = &bytes[pos..line_end];
+
+        // Empty line = end of headers
+        if line.is_empty() {
+            pos = line_end + 1; // Move past blank line
+
+            // Get Content-Length to determine payload size (required for batch parsing)
+            let content_length: usize = headers.iter()
+                .find(|(k, _)| *k == "Content-Length")
+                .and_then(|(_, v)| v.parse().ok())
+                .unwrap_or(0);
+
+            let end_pos = pos + content_length;
+            if end_pos > bytes.len() {
+                return Err(ParseError::ContentLengthMismatch {
+                    expected: content_length,
+                    actual: bytes.len() - pos,
+                });
+            }
+
+            let payload = &bytes[pos..end_pos];
+            return Ok((headers, payload, end_pos));
+        }
+
+        let (name, value) = parse_header_line(line)?;
+        headers.push((name, value));
+
+        pos = line_end + 1;
+    }
+
+    Err(ParseError::MissingBlankLine)
+}
+
 /// Parse raw bytes into a validated Message
 pub fn parse(bytes: &[u8]) -> Result<Message, ParseError> {
+    let (msg, _) = parse_at(bytes, 0)?;
+    Ok(msg)
+}
+
+/// Parse multiple concatenated messages from a batch
+pub fn parse_batch(bytes: &[u8]) -> Result<Vec<Message>, ParseError> {
+    let mut messages = Vec::new();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        let (msg, end_pos) = parse_at(bytes, pos)?;
+        messages.push(msg);
+        pos = end_pos;
+    }
+
+    Ok(messages)
+}
+
+/// Parse a single message starting at offset, returns (Message, end_position)
+fn parse_at(bytes: &[u8], start: usize) -> Result<(Message, usize), ParseError> {
     use crate::message::{Action, ObjectType, Id, Path};
     use crate::crypto::{PublicKey, Signature, ContentHash};
     use std::collections::HashMap;
 
-    let (headers, payload) = split_message(bytes)?;
+    let (headers, payload, end_pos) = split_message_at(bytes, start)?;
     let headers: HashMap<&str, &str> = headers.into_iter().collect();
 
     // Required headers
@@ -123,7 +185,7 @@ pub fn parse(bytes: &[u8]) -> Result<Message, ParseError> {
     let content_schema = headers.get("Content-Schema").map(|s| s.to_string());
     let policy_ref = headers.get("Policy-Ref").map(|s| s.to_string());
 
-    Ok(Message {
+    Ok((Message {
         action,
         path,
         id,
@@ -139,5 +201,5 @@ pub fn parse(bytes: &[u8]) -> Result<Message, ParseError> {
         content_schema,
         policy_ref,
         related: None,
-    })
+    }, end_pos))
 }

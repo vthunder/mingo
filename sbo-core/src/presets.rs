@@ -4,8 +4,9 @@ use crate::crypto::{SigningKey, ContentHash};
 use crate::message::{Message, Action, ObjectType, Id, Path};
 use crate::wire;
 
-/// Generate genesis messages (sys identity + root policy)
-pub fn genesis(signing_key: &SigningKey) -> Vec<Vec<u8>> {
+/// Generate genesis batch (sys identity + root policy concatenated)
+/// Returns a single batch suitable for atomic DA submission
+pub fn genesis(signing_key: &SigningKey) -> Vec<u8> {
     let public_key = signing_key.public_key();
 
     // 1. System identity claim
@@ -65,10 +66,10 @@ pub fn genesis(signing_key: &SigningKey) -> Vec<Vec<u8>> {
     };
     policy_msg.sign(signing_key);
 
-    vec![
-        wire::serialize(&sys_msg),
-        wire::serialize(&policy_msg),
-    ]
+    // Concatenate messages directly for atomic batch submission
+    let mut batch = wire::serialize(&sys_msg);
+    batch.extend(wire::serialize(&policy_msg));
+    batch
 }
 
 /// Generate a simple post message

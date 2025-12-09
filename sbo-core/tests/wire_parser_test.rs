@@ -73,3 +73,67 @@ Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234
     assert_eq!(msg_parsed.path.to_string(), reparsed.path.to_string());
     assert_eq!(msg_parsed.id.as_str(), reparsed.id.as_str());
 }
+
+#[test]
+fn test_parse_batch() {
+    // Create two messages concatenated directly (no separator)
+    // Payload {"a":"b"} is 9 bytes
+    let msg1 = b"SBO-Version: 0.5\n\
+Action: post\n\
+Path: /test/\n\
+ID: first\n\
+Type: object\n\
+Content-Type: application/json\n\
+Content-Length: 9\n\
+Content-Hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+\n\
+{\"a\":\"b\"}";
+
+    // Payload {"c":"d"} is 9 bytes
+    let msg2 = b"SBO-Version: 0.5\n\
+Action: post\n\
+Path: /test/\n\
+ID: second\n\
+Type: object\n\
+Content-Type: application/json\n\
+Content-Length: 9\n\
+Content-Hash: sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\n\
+Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+\n\
+{\"c\":\"d\"}";
+
+    // Concatenate directly - no separator needed
+    let mut batch = msg1.to_vec();
+    batch.extend_from_slice(msg2);
+
+    let messages = sbo_core::wire::parse_batch(&batch).unwrap();
+
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].id.as_str(), "first");
+    assert_eq!(messages[1].id.as_str(), "second");
+}
+
+#[test]
+fn test_parse_batch_single_message() {
+    // A batch with one message should work
+    let msg = b"SBO-Version: 0.5\n\
+Action: post\n\
+Path: /test/\n\
+ID: only\n\
+Type: object\n\
+Content-Type: application/json\n\
+Content-Length: 2\n\
+Content-Hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+\n\
+{}";
+
+    let messages = sbo_core::wire::parse_batch(msg).unwrap();
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id.as_str(), "only");
+}
