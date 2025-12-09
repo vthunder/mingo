@@ -116,100 +116,38 @@ pub async fn ping() -> Result<()> {
 
 fn generate_preset(preset: super::super::TestPreset) -> Result<Vec<Vec<u8>>> {
     use sbo_core::crypto::SigningKey;
+    use sbo_core::presets;
 
     let signing_key = SigningKey::generate();
-    let public_key = signing_key.public_key();
 
     match preset {
         super::super::TestPreset::Hello => {
             Ok(vec![b"Hello, SBO!".to_vec()])
         }
         super::super::TestPreset::Genesis => {
-            // Generate genesis messages
-            let sys_identity = generate_sys_identity(&signing_key)?;
-            let root_policy = generate_root_policy(&signing_key)?;
-            Ok(vec![sys_identity, root_policy])
+            Ok(presets::genesis(&signing_key))
         }
         super::super::TestPreset::Post => {
-            todo!("Generate post preset")
+            Ok(vec![presets::post(
+                &signing_key,
+                "/test/posts/",
+                "hello",
+                b"{\"message\":\"Hello, SBO!\"}"
+            )])
         }
         super::super::TestPreset::Transfer => {
             todo!("Generate transfer preset")
         }
         super::super::TestPreset::Collection => {
-            todo!("Generate collection preset")
+            Ok(vec![presets::post(
+                &signing_key,
+                "/nft/collection/",
+                "item001",
+                b"{\"name\":\"Test NFT\",\"description\":\"A test NFT\"}"
+            )])
         }
         super::super::TestPreset::Invalid => {
             Ok(vec![b"SBO-Version: 0.5\nAction: invalid\n\n".to_vec()])
         }
     }
-}
-
-fn generate_sys_identity(signing_key: &sbo_core::crypto::SigningKey) -> Result<Vec<u8>> {
-    let public_key = signing_key.public_key();
-    let payload = serde_json::json!({
-        "public_key": public_key.to_string(),
-        "display_name": "System"
-    });
-    let payload_bytes = serde_json::to_vec(&payload)?;
-    let content_hash = sbo_core::crypto::ContentHash::sha256(&payload_bytes);
-
-    // Build message manually for now
-    let mut headers = String::new();
-    headers.push_str("SBO-Version: 0.5\n");
-    headers.push_str("Action: post\n");
-    headers.push_str("Path: /sys/names/\n");
-    headers.push_str("ID: sys\n");
-    headers.push_str("Type: object\n");
-    headers.push_str("Content-Type: application/json\n");
-    headers.push_str(&format!("Content-Length: {}\n", payload_bytes.len()));
-    headers.push_str(&format!("Content-Hash: {}\n", content_hash.to_string()));
-    headers.push_str(&format!("Signing-Key: {}\n", public_key.to_string()));
-
-    // Sign headers + blank line
-    let to_sign = format!("{}\n", headers);
-    let signature = signing_key.sign(to_sign.as_bytes());
-
-    headers.push_str(&format!("Signature: {}\n", signature.to_hex()));
-    headers.push_str("\n");
-
-    let mut result = headers.into_bytes();
-    result.extend_from_slice(&payload_bytes);
-
-    Ok(result)
-}
-
-fn generate_root_policy(signing_key: &sbo_core::crypto::SigningKey) -> Result<Vec<u8>> {
-    let public_key = signing_key.public_key();
-    let payload = serde_json::json!({
-        "grants": [
-            {"to": "*", "can": ["create"], "on": "/sys/names/*"},
-            {"to": "owner", "can": ["update", "delete"], "on": "/sys/names/*"},
-            {"to": "owner", "can": ["*"], "on": "/$owner/**"}
-        ]
-    });
-    let payload_bytes = serde_json::to_vec(&payload)?;
-    let content_hash = sbo_core::crypto::ContentHash::sha256(&payload_bytes);
-
-    let mut headers = String::new();
-    headers.push_str("SBO-Version: 0.5\n");
-    headers.push_str("Action: post\n");
-    headers.push_str("Path: /sys/policies/\n");
-    headers.push_str("ID: root\n");
-    headers.push_str("Type: object\n");
-    headers.push_str("Content-Type: application/json\n");
-    headers.push_str(&format!("Content-Length: {}\n", payload_bytes.len()));
-    headers.push_str(&format!("Content-Hash: {}\n", content_hash.to_string()));
-    headers.push_str(&format!("Signing-Key: {}\n", public_key.to_string()));
-
-    let to_sign = format!("{}\n", headers);
-    let signature = signing_key.sign(to_sign.as_bytes());
-
-    headers.push_str(&format!("Signature: {}\n", signature.to_hex()));
-    headers.push_str("\n");
-
-    let mut result = headers.into_bytes();
-    result.extend_from_slice(&payload_bytes);
-
-    Ok(result)
 }
