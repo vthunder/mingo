@@ -16,6 +16,7 @@ pub mod message;
 pub mod policy;
 pub mod state;
 pub mod error;
+pub mod presets;
 
 mod genesis;
 mod indexer;
