@@ -50,3 +50,26 @@ Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234
     assert_eq!(message.path.to_string(), "/test/");
     assert_eq!(message.id.as_str(), "hello");
 }
+
+#[test]
+fn test_roundtrip_message() {
+    let msg = b"SBO-Version: 0.5\n\
+Action: post\n\
+Path: /test/\n\
+ID: hello\n\
+Type: object\n\
+Content-Type: application/json\n\
+Content-Length: 17\n\
+Content-Hash: sha256:4d7953c30e8f2c3a7b6d0f1e5a9c8b2d4f6e3a1b0c9d8e7f6a5b4c3d2e1f0a9b\n\
+Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+\n\
+{\"hello\":\"world\"}";
+
+    let msg_parsed = sbo_core::wire::parse(msg).unwrap();
+    let serialized = sbo_core::wire::serialize(&msg_parsed);
+    let reparsed = sbo_core::wire::parse(&serialized).unwrap();
+
+    assert_eq!(msg_parsed.path.to_string(), reparsed.path.to_string());
+    assert_eq!(msg_parsed.id.as_str(), reparsed.id.as_str());
+}
