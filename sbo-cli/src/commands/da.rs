@@ -69,15 +69,15 @@ pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathB
     if show_raw && !show_parsed {
         for i in 0..count {
             for (j, payload) in payloads.iter().enumerate() {
-                println!("=== Payload {}/{} ({} bytes) ===",
+                println!("=== Payload {}/{} ({} bytes) ===\n",
                     i * payloads.len() as u32 + j as u32 + 1,
                     count * payloads.len() as u32,
                     payload.len());
-                println!("{}", hex::encode(payload));
 
-                // Also try to show as UTF-8 if valid
-                if let Ok(s) = std::str::from_utf8(payload) {
-                    println!("\n--- ASCII ---\n{}", s);
+                // Show as UTF-8 (SBO wire format is UTF-8 text)
+                match std::str::from_utf8(payload) {
+                    Ok(s) => println!("{}", s),
+                    Err(_) => println!("[binary payload, {} bytes]", payload.len()),
                 }
                 println!();
             }
@@ -97,7 +97,9 @@ pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathB
                 payload.len());
 
             if show_raw {
-                println!("  Raw: {}", hex::encode(payload));
+                if let Ok(s) = std::str::from_utf8(payload) {
+                    println!("  Raw:\n{}", s);
+                }
             }
 
             match client.submit(payload).await {
