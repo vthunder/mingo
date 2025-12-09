@@ -53,7 +53,6 @@ pub async fn stream(from: u64, limit: Option<u64>, raw: bool) -> Result<()> {
 /// Submit test payloads to DA
 pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathBuf>, count: Option<u32>, verbose: &[String]) -> Result<()> {
     let show_raw = verbose.iter().any(|v| v == "raw-submissions");
-    let show_parsed = verbose.iter().any(|v| v == "parsed");
 
     let payloads = if let Some(preset) = preset {
         generate_preset(preset)?
@@ -64,26 +63,6 @@ pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathB
     };
 
     let count = count.unwrap_or(1);
-
-    // If only showing raw, skip connection attempt
-    if show_raw && !show_parsed {
-        for i in 0..count {
-            for (j, payload) in payloads.iter().enumerate() {
-                println!("=== Payload {}/{} ({} bytes) ===\n",
-                    i * payloads.len() as u32 + j as u32 + 1,
-                    count * payloads.len() as u32,
-                    payload.len());
-
-                // Show as UTF-8 (SBO wire format is UTF-8 text)
-                match std::str::from_utf8(payload) {
-                    Ok(s) => println!("{}", s),
-                    Err(_) => println!("[binary payload, {} bytes]", payload.len()),
-                }
-                println!();
-            }
-        }
-        return Ok(());
-    }
 
     println!("Connecting to Avail...");
     let config = AvailConfig::default();
@@ -96,9 +75,11 @@ pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathB
                 count * payloads.len() as u32,
                 payload.len());
 
+            // Show raw payload if verbose
             if show_raw {
-                if let Ok(s) = std::str::from_utf8(payload) {
-                    println!("  Raw:\n{}", s);
+                match std::str::from_utf8(payload) {
+                    Ok(s) => println!("\n{}\n", s),
+                    Err(_) => println!("  [binary payload, {} bytes]", payload.len()),
                 }
             }
 
