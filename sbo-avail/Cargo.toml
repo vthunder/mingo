@@ -1,0 +1,19 @@
+[package]
+name = "sbo-avail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SBO Avail DA layer integration"
+
+[dependencies]
+sbo-core.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Avail light client - TODO: add actual dependency when integrating
+# avail-light-client = "0.x"
