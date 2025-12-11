@@ -8,7 +8,7 @@ mod blocks;
 mod submit;
 
 pub use client::{AvailClient, AvailConfig};
-pub use blocks::Block;
+pub use blocks::{Block, Transaction};
 pub use submit::SubmitResult;
 
 use thiserror::Error;

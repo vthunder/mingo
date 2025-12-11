@@ -84,6 +84,73 @@ impl StateDb {
             .map_err(|e| DbError::RocksDb(e.to_string()))
     }
 
+    /// Check if any object exists at a given path and id (regardless of creator)
+    /// This is used for enforcing uniqueness on name claims
+    pub fn object_exists_at_path_id(
+        &self,
+        path: &crate::message::Path,
+        id: &crate::message::Id,
+    ) -> Result<bool, DbError> {
+        let cf = self.db.cf_handle(CF_OBJECTS).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        // Prefix is "path:" to find all objects at this path
+        let prefix = format!("{}:", path);
+        let suffix = format!(":{}", id);
+
+        let iter = self.db.prefix_iterator_cf(&cf, prefix.as_bytes());
+        for item in iter {
+            match item {
+                Ok((key, _value)) => {
+                    // Check if the key ends with our ID
+                    let key_str = String::from_utf8_lossy(&key);
+                    if key_str.ends_with(&suffix) {
+                        return Ok(true);
+                    }
+                    // Stop if we've moved past our prefix
+                    if !key_str.starts_with(&prefix) {
+                        break;
+                    }
+                }
+                Err(e) => return Err(DbError::RocksDb(e.to_string())),
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Get the first object at a given path and id (regardless of creator)
+    /// Returns the StoredObject if found
+    pub fn get_first_object_at_path_id(
+        &self,
+        path: &crate::message::Path,
+        id: &crate::message::Id,
+    ) -> Result<Option<StoredObject>, DbError> {
+        let cf = self.db.cf_handle(CF_OBJECTS).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        let prefix = format!("{}:", path);
+        let suffix = format!(":{}", id);
+
+        let iter = self.db.prefix_iterator_cf(&cf, prefix.as_bytes());
+        for item in iter {
+            match item {
+                Ok((key, value)) => {
+                    let key_str = String::from_utf8_lossy(&key);
+                    if key_str.ends_with(&suffix) {
+                        let obj: StoredObject = serde_json::from_slice(&value)
+                            .map_err(|e| DbError::Serialization(e.to_string()))?;
+                        return Ok(Some(obj));
+                    }
+                    if !key_str.starts_with(&prefix) {
+                        break;
+                    }
+                }
+                Err(e) => return Err(DbError::RocksDb(e.to_string())),
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Resolve policy by walking up the path hierarchy
     pub fn resolve_policy(&self, path: &crate::message::Path) -> Result<Option<Policy>, DbError> {
         let cf = self.db.cf_handle(CF_POLICIES).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;

@@ -3,6 +3,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+use sbo_daemon::config::Config;
+use sbo_daemon::ipc::{IpcClient, Request, Response};
+
 mod commands;
 
 #[derive(Parser)]
@@ -95,6 +98,51 @@ enum Commands {
     /// DA layer test commands
     #[command(subcommand)]
     Da(DaCommands),
+
+    /// Repository management
+    #[command(subcommand)]
+    Repo(RepoCommands),
+
+    /// Daemon management
+    #[command(subcommand)]
+    Daemon(DaemonCommands),
+}
+
+#[derive(Subcommand)]
+enum RepoCommands {
+    /// Add a repository to follow
+    Add {
+        /// SBO URI (e.g., sbo://Avail:13/)
+        uri: String,
+        /// Local path to sync to
+        path: PathBuf,
+    },
+    /// Remove a repository
+    Remove {
+        /// Local path of the repo
+        path: PathBuf,
+    },
+    /// List followed repositories
+    List,
+    /// Force sync a repository
+    Sync {
+        /// Local path (or all if not specified)
+        path: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonCommands {
+    /// Start the daemon
+    Start {
+        /// Run in foreground
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// Stop the daemon
+    Stop,
+    /// Show daemon status
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -123,6 +171,9 @@ enum DaCommands {
         /// Submit multiple times
         #[arg(long)]
         count: Option<u32>,
+        /// Use TurboDA for submission (requires API key in config)
+        #[arg(long)]
+        turbo: bool,
         /// Verbose output (comma-separated: raw-submissions,parsed)
         #[arg(long, value_delimiter = ',')]
         verbose: Vec<String>,
@@ -130,6 +181,24 @@ enum DaCommands {
 
     /// Check DA connection status
     Ping,
+
+    /// Scan a specific block for data submissions
+    Scan {
+        /// Block number to scan
+        block: u64,
+        /// Show raw transaction data
+        #[arg(long)]
+        raw: bool,
+        /// App ID to query (default: 506)
+        #[arg(long, default_value = "506")]
+        app_id: u32,
+    },
+
+    /// Check TurboDA submission status
+    Status {
+        /// Submission ID from TurboDA
+        submission_id: String,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -195,15 +264,177 @@ async fn main() -> anyhow::Result<()> {
                 DaCommands::Stream { from, limit, raw } => {
                     commands::da::stream(from, limit, raw).await?;
                 }
-                DaCommands::Submit { preset, file, count, verbose } => {
-                    commands::da::submit(preset, file, count, &verbose).await?;
+                DaCommands::Submit { preset, file, count, turbo, verbose } => {
+                    commands::da::submit(preset, file, count, turbo, &verbose).await?;
                 }
                 DaCommands::Ping => {
                     commands::da::ping().await?;
+                }
+                DaCommands::Scan { block, raw, app_id } => {
+                    commands::da::scan(block, raw, app_id).await?;
+                }
+                DaCommands::Status { submission_id } => {
+                    commands::da::turbo_status(&submission_id).await?;
+                }
+            }
+        }
+        Commands::Repo(repo_cmd) => {
+            let config = Config::load(&Config::config_path()).unwrap_or_default();
+            let client = IpcClient::new(config.daemon.socket_path);
+
+            match repo_cmd {
+                RepoCommands::Add { uri, path } => {
+                    let path = canonicalize_path(&path)?;
+                    match client.request(Request::RepoAdd { uri, path: path.clone() }).await {
+                        Ok(Response::Ok { data }) => {
+                            println!("Added repository:");
+                            println!("  URI:  {}", data["uri"].as_str().unwrap_or("?"));
+                            println!("  Path: {}", path.display());
+                        }
+                        Ok(Response::Error { message }) => {
+                            eprintln!("Error: {}", message);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to connect to daemon: {}", e);
+                            eprintln!("Is the daemon running? Try: sbo daemon start");
+                        }
+                    }
+                }
+                RepoCommands::Remove { path } => {
+                    let path = canonicalize_path(&path)?;
+                    match client.request(Request::RepoRemove { path }).await {
+                        Ok(Response::Ok { data }) => {
+                            println!("Removed: {}", data["removed"].as_str().unwrap_or("?"));
+                        }
+                        Ok(Response::Error { message }) => {
+                            eprintln!("Error: {}", message);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to connect to daemon: {}", e);
+                        }
+                    }
+                }
+                RepoCommands::List => {
+                    match client.request(Request::RepoList).await {
+                        Ok(Response::Ok { data }) => {
+                            if let Some(repos) = data.as_array() {
+                                if repos.is_empty() {
+                                    println!("No repositories. Add one with: sbo repo add <uri> <path>");
+                                } else {
+                                    println!("{:<40} {:<10} {}", "URI", "HEAD", "PATH");
+                                    println!("{}", "-".repeat(70));
+                                    for repo in repos {
+                                        println!(
+                                            "{:<40} {:<10} {}",
+                                            repo["uri"].as_str().unwrap_or("?"),
+                                            repo["head"].as_u64().unwrap_or(0),
+                                            repo["path"].as_str().unwrap_or("?")
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Response::Error { message }) => {
+                            eprintln!("Error: {}", message);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to connect to daemon: {}", e);
+                        }
+                    }
+                }
+                RepoCommands::Sync { path } => {
+                    let path = path.map(|p| canonicalize_path(&p)).transpose()?;
+                    match client.request(Request::RepoSync { path }).await {
+                        Ok(Response::Ok { data }) => {
+                            println!("Sync requested: {:?}", data);
+                        }
+                        Ok(Response::Error { message }) => {
+                            eprintln!("Error: {}", message);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to connect to daemon: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        Commands::Daemon(daemon_cmd) => {
+            match daemon_cmd {
+                DaemonCommands::Start { foreground } => {
+                    // Delegate to sbo-daemon binary
+                    let mut cmd = std::process::Command::new("sbo-daemon");
+                    cmd.arg("start");
+                    if foreground {
+                        cmd.arg("--foreground");
+                    }
+                    let status = cmd.status()?;
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                }
+                DaemonCommands::Stop => {
+                    let config = Config::load(&Config::config_path()).unwrap_or_default();
+                    let client = IpcClient::new(config.daemon.socket_path);
+                    match client.request(Request::Shutdown).await {
+                        Ok(_) => println!("Shutdown requested"),
+                        Err(e) => eprintln!("Failed to connect to daemon: {}", e),
+                    }
+                }
+                DaemonCommands::Status => {
+                    let config = Config::load(&Config::config_path()).unwrap_or_default();
+                    let client = IpcClient::new(config.daemon.socket_path);
+                    match client.request(Request::Status).await {
+                        Ok(Response::Ok { data }) => {
+                            println!("SBO Daemon Status");
+                            println!("=================");
+                            if let Some(lc) = data.get("light_client") {
+                                let connected = lc["connected"].as_bool().unwrap_or(false);
+                                if connected {
+                                    println!("Light Client: connected");
+                                    println!("  Network: {}", lc["network"].as_str().unwrap_or("?"));
+                                    println!("  Latest:  {}", lc["latest_block"].as_u64().unwrap_or(0));
+                                } else {
+                                    println!("Light Client: disconnected");
+                                    if let Some(err) = lc["error"].as_str() {
+                                        println!("  Error: {}", err);
+                                    }
+                                }
+                            }
+                            println!("Repos: {}", data["repos"].as_u64().unwrap_or(0));
+                            if let Some(app_ids) = data["app_ids"].as_array() {
+                                let ids: Vec<_> = app_ids.iter()
+                                    .filter_map(|v| v.as_u64())
+                                    .collect();
+                                if !ids.is_empty() {
+                                    println!("App IDs: {:?}", ids);
+                                }
+                            }
+                        }
+                        Ok(Response::Error { message }) => {
+                            eprintln!("Error: {}", message);
+                        }
+                        Err(e) => {
+                            eprintln!("Daemon not running: {}", e);
+                        }
+                    }
                 }
             }
         }
     }
 
     Ok(())
+}
+
+fn canonicalize_path(path: &PathBuf) -> anyhow::Result<PathBuf> {
+    // If path exists, canonicalize it; otherwise, make it absolute
+    if path.exists() {
+        Ok(path.canonicalize()?)
+    } else {
+        let abs = if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        Ok(abs)
+    }
 }

@@ -1,0 +1,47 @@
+[package]
+name = "sbo-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SBO daemon for repo sync and data availability verification"
+
+[[bin]]
+name = "sbo-daemon"
+path = "src/main.rs"
+
+[dependencies]
+sbo-core.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+hex.workspace = true
+sha2.workspace = true
+flate2.workspace = true
+
+# Avail SDK for RPC queries
+avail-rust = { package = "avail-rust-client", git = "https://github.com/availproject/avail-rust", branch = "main" }
+
+# Config
+toml = "0.8"
+
+# IPC
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# Process management
+nix = { version = "0.29", features = ["signal", "process"] }
+
+# File watching (for config changes)
+notify = "7"
+
+# Directories
+dirs = "5"
+
+# CLI/Logging for binary
+clap.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
