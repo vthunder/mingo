@@ -42,7 +42,19 @@ impl TurboDaClient {
 
         let url = format!("{}/v1/submit_raw_data", self.config.endpoint);
 
-        tracing::info!("Submitting {} bytes to TurboDA", data.len());
+        // Compute data hash for tracking
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let data_hash = hex::encode(&hasher.finalize()[..16]);
+
+        tracing::info!(
+            "Submitting {} bytes to TurboDA (hash: {})",
+            data.len(),
+            data_hash
+        );
+        tracing::debug!("TurboDA endpoint: {}", url);
+        tracing::debug!("Data hex (first 200 bytes): {}", hex::encode(&data[..std::cmp::min(200, data.len())]));
 
         let resp = self
             .http_client

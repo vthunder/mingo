@@ -176,8 +176,8 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// Create a new repo
-    pub fn new(uri: SboUri, path: PathBuf) -> Self {
+    /// Create a new repo with optional starting block
+    pub fn new(uri: SboUri, path: PathBuf, from_block: Option<u64>) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let id = Self::compute_id(&uri);
@@ -186,11 +186,15 @@ impl Repo {
             .unwrap_or_default()
             .as_secs();
 
+        // head is set to from_block - 1 so syncing starts AT from_block
+        // (sync processes blocks from head+1 onwards)
+        let head = from_block.map(|b| b.saturating_sub(1)).unwrap_or(0);
+
         Self {
             id,
             uri,
             path,
-            head: 0,
+            head,
             created_at,
         }
     }
@@ -206,13 +210,12 @@ impl Repo {
 /// Manages the set of followed repositories
 pub struct RepoManager {
     repos: HashMap<String, Repo>,
-    repos_dir: PathBuf,
     index_path: PathBuf,
 }
 
 impl RepoManager {
     /// Load repos from index file
-    pub fn load(repos_dir: PathBuf, index_path: PathBuf) -> crate::Result<Self> {
+    pub fn load(index_path: PathBuf) -> crate::Result<Self> {
         let repos = if index_path.exists() {
             let content = std::fs::read_to_string(&index_path)?;
             let list: Vec<Repo> = serde_json::from_str(&content)
@@ -224,7 +227,6 @@ impl RepoManager {
 
         Ok(Self {
             repos,
-            repos_dir,
             index_path,
         })
     }
@@ -242,34 +244,39 @@ impl RepoManager {
         Ok(())
     }
 
-    /// Add a new repo
-    pub fn add(&mut self, uri: SboUri, path: PathBuf) -> crate::Result<&Repo> {
+    /// Add a new repo with optional starting block
+    pub fn add(&mut self, uri: SboUri, path: PathBuf, from_block: Option<u64>) -> crate::Result<&Repo> {
+        // Create repo directory first (needed for canonicalization)
+        std::fs::create_dir_all(&path)?;
+
+        // Canonicalize path so ./foo and /full/path/to/foo are treated the same
+        let canonical_path = path.canonicalize().map_err(|e| {
+            crate::DaemonError::Repo(format!("Cannot canonicalize path {}: {}", path.display(), e))
+        })?;
+
         // Check if path is already used
         for repo in self.repos.values() {
-            if repo.path == path {
+            if repo.path == canonical_path {
                 return Err(crate::DaemonError::Repo(format!(
                     "Path already used by repo {}: {}",
                     repo.uri.to_string(),
-                    path.display()
+                    canonical_path.display()
                 )));
             }
         }
 
-        let repo = Repo::new(uri, path);
+        let repo = Repo::new(uri.clone(), canonical_path, from_block);
         let id = repo.id.clone();
 
-        // Create repo metadata directory
-        let meta_dir = self.repos_dir.join(&id);
-        std::fs::create_dir_all(&meta_dir)?;
+        // Create repo metadata directory using sanitized URI
+        let repo_dir = crate::repo_dir_for_uri(&uri.to_string());
+        std::fs::create_dir_all(&repo_dir)?;
 
         // Write repo config
-        let config_path = meta_dir.join("config.json");
+        let config_path = repo_dir.join("config.json");
         let config_content = serde_json::to_string_pretty(&repo)
             .map_err(|e| crate::DaemonError::Repo(format!("Failed to serialize repo config: {}", e)))?;
         std::fs::write(config_path, config_content)?;
-
-        // Create repo directory
-        std::fs::create_dir_all(&repo.path)?;
 
         self.repos.insert(id.clone(), repo);
         self.save()?;
@@ -279,19 +286,25 @@ impl RepoManager {
 
     /// Remove a repo by path
     pub fn remove(&mut self, path: &Path) -> crate::Result<Repo> {
+        // Canonicalize path for consistent lookup (stored paths are canonical)
+        let canonical = path.canonicalize().map_err(|e| {
+            crate::DaemonError::Repo(format!("Cannot canonicalize path {}: {}", path.display(), e))
+        })?;
+
         let id = self
             .repos
             .iter()
-            .find(|(_, r)| r.path == path)
+            .find(|(_, r)| r.path == canonical)
             .map(|(id, _)| id.clone())
-            .ok_or_else(|| crate::DaemonError::Repo(format!("No repo at path: {}", path.display())))?;
+            .ok_or_else(|| crate::DaemonError::Repo(format!("No repo at path: {}", canonical.display())))?;
 
         let repo = self.repos.remove(&id).unwrap();
 
-        // Remove metadata directory
-        let meta_dir = self.repos_dir.join(&id);
-        if meta_dir.exists() {
-            std::fs::remove_dir_all(&meta_dir)?;
+        // Remove repo directory (includes config.json and state/)
+        let repo_dir = crate::repo_dir_for_uri(&repo.uri.to_string());
+        if repo_dir.exists() {
+            tracing::info!("Removing repo directory at {}", repo_dir.display());
+            std::fs::remove_dir_all(&repo_dir)?;
         }
 
         self.save()?;
@@ -323,22 +336,22 @@ impl RepoManager {
 
     /// Update repo head and save
     pub fn update_head(&mut self, path: &Path, head: u64) -> crate::Result<()> {
-        // Find the repo and get its ID first
-        let repo_id = self
+        // Find the repo and get its ID and URI first
+        let repo_info = self
             .repos
             .values()
             .find(|r| r.path == path)
-            .map(|r| r.id.clone());
+            .map(|r| (r.id.clone(), r.uri.to_string()));
 
-        if let Some(id) = repo_id {
+        if let Some((id, uri)) = repo_info {
             // Now we can mutate
             if let Some(repo) = self.repos.get_mut(&id) {
                 repo.head = head;
             }
 
-            // Update metadata file
-            let meta_dir = self.repos_dir.join(&id);
-            let head_path = meta_dir.join("head");
+            // Update metadata file using URI-based path
+            let repo_dir = crate::repo_dir_for_uri(&uri);
+            let head_path = repo_dir.join("head");
             std::fs::write(head_path, head.to_string())?;
 
             self.save()?;

@@ -189,6 +189,40 @@ impl StateDb {
         self.db.put_cf(&cf, b"last_block", &block.to_le_bytes())
             .map_err(|e| DbError::RocksDb(e.to_string()))
     }
+
+    /// Store a name claim mapping: pubkey -> name
+    /// This is called when a name claim object is stored at /sys/names/<name>
+    pub fn put_name_claim(&self, pubkey: &str, name: &str) -> Result<(), DbError> {
+        let cf = self.db.cf_handle(CF_NAMES).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        // Store pubkey -> name mapping
+        self.db.put_cf(&cf, pubkey.as_bytes(), name.as_bytes())
+            .map_err(|e| DbError::RocksDb(e.to_string()))
+    }
+
+    /// Look up a name for a public key
+    /// Returns the claimed name if this pubkey has one, None otherwise
+    pub fn get_name_for_pubkey(&self, pubkey: &str) -> Result<Option<String>, DbError> {
+        let cf = self.db.cf_handle(CF_NAMES).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        match self.db.get_cf(&cf, pubkey.as_bytes()) {
+            Ok(Some(bytes)) => {
+                let name = String::from_utf8(bytes.to_vec())
+                    .map_err(|e| DbError::Serialization(e.to_string()))?;
+                Ok(Some(name))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(DbError::RocksDb(e.to_string())),
+        }
+    }
+
+    /// Delete a name claim mapping
+    pub fn delete_name_claim(&self, pubkey: &str) -> Result<(), DbError> {
+        let cf = self.db.cf_handle(CF_NAMES).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        self.db.delete_cf(&cf, pubkey.as_bytes())
+            .map_err(|e| DbError::RocksDb(e.to_string()))
+    }
 }
 
 fn encode_object_key(

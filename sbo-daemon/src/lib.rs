@@ -45,3 +45,47 @@ pub enum DaemonError {
 }
 
 pub type Result<T> = std::result::Result<T, DaemonError>;
+
+/// Sanitize a URI into a filesystem-safe directory name
+/// e.g., "sbo://avail:turing:506/nft/" -> "avail_turing_506_nft"
+pub fn sanitize_uri_for_path(uri: &str) -> String {
+    // Remove sbo:// prefix
+    let s = uri.strip_prefix("sbo://").unwrap_or(uri);
+
+    // Replace non-alphanumeric chars with underscores, collapse multiple underscores
+    let sanitized: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+
+    // Collapse multiple underscores and trim trailing ones
+    let mut result = String::new();
+    let mut prev_underscore = false;
+    for c in sanitized.chars() {
+        if c == '_' {
+            if !prev_underscore && !result.is_empty() {
+                result.push(c);
+            }
+            prev_underscore = true;
+        } else {
+            result.push(c);
+            prev_underscore = false;
+        }
+    }
+
+    // Trim trailing underscore
+    result.trim_end_matches('_').to_string()
+}
+
+/// Compute the repo metadata directory path based on its URI
+/// Results in human-readable paths like ~/.sbo/repos/avail_turing_506/
+pub fn repo_dir_for_uri(uri: &str) -> std::path::PathBuf {
+    let sbo_dir = config::Config::sbo_dir();
+    sbo_dir.join("repos").join(sanitize_uri_for_path(uri))
+}
+
+/// Compute the state DB path for a repo based on its URI
+/// Results in paths like ~/.sbo/repos/avail_turing_506/state/
+pub fn state_db_path_for_uri(uri: &str) -> std::path::PathBuf {
+    repo_dir_for_uri(uri).join("state")
+}

@@ -127,10 +127,9 @@ impl RpcClient {
             matching_app_ids
         );
 
-        // Fetch all extrinsics and process all SubmitData
-        // Note: app_lookup indexes are DA matrix positions, not extrinsic indexes,
-        // so we can't filter extrinsics by app_id. We process all and let the
-        // SBO parser/repo matching handle filtering.
+        // Fetch all extrinsics - app_id is in signed extensions (not call data),
+        // so we can't filter by app_id here. We process all SubmitData and let
+        // the SBO parser handle filtering (non-SBO data will fail to parse).
         let client = self.get_client().await?.clone();
         let block = client.block(block_number as u32);
         let opts = RpcOptions::new()
@@ -142,17 +141,17 @@ impl RpcClient {
 
         let mut transactions = Vec::new();
 
-        // Process all extrinsics with pallet_id 29 (DataAvailability) and variant_id 1 (SubmitData)
-        // We use the first matching app_id since we can't determine per-extrinsic app_id
-        // from the extrinsic itself (it's determined by the submitter's account)
-        let app_id = matching_app_ids[0];
+        // Use first watched app_id for labeling (actual filtering happens at SBO parse level)
+        let label_app_id = watched_app_ids[0];
 
+        // Process all SubmitData extrinsics (pallet_id 29, variant_id 1)
         for info in &mut infos {
             if info.pallet_id == 29 && info.variant_id == 1 {
-
                 if let Some(call_data) = info.data.take() {
                     if let Ok(bytes) = hex::decode(&call_data) {
                         if bytes.len() > 2 {
+                            // Call format: [pallet_id, variant_id, compact_len, data...]
+                            // Note: app_id is in signed extensions, not call data
                             let payload = &bytes[2..];
                             match decode_compact_and_data(payload) {
                                 Ok(mut data) => {
@@ -166,7 +165,7 @@ impl RpcClient {
                                     }
 
                                     transactions.push(AppTransaction {
-                                        app_id,
+                                        app_id: label_app_id,
                                         index: info.ext_index,
                                         data,
                                     });
@@ -244,8 +243,8 @@ impl RpcClient {
     }
 }
 
-/// Decode SCALE compact-encoded length and return the data bytes
-fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>, String> {
+/// Decode a SCALE compact-encoded u32, returning (value, bytes_consumed)
+fn decode_compact_u32(bytes: &[u8]) -> Result<(u32, usize), String> {
     if bytes.is_empty() {
         return Err("Empty bytes".to_string());
     }
@@ -253,18 +252,18 @@ fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let first = bytes[0];
     let mode = first & 0b11;
 
-    let (length, header_size): (usize, usize) = match mode {
+    match mode {
         0b00 => {
             // Single-byte mode: upper 6 bits are the value
-            ((first >> 2) as usize, 1)
+            Ok(((first >> 2) as u32, 1))
         }
         0b01 => {
-            // Two-byte mode: upper 6 bits + next byte
+            // Two-byte mode
             if bytes.len() < 2 {
                 return Err("Not enough bytes for 2-byte compact".to_string());
             }
             let val = u16::from_le_bytes([first, bytes[1]]) >> 2;
-            (val as usize, 2)
+            Ok((val as u32, 2))
         }
         0b10 => {
             // Four-byte mode
@@ -272,23 +271,20 @@ fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>, String> {
                 return Err("Not enough bytes for 4-byte compact".to_string());
             }
             let val = u32::from_le_bytes([first, bytes[1], bytes[2], bytes[3]]) >> 2;
-            (val as usize, 4)
+            Ok((val, 4))
         }
         0b11 => {
-            // Big-integer mode: first byte upper 6 bits = (num_bytes - 4)
-            let num_bytes = ((first >> 2) + 4) as usize;
-            if bytes.len() < 1 + num_bytes {
-                return Err("Not enough bytes for big-int compact".to_string());
-            }
-            // Read the bytes as little-endian
-            let mut val = 0usize;
-            for (i, &b) in bytes[1..1 + num_bytes].iter().enumerate() {
-                val |= (b as usize) << (8 * i);
-            }
-            (val, 1 + num_bytes)
+            // Big-integer mode (shouldn't happen for u32 app_id)
+            Err("Big-integer mode not supported for u32".to_string())
         }
         _ => unreachable!(),
-    };
+    }
+}
+
+/// Decode SCALE compact-encoded length and return the data bytes
+fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let (length, header_size) = decode_compact_u32(bytes)?;
+    let length = length as usize;
 
     let data_start = header_size;
     let data_end = data_start + length;

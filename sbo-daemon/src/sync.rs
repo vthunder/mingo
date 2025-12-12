@@ -3,7 +3,6 @@
 //! Coordinates LC verification with RPC data fetching and filesystem writes.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use crate::lc::LcManager;
 use crate::repo::{Repo, RepoManager};
 use crate::rpc::RpcClient;
@@ -15,8 +14,8 @@ pub struct SyncEngine {
     lc: LcManager,
     rpc: RpcClient,
     verbose_raw: bool,
-    /// StateDb instances per repo path
-    state_dbs: HashMap<PathBuf, StateDb>,
+    /// StateDb instances per repo URI
+    state_dbs: HashMap<String, StateDb>,
 }
 
 impl SyncEngine {
@@ -24,15 +23,18 @@ impl SyncEngine {
         Self { lc, rpc, verbose_raw, state_dbs: HashMap::new() }
     }
 
-    /// Get or open StateDb for a repo
-    fn get_state_db(&mut self, repo_path: &std::path::Path) -> crate::Result<&StateDb> {
-        if !self.state_dbs.contains_key(repo_path) {
-            let state_path = repo_path.join(".sbo-state");
+    /// Get or open StateDb for a repo by URI
+    /// State is stored in ~/.sbo/state/<sanitized_uri>/ for human-readable paths
+    fn get_state_db(&mut self, uri: &str) -> crate::Result<&StateDb> {
+        if !self.state_dbs.contains_key(uri) {
+            let state_path = crate::state_db_path_for_uri(uri);
+            std::fs::create_dir_all(&state_path)?;
+
             let state_db = StateDb::open(&state_path)
                 .map_err(|e| crate::DaemonError::State(format!("Failed to open state DB: {}", e)))?;
-            self.state_dbs.insert(repo_path.to_path_buf(), state_db);
+            self.state_dbs.insert(uri.to_string(), state_db);
         }
-        Ok(self.state_dbs.get(repo_path).unwrap())
+        Ok(self.state_dbs.get(uri).unwrap())
     }
 
     /// Process a single block for all repos
@@ -68,83 +70,113 @@ impl SyncEngine {
                 // Find repos that match this app_id
                 let matching_repos = repos.get_by_app_id(tx.app_id);
 
-                for repo in matching_repos {
-                    // Parse SBO message
-                    match sbo_core::wire::parse(&tx.data) {
-                        Ok(msg) => {
-                            // Check path prefix filter
-                            if let Some(ref prefix) = repo.uri.path_prefix {
-                                if !msg.path.to_string().starts_with(prefix) {
-                                    continue;
-                                }
-                            }
+                // Log submission discovery
+                tracing::info!(
+                    "[{}/{}] Received {} bytes for app {}",
+                    block_number,
+                    tx.index,
+                    tx.data.len(),
+                    tx.app_id
+                );
 
-                            // Get state DB for this repo
-                            let state_db = match self.get_state_db(&repo.path) {
-                                Ok(db) => db,
-                                Err(e) => {
-                                    tracing::error!("Failed to open state DB for {}: {}", repo.path.display(), e);
-                                    continue;
-                                }
-                            };
-
-                            // Validate message against state
-                            match validate_message(&msg, state_db, &repo.path) {
-                                ValidationResult::Valid => {
-                                    // Log update
-                                    tracing::info!(
-                                        "Block {}: Updating {}",
-                                        block_number,
-                                        repo.uri.to_string()
-                                    );
-                                }
-                                ValidationResult::Invalid(reason) => {
-                                    tracing::warn!(
-                                        "Block {} tx {}: Rejected - {}",
-                                        block_number,
-                                        tx.index,
-                                        reason
-                                    );
-                                    continue;
-                                }
-                            }
-
-                            // Log raw data if verbose
-                            if self.verbose_raw {
-                                tracing::info!(
-                                    "  Path: {}{} ({} bytes)",
-                                    msg.path,
-                                    msg.id,
-                                    tx.data.len()
-                                );
-                                // Show as UTF-8 (SBO data should be human-readable)
-                                match std::str::from_utf8(&tx.data) {
-                                    Ok(s) => {
-                                        for line in s.lines().take(20) {
-                                            tracing::info!("  | {}", line);
-                                        }
-                                        let line_count = s.lines().count();
-                                        if line_count > 20 {
-                                            tracing::info!("  | ... ({} more lines)", line_count - 20);
-                                        }
-                                    }
-                                    Err(_) => {
-                                        tracing::info!("  (binary data, {} bytes)", tx.data.len());
-                                    }
-                                }
-                            }
-
-                            // Write to filesystem and update state
-                            self.write_object(repo, &msg, block_number)?;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to parse SBO message in block {} tx {}: {}",
+                // Parse SBO messages (may be a batch with multiple messages)
+                let messages = match sbo_core::wire::parse_batch(&tx.data) {
+                    Ok(msgs) => {
+                        if msgs.len() > 1 {
+                            tracing::debug!(
+                                "[{}/{}] Parsed batch of {} messages",
                                 block_number,
                                 tx.index,
-                                e
+                                msgs.len()
                             );
                         }
+                        msgs
+                    }
+                    Err(e) => {
+                        // Use debug level - non-SBO data on this app_id is expected
+                        tracing::debug!(
+                            "[{}/{}] → parse:✗ ({})",
+                            block_number,
+                            tx.index,
+                            e
+                        );
+                        continue;
+                    }
+                };
+
+                for repo in matching_repos {
+                    for msg in &messages {
+                        // Check path prefix filter
+                        if let Some(ref prefix) = repo.uri.path_prefix {
+                            if !msg.path.to_string().starts_with(prefix) {
+                                continue;
+                            }
+                        }
+
+                        // Get state DB for this repo (keyed by URI)
+                        let uri = repo.uri.to_string();
+                        let state_db = match self.get_state_db(&uri) {
+                            Ok(db) => db,
+                            Err(e) => {
+                                tracing::error!("Failed to open state DB for {}: {}", uri, e);
+                                continue;
+                            }
+                        };
+
+                        // Validate message against state
+                        match validate_message(msg, state_db, &repo.path) {
+                            ValidationResult::Valid { creator } => {
+                                // Condensed success log: [block/tx] Action path/id by creator → sig:✓ state:✓ applied
+                                tracing::info!(
+                                    "[{}/{}] {:?} {}{} by {} → sig:✓ state:✓ applied",
+                                    block_number,
+                                    tx.index,
+                                    msg.action,
+                                    msg.path,
+                                    msg.id,
+                                    creator
+                                );
+                            }
+                            ValidationResult::Invalid { stage, reason } => {
+                                // Condensed failure log: [block/tx] Action path/id → stage:✗ (reason)
+                                tracing::warn!(
+                                    "[{}/{}] {:?} {}{} → {}:✗ ({})",
+                                    block_number,
+                                    tx.index,
+                                    msg.action,
+                                    msg.path,
+                                    msg.id,
+                                    stage,
+                                    reason
+                                );
+                                continue;
+                            }
+                        }
+
+                        // Log raw data if verbose
+                        if self.verbose_raw {
+                            // Serialize message to show wire format
+                            let wire_data = sbo_core::wire::serialize(msg);
+                            match std::str::from_utf8(&wire_data) {
+                                Ok(s) => {
+                                    tracing::info!("  --- Wire format ---");
+                                    for line in s.lines().take(30) {
+                                        tracing::info!("  | {}", line);
+                                    }
+                                    let line_count = s.lines().count();
+                                    if line_count > 30 {
+                                        tracing::info!("  | ... ({} more lines)", line_count - 30);
+                                    }
+                                    tracing::info!("  -------------------");
+                                }
+                                Err(_) => {
+                                    tracing::info!("  (binary data, {} bytes)", wire_data.len());
+                                }
+                            }
+                        }
+
+                        // Write to filesystem and update state
+                        self.write_object(repo, msg, block_number)?;
                     }
                 }
             }
@@ -198,12 +230,24 @@ impl SyncEngine {
             file_path.display()
         );
 
-        // Update state DB
-        if let Some(stored_obj) = message_to_stored_object(msg, block_number) {
-            let state_db = self.state_dbs.get(&repo.path);
+        // Update state DB (keyed by URI)
+        let uri = repo.uri.to_string();
+        let state_db = self.state_dbs.get(&uri);
+        if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_db) {
             if let Some(db) = state_db {
                 if let Err(e) = db.put_object(&stored_obj) {
                     tracing::warn!("Failed to update state DB: {}", e);
+                }
+
+                // If this is a name claim at /sys/names/, index pubkey -> name
+                if path_str.starts_with("/sys/names/") {
+                    let pubkey = msg.signing_key.to_string();
+                    let name = msg.id.as_str();
+                    if let Err(e) = db.put_name_claim(&pubkey, name) {
+                        tracing::warn!("Failed to index name claim: {}", e);
+                    } else {
+                        tracing::info!("Indexed name claim: {} -> {}", name, pubkey);
+                    }
                 }
             }
         }

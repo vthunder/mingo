@@ -40,6 +40,9 @@ pub struct RpcConfig {
 pub struct TurboDaConfig {
     pub endpoint: String,
     pub api_key: Option<String>,
+    /// App ID associated with this API key (informational - determined by TurboDA)
+    #[serde(default)]
+    pub app_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,6 +77,7 @@ impl Default for Config {
             turbo_da: TurboDaConfig {
                 endpoint: "https://staging.turbo-api.availproject.org".to_string(),
                 api_key: None,
+                app_id: None,
             },
             alerts: AlertsConfig::default(),
         }

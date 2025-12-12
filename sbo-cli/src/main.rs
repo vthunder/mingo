@@ -116,6 +116,9 @@ enum RepoCommands {
         uri: String,
         /// Local path to sync to
         path: PathBuf,
+        /// Start syncing from this block number. Use negative for relative to chain head (e.g., -100)
+        #[arg(long, allow_hyphen_values = true)]
+        from_block: Option<i64>,
     },
     /// Remove a repository
     Remove {
@@ -283,13 +286,14 @@ async fn main() -> anyhow::Result<()> {
             let client = IpcClient::new(config.daemon.socket_path);
 
             match repo_cmd {
-                RepoCommands::Add { uri, path } => {
+                RepoCommands::Add { uri, path, from_block } => {
                     let path = canonicalize_path(&path)?;
-                    match client.request(Request::RepoAdd { uri, path: path.clone() }).await {
+                    match client.request(Request::RepoAdd { uri, path: path.clone(), from_block }).await {
                         Ok(Response::Ok { data }) => {
                             println!("Added repository:");
                             println!("  URI:  {}", data["uri"].as_str().unwrap_or("?"));
                             println!("  Path: {}", path.display());
+                            println!("  Head: {}", data["head"].as_u64().unwrap_or(0));
                         }
                         Ok(Response::Error { message }) => {
                             eprintln!("Error: {}", message);

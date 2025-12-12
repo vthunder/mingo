@@ -81,10 +81,7 @@ impl DaemonState {
         std::fs::create_dir_all(&config.daemon.repos_dir)?;
 
         // Initialize components
-        let repos = RepoManager::load(
-            config.daemon.repos_dir.clone(),
-            config.daemon.repos_index.clone(),
-        )?;
+        let repos = RepoManager::load(config.daemon.repos_index.clone())?;
 
         let lc = LcManager::new(config.light_client.clone());
         let rpc = RpcClient::new(config.rpc.clone(), false);
@@ -290,18 +287,46 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
 
 async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Response {
     match req {
-        Request::RepoAdd { uri, path } => {
+        Request::RepoAdd { uri, path, from_block } => {
             let parsed_uri = match SboUri::parse(&uri) {
                 Ok(u) => u,
                 Err(e) => return Response::error(e.to_string()),
             };
 
+            // Resolve negative from_block relative to current chain head
+            let resolved_from_block = match from_block {
+                Some(block) if block < 0 => {
+                    // Need to query light client for latest block
+                    let state_read = state.read().await;
+                    match state_read.lc.status().await {
+                        Ok(status) => {
+                            let latest = status.latest_block as i64;
+                            let resolved = (latest + block).max(0) as u64;
+                            tracing::info!(
+                                "Resolved from_block {} relative to latest {} = {}",
+                                block, latest, resolved
+                            );
+                            Some(resolved)
+                        }
+                        Err(e) => {
+                            return Response::error(format!(
+                                "Cannot resolve negative from_block: light client unavailable: {}",
+                                e
+                            ));
+                        }
+                    }
+                }
+                Some(block) => Some(block as u64),
+                None => None,
+            };
+
             let mut state = state.write().await;
-            match state.repos.add(parsed_uri, path) {
+            match state.repos.add(parsed_uri, path, resolved_from_block) {
                 Ok(repo) => Response::ok(serde_json::json!({
                     "id": repo.id,
                     "uri": repo.uri.to_string(),
                     "path": repo.path,
+                    "head": repo.head,
                 })),
                 Err(e) => Response::error(e.to_string()),
             }

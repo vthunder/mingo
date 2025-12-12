@@ -81,20 +81,43 @@ pub async fn submit(preset: Option<super::super::TestPreset>, file: Option<PathB
         }
 
         println!("Connecting to TurboDA: {}", config.turbo_da.endpoint);
+        if let Some(app_id) = config.turbo_da.app_id {
+            println!("  App ID: {} (from config)", app_id);
+        } else {
+            println!("  App ID: (determined by API key)");
+        }
         let client = TurboDaClient::new(config.turbo_da);
 
         for i in 0..count {
             for (j, payload) in payloads.iter().enumerate() {
-                println!("Submitting payload {}/{} ({} bytes)...",
+                println!("\nSubmitting payload {}/{} ({} bytes)...",
                     i * payloads.len() as u32 + j as u32 + 1,
                     count * payloads.len() as u32,
                     payload.len());
 
-                if show_raw {
-                    match std::str::from_utf8(payload) {
-                        Ok(s) => println!("\n{}\n", s),
-                        Err(_) => println!("  [binary payload, {} bytes]", payload.len()),
+                // Always show payload summary
+                match std::str::from_utf8(payload) {
+                    Ok(s) => {
+                        // Show first line (usually SBO-Version header)
+                        if let Some(first_line) = s.lines().next() {
+                            println!("  First line: {}", first_line);
+                        }
+                        // Try to parse as SBO to show action/path/id
+                        if let Ok(msg) = sbo_core::wire::parse(payload) {
+                            println!("  SBO message: {:?} {}{}", msg.action, msg.path, msg.id);
+                            println!("  Signing key: {:?}", msg.signing_key);
+                        }
                     }
+                    Err(_) => println!("  [binary payload, {} bytes]", payload.len()),
+                }
+
+                if show_raw {
+                    println!("\n--- Raw payload ---");
+                    match std::str::from_utf8(payload) {
+                        Ok(s) => println!("{}", s),
+                        Err(_) => println!("{}", hex::encode(payload)),
+                    }
+                    println!("--- End payload ---\n");
                 }
 
                 match client.submit_raw(payload).await {
@@ -211,8 +234,8 @@ fn generate_preset(preset: super::super::TestPreset) -> Result<Vec<Vec<u8>>> {
     }
 }
 
-/// Decode SCALE compact-encoded length and return the data bytes
-fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>> {
+/// Decode a SCALE compact-encoded u32, returning (value, bytes_consumed)
+fn decode_compact_u32(bytes: &[u8]) -> Result<(u32, usize)> {
     if bytes.is_empty() {
         anyhow::bail!("Empty bytes");
     }
@@ -220,18 +243,18 @@ fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>> {
     let first = bytes[0];
     let mode = first & 0b11;
 
-    let (length, header_size): (usize, usize) = match mode {
+    match mode {
         0b00 => {
             // Single-byte mode: upper 6 bits are the value
-            ((first >> 2) as usize, 1)
+            Ok(((first >> 2) as u32, 1))
         }
         0b01 => {
-            // Two-byte mode: upper 6 bits + next byte
+            // Two-byte mode
             if bytes.len() < 2 {
                 anyhow::bail!("Not enough bytes for 2-byte compact");
             }
             let val = u16::from_le_bytes([first, bytes[1]]) >> 2;
-            (val as usize, 2)
+            Ok((val as u32, 2))
         }
         0b10 => {
             // Four-byte mode
@@ -239,23 +262,20 @@ fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>> {
                 anyhow::bail!("Not enough bytes for 4-byte compact");
             }
             let val = u32::from_le_bytes([first, bytes[1], bytes[2], bytes[3]]) >> 2;
-            (val as usize, 4)
+            Ok((val, 4))
         }
         0b11 => {
-            // Big-integer mode: first byte upper 6 bits = (num_bytes - 4)
-            let num_bytes = ((first >> 2) + 4) as usize;
-            if bytes.len() < 1 + num_bytes {
-                anyhow::bail!("Not enough bytes for big-int compact");
-            }
-            // Read the bytes as little-endian
-            let mut val = 0usize;
-            for (i, &b) in bytes[1..1 + num_bytes].iter().enumerate() {
-                val |= (b as usize) << (8 * i);
-            }
-            (val, 1 + num_bytes)
+            // Big-integer mode (shouldn't happen for u32)
+            anyhow::bail!("Big-integer mode not supported for u32");
         }
         _ => unreachable!(),
-    };
+    }
+}
+
+/// Decode SCALE compact-encoded length and return the data bytes
+fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>> {
+    let (length, header_size) = decode_compact_u32(bytes)?;
+    let length = length as usize;
 
     let data_start = header_size;
     let data_end = data_start + length;
@@ -316,6 +336,7 @@ pub async fn scan(block_number: u64, show_raw: bool, _app_id: u32) -> Result<()>
     let mut found_count = 0;
 
     // Helper to display SubmitData
+    // Note: app_id is in signed extensions, not call data, so we can't show it here
     let display_data = |idx: usize, ext_idx: u32, raw_data: &[u8], show_raw: bool| {
         // Check for gzip magic and decompress if needed
         let (data, is_gzipped) = if raw_data.len() >= 2 && raw_data[0] == 0x1f && raw_data[1] == 0x8b {
@@ -379,10 +400,10 @@ pub async fn scan(block_number: u64, show_raw: bool, _app_id: u32) -> Result<()>
     for info in &mut infos {
         if info.pallet_id == 29 && info.variant_id == 1 {
             if let Some(call_data) = info.data.take() {
-                // Decode the call data - format: [pallet_id, variant_id, compact_len, ...data]
+                // Decode the call data - format: [pallet_id, variant_id, compact_len, data...]
+                // Note: app_id is in signed extensions, not call data
                 if let Ok(bytes) = hex::decode(&call_data) {
                     if bytes.len() > 2 {
-                        // Skip pallet + variant bytes, then decode SCALE compact length
                         let payload = &bytes[2..];
                         match decode_compact_and_data(payload) {
                             Ok(data) => {

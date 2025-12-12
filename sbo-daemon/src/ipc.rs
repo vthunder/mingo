@@ -11,8 +11,8 @@ use tokio::net::{UnixListener, UnixStream};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd")]
 pub enum Request {
-    /// Add a new repo
-    RepoAdd { uri: String, path: PathBuf },
+    /// Add a new repo (from_block can be negative for relative to chain head)
+    RepoAdd { uri: String, path: PathBuf, from_block: Option<i64> },
     /// Remove a repo
     RepoRemove { path: PathBuf },
     /// List all repos
