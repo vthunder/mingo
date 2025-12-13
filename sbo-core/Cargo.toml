@@ -15,7 +15,13 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+sbo-types = { path = "../sbo-types", features = ["serde"] }
+sbo-crypto = { path = "../sbo-crypto" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 tempfile = "3"
+
+[features]
+default = []
+bls = ["sbo-crypto/bls"]

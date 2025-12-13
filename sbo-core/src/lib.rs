@@ -24,3 +24,15 @@ mod indexer;
 pub use error::SboError;
 pub use genesis::Genesis;
 pub use indexer::Indexer;
+
+// Re-export types from sbo-types
+pub use sbo_types::id::Id;
+pub use sbo_types::path::Path;
+pub use sbo_types::action::Action;
+pub use sbo_types::error::ParseError as TypesParseError;
+
+// Re-export crypto from sbo-crypto
+pub use sbo_crypto::{sha256, ContentHash, HashAlgo, CryptoError};
+pub use sbo_crypto::ed25519 as ed25519_new;
+#[cfg(feature = "bls")]
+pub use sbo_crypto::bls;
