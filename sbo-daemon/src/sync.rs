@@ -38,11 +38,12 @@ impl SyncEngine {
     }
 
     /// Process a single block for all repos
+    /// Returns the number of transactions processed for followed app_ids
     pub async fn process_block(
         &mut self,
         block_number: u64,
         repos: &mut RepoManager,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<usize> {
         // 1. Verify block is available via LC (DAS)
         if !self.lc.is_block_available(block_number).await? {
             tracing::warn!("Block {} not available (DAS failed)", block_number);
@@ -56,7 +57,7 @@ impl SyncEngine {
         // 2. Get all app_ids we're following
         let app_ids = repos.followed_app_ids();
         if app_ids.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         tracing::debug!("Processing block {} for app_ids {:?}", block_number, app_ids);
@@ -64,8 +65,12 @@ impl SyncEngine {
         // 3. Fetch block data for each app_id via RPC
         let block_data = self.rpc.fetch_block_data_multi(block_number, &app_ids).await?;
 
+        // Track transaction count for this block
+        let mut tx_count = 0;
+
         // 4. Process each transaction
         for data in block_data {
+            tx_count += data.transactions.len();
             for tx in data.transactions {
                 // Find repos that match this app_id
                 let matching_repos = repos.get_by_app_id(tx.app_id);
@@ -193,7 +198,7 @@ impl SyncEngine {
             repos.update_head(&path, block_number)?;
         }
 
-        Ok(())
+        Ok(tx_count)
     }
 
     /// Write an SBO object to the filesystem and update state

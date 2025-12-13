@@ -38,7 +38,7 @@ enum Commands {
         foreground: bool,
 
         /// Verbose output for specific components (can be repeated)
-        /// Options: rpc, raw-incoming
+        /// Options: rpc, raw-incoming, blocks
         #[arg(long = "verbose", short = 'v', value_name = "COMPONENT")]
         verbose: Vec<String>,
     },
@@ -55,6 +55,8 @@ pub struct VerboseFlags {
     pub rpc: bool,
     /// Log raw incoming data for repos
     pub raw_incoming: bool,
+    /// Log every block processed (even empty ones)
+    pub blocks: bool,
 }
 
 impl VerboseFlags {
@@ -62,6 +64,7 @@ impl VerboseFlags {
         Self {
             rpc: args.iter().any(|s| s == "rpc"),
             raw_incoming: args.iter().any(|s| s == "raw-incoming"),
+            blocks: args.iter().any(|s| s == "blocks"),
         }
     }
 }
@@ -252,14 +255,20 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
             if min_start <= max_end {
                 // Process blocks in order
                 for block_num in min_start..=max_end {
-                    tracing::info!("Processing block {}", block_num);
-
                     // Process block with write lock
                     let mut state = state_for_sync.write().await;
-                    if let Err(e) = sync.process_block(block_num, &mut state.repos).await {
-                        tracing::warn!("Failed to process block {}: {}", block_num, e);
-                        // Don't update head, will retry next cycle
-                        break;
+                    match sync.process_block(block_num, &mut state.repos).await {
+                        Ok(tx_count) => {
+                            // Only log if there was data or verbose blocks enabled
+                            if tx_count > 0 || verbose_for_sync.blocks {
+                                tracing::info!("Processed block {} ({} transactions)", block_num, tx_count);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to process block {}: {}", block_num, e);
+                            // Don't update head, will retry next cycle
+                            break;
+                        }
                     }
                 }
             }
