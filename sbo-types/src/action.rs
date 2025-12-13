@@ -2,8 +2,13 @@
 
 use crate::error::ParseError;
 
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
+
 /// SBO message action
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 pub enum Action {
     /// Create a new object at a specific path (deterministic naming)
     Create,

@@ -5,6 +5,9 @@ use alloc::string::String;
 
 use crate::error::{ParseError, InvalidIdentifierReason};
 
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
+
 /// Validated identifier (1-256 chars, RFC 3986 unreserved)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Id(String);
@@ -42,6 +45,27 @@ impl Id {
 impl core::fmt::Display for Id {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for Id {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Id {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Id::new(&s).map_err(serde::de::Error::custom)
     }
 }
 

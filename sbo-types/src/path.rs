@@ -6,6 +6,9 @@ use alloc::{string::String, vec::Vec, format};
 use crate::error::{ParseError, InvalidPathReason};
 use crate::id::Id;
 
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
+
 /// Path (e.g., "/alice/nfts/")
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path(Vec<Id>);
@@ -75,6 +78,27 @@ impl Path {
 impl core::fmt::Display for Path {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.to_string())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for Path {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Path {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Path::parse(&s).map_err(serde::de::Error::custom)
     }
 }
 

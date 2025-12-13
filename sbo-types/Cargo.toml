@@ -7,8 +7,12 @@ description = "SBO core types (no_std compatible)"
 
 [features]
 default = ["std"]
-std = ["alloc"]
+std = ["alloc", "serde?/std"]
 alloc = []
+serde = ["dep:serde"]
 
 [dependencies]
-# No dependencies yet - we'll add as needed
+serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"
