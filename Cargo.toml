@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["sbo-core", "sbo-avail", "sbo-daemon", "sbo-cli"]
+members = ["sbo-core", "sbo-avail", "sbo-daemon", "sbo-cli", "sbo-types"]
 
 [workspace.package]
 version = "0.1.0"
