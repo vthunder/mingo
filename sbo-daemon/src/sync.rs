@@ -249,6 +249,24 @@ impl SyncEngine {
                         tracing::info!("Indexed name claim: {} -> {}", name, pubkey);
                     }
                 }
+
+                // If this is a policy object (Content-Schema: policy.v2), index it
+                if msg.content_schema.as_deref() == Some("policy.v2") {
+                    if let Some(ref payload) = msg.payload {
+                        match serde_json::from_slice::<sbo_core::policy::Policy>(payload) {
+                            Ok(policy) => {
+                                if let Err(e) = db.put_policy(&msg.path, &policy) {
+                                    tracing::warn!("Failed to index policy at {}: {}", msg.path, e);
+                                } else {
+                                    tracing::info!("Indexed policy at {}", msg.path);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to parse policy.v2 at {}: {}", msg.path, e);
+                            }
+                        }
+                    }
+                }
             }
         }
 

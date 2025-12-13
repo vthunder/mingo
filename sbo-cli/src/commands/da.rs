@@ -195,11 +195,48 @@ pub async fn ping() -> Result<()> {
     Ok(())
 }
 
+/// Load or create identity key from ~/.sbo/identity
+fn load_or_create_identity() -> Result<sbo_core::crypto::SigningKey> {
+    use sbo_core::crypto::SigningKey;
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let identity_path = std::path::PathBuf::from(&home).join(".sbo").join("identity");
+
+    if identity_path.exists() {
+        // Load existing key
+        let hex_str = std::fs::read_to_string(&identity_path)?;
+        let bytes = hex::decode(hex_str.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid identity file: {}", e))?;
+        if bytes.len() != 32 {
+            anyhow::bail!("Invalid identity file: expected 32 bytes, got {}", bytes.len());
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        println!("Loaded identity from {}", identity_path.display());
+        Ok(SigningKey::from_bytes(&arr))
+    } else {
+        // Create new key
+        std::fs::create_dir_all(identity_path.parent().unwrap())?;
+        let key = SigningKey::generate();
+        let hex_str = hex::encode(key.to_bytes());
+        std::fs::write(&identity_path, &hex_str)?;
+        println!("Created new identity at {}", identity_path.display());
+        println!("Public key: {}", key.public_key().to_string());
+        Ok(key)
+    }
+}
+
 fn generate_preset(preset: super::super::TestPreset) -> Result<Vec<Vec<u8>>> {
     use sbo_core::crypto::SigningKey;
     use sbo_core::presets;
 
-    let signing_key = SigningKey::generate();
+    // Load persistent identity for most presets (except Hello/Invalid)
+    let signing_key = match preset {
+        super::super::TestPreset::Hello | super::super::TestPreset::Invalid => {
+            SigningKey::generate() // These don't need persistence
+        }
+        _ => load_or_create_identity()?,
+    };
 
     match preset {
         super::super::TestPreset::Hello => {
@@ -230,6 +267,32 @@ fn generate_preset(preset: super::super::TestPreset) -> Result<Vec<Vec<u8>>> {
         }
         super::super::TestPreset::Invalid => {
             Ok(vec![b"SBO-Version: 0.5\nAction: invalid\n\n".to_vec()])
+        }
+        super::super::TestPreset::ClaimName => {
+            // Claim name "alice" at /sys/names/alice
+            println!("Claiming name 'alice' for key {}", signing_key.public_key().to_string());
+            Ok(vec![presets::claim_name(&signing_key, "alice")])
+        }
+        super::super::TestPreset::PostOwn => {
+            // Post to own namespace /alice/nfts/item001
+            println!("Posting to /alice/nfts/item001 (should succeed if name claimed)");
+            Ok(vec![presets::post_to_own_namespace(
+                &signing_key,
+                "alice",
+                "nfts",
+                "item001",
+                b"{\"name\":\"My NFT\",\"rarity\":\"legendary\"}"
+            )])
+        }
+        super::super::TestPreset::PostUnauthorized => {
+            // Try to post to /bob/nfts/ (should be DENIED)
+            println!("Attempting to post to /bob/nfts/stolen (should be DENIED by policy)");
+            Ok(vec![presets::post_unauthorized(
+                &signing_key,
+                "bob",
+                "stolen",
+                b"{\"name\":\"Stolen NFT\"}"
+            )])
         }
     }
 }

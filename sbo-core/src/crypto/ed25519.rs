@@ -31,6 +31,18 @@ impl SigningKey {
         }
     }
 
+    /// Create a signing key from 32-byte seed
+    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+        Self {
+            inner: ed25519_dalek::SigningKey::from_bytes(bytes),
+        }
+    }
+
+    /// Get the 32-byte seed (secret key bytes)
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.inner.to_bytes()
+    }
+
     /// Get the public key
     pub fn public_key(&self) -> PublicKey {
         PublicKey {

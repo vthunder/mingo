@@ -151,10 +151,24 @@ impl StateDb {
         Ok(None)
     }
 
+    /// Store a policy at a path
+    /// The policy applies to the given path and all descendants
+    pub fn put_policy(&self, path: &crate::message::Path, policy: &Policy) -> Result<(), DbError> {
+        let cf = self.db.cf_handle(CF_POLICIES).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+        let key = path.to_string();
+        let value = serde_json::to_vec(policy)
+            .map_err(|e| DbError::Serialization(e.to_string()))?;
+
+        self.db.put_cf(&cf, key.as_bytes(), &value)
+            .map_err(|e| DbError::RocksDb(e.to_string()))
+    }
+
     /// Resolve policy by walking up the path hierarchy
+    /// Falls back to root policy at /sys/policies/ if no path-specific policy found
     pub fn resolve_policy(&self, path: &crate::message::Path) -> Result<Option<Policy>, DbError> {
         let cf = self.db.cf_handle(CF_POLICIES).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
 
+        // First, walk up the path hierarchy for path-specific policies
         for ancestor in path.ancestors() {
             let key = ancestor.to_string();
             if let Some(bytes) = self.db.get_cf(&cf, key.as_bytes())
@@ -163,6 +177,15 @@ impl StateDb {
                     .map_err(|e| DbError::Serialization(e.to_string()))?;
                 return Ok(Some(policy));
             }
+        }
+
+        // Fall back to root policy at /sys/policies/
+        // This is where the genesis root policy is stored
+        if let Some(bytes) = self.db.get_cf(&cf, b"/sys/policies/")
+            .map_err(|e| DbError::RocksDb(e.to_string()))? {
+            let policy: Policy = serde_json::from_slice(&bytes)
+                .map_err(|e| DbError::Serialization(e.to_string()))?;
+            return Ok(Some(policy));
         }
 
         Ok(None)

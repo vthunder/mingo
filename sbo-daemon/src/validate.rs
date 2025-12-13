@@ -3,6 +3,7 @@
 //! Validates SBO messages before they are applied to the repo.
 
 use sbo_core::message::{Message, Action, Id, Path as SboPath};
+use sbo_core::policy::{evaluate, ActionType, PolicyResult};
 use sbo_core::state::{StateDb, StoredObject};
 use std::path::Path;
 
@@ -175,17 +176,22 @@ fn validate_post(
     };
 
     if let Some(existing_obj) = existing {
-        // Object exists - verify signer matches owner
+        // Object exists - this is an update
         let signer_key = msg.signing_key.to_string();
         let owner_key = existing_obj.owner.as_str();
 
-        // For now, we store the signing key in the owner field
-        // So we compare signing key to stored owner
-        if !keys_match(&signer_key, owner_key) {
-            return ValidationResult::Invalid {
-                stage: ValidationStage::State,
-                reason: format!("Signer {} does not match owner {}", signer_key, owner_key),
-            };
+        // Check if signer is the owner (owners can always update their objects)
+        if keys_match(&signer_key, owner_key) {
+            // Owner updating their own object - allowed
+            tracing::debug!("Owner updating object {}:{}", msg.path, msg.id);
+        } else {
+            // Not the owner - must check policy for update permission
+            if let Err(reason) = check_policy(state, msg, ActionType::Update, Some(owner_key)) {
+                return ValidationResult::Invalid {
+                    stage: ValidationStage::Policy,
+                    reason,
+                };
+            }
         }
     } else if !root_policy_exists {
         // No root policy yet - this might be genesis
@@ -193,16 +199,12 @@ fn validate_post(
         tracing::debug!("Allowing post without root policy (genesis mode)");
     } else {
         // New object creation - must check policy
-        // SECURITY WARNING: Policy evaluation not yet implemented (see bd-78)
-        // This is a known security gap - we SHOULD deny here but that would
-        // break all new object creation. Log loudly so it's visible.
-        tracing::warn!(
-            "SECURITY: Allowing new object {}:{} without policy evaluation (policy check not implemented)",
-            msg.path,
-            msg.id
-        );
-        // TODO(bd-78): Implement policy evaluation and change this to:
-        // return ValidationResult::Invalid { stage: ValidationStage::Policy, reason: "..." };
+        if let Err(reason) = check_policy(state, msg, ActionType::Create, None) {
+            return ValidationResult::Invalid {
+                stage: ValidationStage::Policy,
+                reason,
+            };
+        }
     }
 
     ValidationResult::Valid { creator: creator.to_string() }
@@ -322,6 +324,56 @@ fn keys_match(signer_key: &str, stored_owner: &str) -> bool {
     let owner_clean = stored_owner.strip_prefix("ed25519:").unwrap_or(stored_owner);
 
     signer_clean == owner_clean
+}
+
+/// Check if an action is allowed by policy
+/// Returns Ok(()) if allowed, Err(reason) if denied
+fn check_policy(
+    state: &StateDb,
+    msg: &Message,
+    action: ActionType,
+    owner: Option<&str>,
+) -> Result<(), String> {
+    // Resolve the applicable policy by walking up the path hierarchy
+    let policy = match state.resolve_policy(&msg.path) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            // No policy found - deny by default
+            // This shouldn't happen if root policy exists, but fail closed
+            return Err("No applicable policy found".to_string());
+        }
+        Err(e) => {
+            tracing::error!("Error resolving policy: {}", e);
+            return Err(format!("Error resolving policy: {}", e));
+        }
+    };
+
+    // Resolve the actor's identity (name if available, otherwise key-based)
+    let actor = resolve_creator(msg, Some(state));
+    let target_path = msg.path.to_string();
+
+    // Evaluate the policy
+    match evaluate(&policy, &actor, action, &target_path, owner, msg) {
+        PolicyResult::Allowed => {
+            tracing::debug!(
+                "Policy allowed {:?} on {} by {}",
+                action,
+                target_path,
+                actor
+            );
+            Ok(())
+        }
+        PolicyResult::Denied(reason) => {
+            tracing::info!(
+                "Policy denied {:?} on {} by {}: {}",
+                action,
+                target_path,
+                actor,
+                reason
+            );
+            Err(reason)
+        }
+    }
 }
 
 /// Create a StoredObject from a Message

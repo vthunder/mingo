@@ -218,6 +218,12 @@ enum TestPreset {
     Collection,
     /// Intentionally malformed SBO
     Invalid,
+    /// Claim a name (should succeed after genesis)
+    ClaimName,
+    /// Post to own namespace (should succeed after claiming name)
+    PostOwn,
+    /// Post to another's namespace (should be DENIED by policy)
+    PostUnauthorized,
 }
 
 #[tokio::main]
