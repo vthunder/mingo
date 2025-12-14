@@ -14,6 +14,9 @@ pub enum VerifierError {
 
     #[error("Receipt decode error: {0}")]
     ReceiptError(String),
+
+    #[error("Deserialization error: {0}")]
+    DeserializationError(String),
 }
 
 /// Verify a proof receipt
@@ -120,4 +123,20 @@ pub fn verify_proof_chain(
     }
 
     Ok(prev_output.unwrap())
+}
+
+/// Get the kind of a serialized receipt
+pub fn get_receipt_kind(receipt_bytes: &[u8]) -> Result<crate::types::ReceiptKind, VerifierError> {
+    use risc0_zkvm::Receipt;
+
+    let receipt: Receipt = postcard::from_bytes(receipt_bytes)
+        .map_err(|e| VerifierError::DeserializationError(e.to_string()))?;
+
+    // Check the inner receipt type
+    match &receipt.inner {
+        risc0_zkvm::InnerReceipt::Composite(_) => Ok(crate::types::ReceiptKind::Composite),
+        risc0_zkvm::InnerReceipt::Succinct(_) => Ok(crate::types::ReceiptKind::Succinct),
+        risc0_zkvm::InnerReceipt::Groth16(_) => Ok(crate::types::ReceiptKind::Groth16),
+        _ => Ok(crate::types::ReceiptKind::Composite), // Default for unknown
+    }
 }
