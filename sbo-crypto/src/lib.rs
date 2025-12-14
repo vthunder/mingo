@@ -19,5 +19,11 @@ pub mod ed25519;
 #[cfg(feature = "bls")]
 pub mod bls;
 
+#[cfg(feature = "kzg")]
+pub mod kzg;
+
+#[cfg(feature = "kzg")]
+pub use kzg::{KzgCommitment, KzgProof, CellProof, KzgError};
+
 pub use error::CryptoError;
 pub use hash::{sha256, ContentHash, HashAlgo};

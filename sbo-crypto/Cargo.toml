@@ -11,6 +11,7 @@ std = ["alloc", "sha2/std", "ed25519-dalek?/std"]
 alloc = []
 ed25519 = ["dep:ed25519-dalek"]
 bls = ["dep:blst"]
+kzg = ["dep:blst"]
 
 [dependencies]
 sha2 = { version = "0.10", default-features = false }
