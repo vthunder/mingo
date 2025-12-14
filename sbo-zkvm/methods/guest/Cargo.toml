@@ -5,6 +5,24 @@ edition = "2021"
 
 [workspace]
 
+# Guest ID Injection for Recursive Verification
+# =============================================
+# This guest needs its own image ID (SBO_ZKVM_GUEST_ID) to verify recursive proofs
+# via env::verify(). However, this creates a circular dependency:
+#   - Guest needs the ID to build
+#   - ID is only available after guest is built
+#
+# Current solution: Use placeholder (all zeros) in guest code (see main.rs)
+# When running with RISC0_DEV_MODE=1, verification is skipped anyway.
+#
+# Future options for production:
+#   1. Two-stage build: build once, extract ID, rebuild with ID embedded
+#   2. Generated include file: methods build.rs writes ID to a file, guest includes it
+#   3. Build-time injection: Pass ID via environment variable to guest build
+#
+# Note: Adding sbo-zkvm-methods as a dependency here creates circular dependency
+# and will cause build failures. The placeholder approach is sufficient.
+
 [dependencies]
 risc0-zkvm = { version = "3.0", default-features = false }
 sbo-types = { path = "../../../sbo-types", default-features = false, features = ["alloc"] }
