@@ -16,6 +16,7 @@ const CF_BY_OWNER: &str = "by_owner";
 const CF_POLICIES: &str = "policies";
 const CF_NAMES: &str = "names";
 const CF_META: &str = "meta";
+const CF_STATE_ROOTS: &str = "state_roots";
 
 impl StateDb {
     /// Open or create the database at the given path
@@ -30,6 +31,7 @@ impl StateDb {
             rocksdb::ColumnFamilyDescriptor::new(CF_POLICIES, rocksdb::Options::default()),
             rocksdb::ColumnFamilyDescriptor::new(CF_NAMES, rocksdb::Options::default()),
             rocksdb::ColumnFamilyDescriptor::new(CF_META, rocksdb::Options::default()),
+            rocksdb::ColumnFamilyDescriptor::new(CF_STATE_ROOTS, rocksdb::Options::default()),
         ];
 
         let db = rocksdb::DB::open_cf_descriptors(&opts, path, cfs)
@@ -245,6 +247,55 @@ impl StateDb {
 
         self.db.delete_cf(&cf, pubkey.as_bytes())
             .map_err(|e| DbError::RocksDb(e.to_string()))
+    }
+
+    // ========== State Root Tracking ==========
+
+    /// Record the state root after processing a block
+    pub fn record_state_root(&self, block: u64, state_root: [u8; 32]) -> Result<(), DbError> {
+        let cf = self.db.cf_handle(CF_STATE_ROOTS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        self.db.put_cf(&cf, &block.to_be_bytes(), &state_root)
+            .map_err(|e| DbError::RocksDb(e.to_string()))
+    }
+
+    /// Get the state root at a specific block
+    pub fn get_state_root_at_block(&self, block: u64) -> Result<Option<[u8; 32]>, DbError> {
+        let cf = self.db.cf_handle(CF_STATE_ROOTS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        match self.db.get_cf(&cf, &block.to_be_bytes()) {
+            Ok(Some(bytes)) => {
+                let root: [u8; 32] = bytes.try_into()
+                    .map_err(|_| DbError::RocksDb("Invalid state root length".to_string()))?;
+                Ok(Some(root))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(DbError::RocksDb(e.to_string())),
+        }
+    }
+
+    /// Get the latest recorded state root and its block number
+    pub fn get_latest_state_root(&self) -> Result<Option<(u64, [u8; 32])>, DbError> {
+        let cf = self.db.cf_handle(CF_STATE_ROOTS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        // Iterate in reverse to find latest
+        let mut iter = self.db.raw_iterator_cf(&cf);
+        iter.seek_to_last();
+
+        if iter.valid() {
+            if let (Some(key), Some(value)) = (iter.key(), iter.value()) {
+                let block = u64::from_be_bytes(key.try_into()
+                    .map_err(|_| DbError::RocksDb("Invalid block key".to_string()))?);
+                let root: [u8; 32] = value.try_into()
+                    .map_err(|_| DbError::RocksDb("Invalid state root".to_string()))?;
+                return Ok(Some((block, root)));
+            }
+        }
+
+        Ok(None)
     }
 }
 
