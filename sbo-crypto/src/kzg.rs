@@ -172,3 +172,7 @@ pub fn verify_cell(
 
     verify_kzg_proof(row_commitment, &x, &y, &cell.proof)
 }
+
+#[cfg(test)]
+#[path = "kzg_tests.rs"]
+mod tests;

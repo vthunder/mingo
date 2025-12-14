@@ -129,3 +129,7 @@ pub fn compute_root(leaves: &[[u8; 32]]) -> [u8; 32] {
 
     current_level[0]
 }
+
+#[cfg(test)]
+#[path = "merkle_tests.rs"]
+mod tests;
