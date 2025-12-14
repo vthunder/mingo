@@ -9,9 +9,19 @@ pub mod prover;
 
 pub mod verifier;
 
-pub use types::{BlockProofInput, BlockProofOutput};
+pub use types::{
+    BlockProofInput, BlockProofOutput,
+    DataProof, CellProof, KzgCommitment, KzgProof
+};
 
 #[cfg(feature = "prove")]
-pub use prover::{prove_block, prove_genesis, prove_continuation, ProofReceipt, ProverError};
+pub use prover::{
+    prove_block, prove_genesis, prove_genesis_with_da,
+    prove_continuation, prove_continuation_with_da,
+    ProofReceipt, ProverError
+};
 
-pub use verifier::{verify_receipt, verify_block_proof, verify_proof_chain, VerifierError};
+pub use verifier::{
+    verify_receipt, verify_block_proof, verify_block_proof_with_da,
+    verify_proof_chain, VerifierError
+};
