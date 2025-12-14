@@ -11,6 +11,7 @@ pub mod turbo;
 pub mod sync;
 pub mod ipc;
 pub mod validate;
+pub mod prover;
 
 use thiserror::Error;
 
