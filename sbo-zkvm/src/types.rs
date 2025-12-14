@@ -2,6 +2,23 @@
 
 use serde::{Serialize, Deserialize};
 
+/// Kind of proof receipt (affects size and verification cost)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReceiptKind {
+    /// Composite STARK receipt (~MB, fast to generate)
+    Composite,
+    /// Succinct STARK receipt (~100KB, aggregated)
+    Succinct,
+    /// Groth16 SNARK receipt (~256 bytes, on-chain verifiable)
+    Groth16,
+}
+
+impl Default for ReceiptKind {
+    fn default() -> Self {
+        ReceiptKind::Composite
+    }
+}
+
 /// KZG commitment (48 bytes compressed G1)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KzgCommitment(pub [u8; 48]);
