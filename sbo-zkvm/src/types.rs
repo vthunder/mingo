@@ -160,9 +160,13 @@ pub struct BlockProofInput {
     /// Raw SBO actions data
     pub actions_data: Vec<u8>,
 
-    /// Previous proof's journal (for recursive verification)
+    /// Previous proof's journal (for chain verification)
     /// None for genesis proof
     pub prev_journal: Option<Vec<u8>>,
+
+    /// Previous proof's receipt bytes (for recursive verification)
+    /// None for genesis proof - passed via assumption mechanism
+    pub prev_receipt_bytes: Option<Vec<u8>>,
 
     // --- Data Availability fields ---
 
@@ -221,6 +225,7 @@ impl Default for BlockProofInput {
             parent_hash: [0u8; 32],
             actions_data: Vec::new(),
             prev_journal: None,
+            prev_receipt_bytes: None,
             data_proof: None,
             row_commitments: Vec::new(),
             cell_proofs: Vec::new(),
