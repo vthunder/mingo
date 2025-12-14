@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 use sbo_daemon::config::Config;
 use sbo_daemon::ipc::{IpcServer, Request, Response};
 use sbo_daemon::lc::LcManager;
+use sbo_daemon::prover::Prover;
 use sbo_daemon::repo::{RepoManager, SboUri};
 use sbo_daemon::rpc::RpcClient;
 use sbo_daemon::sync::SyncEngine;
@@ -214,9 +215,27 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
     // Start sync engine
     let state_for_sync = Arc::clone(&state);
     let verbose_for_sync = verbose.clone();
+    let prover_config = config.prover.clone();
+    let turbo_config = config.turbo_da.clone();
     let sync_handle = tokio::spawn(async move {
         // Give IPC server time to start
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Create prover if enabled
+        let mut prover = if prover_config.enabled {
+            tracing::info!(
+                "Prover mode enabled: batch_size={}, receipt_kind={}, dev_mode={}",
+                prover_config.batch_size,
+                prover_config.receipt_kind,
+                prover_config.dev_mode
+            );
+            Some(Prover::new(prover_config.clone()))
+        } else {
+            None
+        };
+
+        // Create TurboDA client for proof submission
+        let turbo = TurboDaClient::new(turbo_config);
 
         loop {
             // Get config with short lock
@@ -285,6 +304,56 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
                             // Only log if there was data or verbose blocks enabled
                             if tx_count > 0 || verbose_for_sync.blocks {
                                 tracing::info!("Processed block {} ({} transactions)", block_num, tx_count);
+                            }
+
+                            // Add block to prover if enabled
+                            if let Some(ref mut p) = prover {
+                                // Use placeholder state roots based on block number
+                                // Real implementation would get these from SyncEngine
+                                let pre_root = {
+                                    let mut r = [0u8; 32];
+                                    r[..8].copy_from_slice(&block_num.saturating_sub(1).to_le_bytes());
+                                    r
+                                };
+                                let post_root = {
+                                    let mut r = [0u8; 32];
+                                    r[..8].copy_from_slice(&block_num.to_le_bytes());
+                                    r
+                                };
+                                // Block data placeholder - real impl would capture tx data
+                                let block_data = block_num.to_le_bytes().to_vec();
+
+                                p.add_block(block_num, pre_root, post_root, block_data);
+
+                                // Check if we should generate and submit a proof
+                                if p.should_prove() {
+                                    if let Some(result) = p.generate_proof() {
+                                        let sbop_bytes = p.create_sbop_message(&result);
+                                        tracing::info!(
+                                            "Generated {} proof for blocks {}-{} ({} bytes)",
+                                            result.receipt_kind.as_str(),
+                                            result.from_block,
+                                            result.to_block,
+                                            sbop_bytes.len()
+                                        );
+
+                                        // Submit to Avail via TurboDA
+                                        match turbo.submit_proof(sbop_bytes).await {
+                                            Ok(tx_hash) => {
+                                                tracing::info!(
+                                                    "Submitted proof to Avail: {}",
+                                                    tx_hash
+                                                );
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Failed to submit proof: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         Err(e) => {

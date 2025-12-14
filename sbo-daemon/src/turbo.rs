@@ -85,6 +85,14 @@ impl TurboDaClient {
         Ok(result)
     }
 
+    /// Submit a proof (SBOP message) to Avail via TurboDA
+    /// Returns the submission ID on success
+    pub async fn submit_proof(&self, sbop_data: Vec<u8>) -> crate::Result<String> {
+        tracing::info!("Submitting SBOP proof ({} bytes) to TurboDA", sbop_data.len());
+        let result = self.submit_raw(&sbop_data).await?;
+        Ok(result.submission_id)
+    }
+
     /// Check submission status
     pub async fn get_submission_status(&self, submission_id: &str) -> crate::Result<serde_json::Value> {
         let api_key = self.config.api_key.as_ref().ok_or_else(|| {
