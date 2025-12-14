@@ -25,5 +25,8 @@ pub mod kzg;
 #[cfg(feature = "kzg")]
 pub use kzg::{KzgCommitment, KzgProof, CellProof, KzgError};
 
+pub mod merkle;
+pub use merkle::{DataProof, MerkleError, compute_root};
+
 pub use error::CryptoError;
 pub use hash::{sha256, ContentHash, HashAlgo};
