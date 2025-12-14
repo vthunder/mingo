@@ -8,6 +8,18 @@ use crate::repo::{Repo, RepoManager};
 use crate::rpc::RpcClient;
 use crate::validate::{validate_message, message_to_stored_object, ValidationResult};
 use sbo_core::state::StateDb;
+use sha2::{Sha256, Digest};
+
+/// Compute transition state root: sha256(prev_root || actions_data)
+///
+/// This is a simple transition commitment (commits to the sequence of changes).
+/// Phase 4 upgrades to merkle state root for object inclusion proofs.
+fn compute_transition_root(prev_root: [u8; 32], actions_data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(&prev_root);
+    hasher.update(actions_data);
+    hasher.finalize().into()
+}
 
 /// Synchronization engine
 pub struct SyncEngine {
@@ -196,6 +208,42 @@ impl SyncEngine {
 
         for path in paths_to_update {
             repos.update_head(&path, block_number)?;
+        }
+
+        // 6. Compute and record state root for each repo
+        // Collect unique URIs that were updated this block
+        let uris: std::collections::HashSet<_> = app_ids
+            .iter()
+            .flat_map(|&app_id| repos.get_by_app_id(app_id))
+            .map(|r| r.uri.to_string())
+            .collect();
+
+        for uri in uris {
+            if let Some(state_db) = self.state_dbs.get(&uri) {
+                // Get previous state root (zeros for genesis)
+                let prev_root = if block_number == 0 {
+                    [0u8; 32]
+                } else {
+                    state_db.get_state_root_at_block(block_number - 1)
+                        .map_err(|e| crate::DaemonError::State(format!("Failed to get prev state root: {}", e)))?
+                        .unwrap_or([0u8; 32])
+                };
+
+                // For transition root, we hash the raw block data we received
+                // In a full implementation, this would be the serialized valid actions
+                // For now, use block_number as a simple differentiator
+                let actions_data = block_number.to_le_bytes();
+                let new_root = compute_transition_root(prev_root, &actions_data);
+
+                if let Err(e) = state_db.record_state_root(block_number, new_root) {
+                    tracing::warn!("Failed to record state root for {}: {}", uri, e);
+                } else {
+                    tracing::debug!(
+                        "Recorded state root for {} at block {}: {}",
+                        uri, block_number, hex::encode(&new_root[..8])
+                    );
+                }
+            }
         }
 
         Ok(tx_count)
