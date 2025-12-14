@@ -41,6 +41,14 @@ enum Commands {
         /// Options: rpc, raw-incoming, blocks
         #[arg(long = "verbose", short = 'v', value_name = "COMPONENT")]
         verbose: Vec<String>,
+
+        /// Enable prover mode (generate ZK proofs for processed blocks)
+        #[arg(long)]
+        prover: bool,
+
+        /// Enable light mode (verify proofs instead of executing state transitions)
+        #[arg(long)]
+        light: bool,
     },
     /// Show daemon status
     Status,
@@ -119,11 +127,26 @@ async fn main() -> anyhow::Result<()> {
         Commands::Init => {
             init_config(&config_path, &config)?;
         }
-        Commands::Start { foreground, verbose } => {
+        Commands::Start { foreground, verbose, prover, light } => {
             if !foreground {
                 tracing::warn!("Daemonizing not yet implemented, running in foreground");
             }
+            if prover && light {
+                anyhow::bail!("Cannot enable both --prover and --light modes simultaneously");
+            }
             let verbose_flags = VerboseFlags::from_args(&verbose);
+
+            // Override config with CLI flags
+            let mut config = config;
+            if prover {
+                config.prover.enabled = true;
+                tracing::info!("Prover mode enabled via CLI flag");
+            }
+            if light {
+                config.light.enabled = true;
+                tracing::info!("Light mode enabled via CLI flag");
+            }
+
             run_daemon(config, verbose_flags).await?;
         }
         Commands::Status => {
