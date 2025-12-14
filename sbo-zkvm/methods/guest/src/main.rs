@@ -9,6 +9,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use risc0_zkvm::guest::env;
+use risc0_zkvm::sha::Digest;
 use serde::{Serialize, Deserialize};
 
 risc0_zkvm::guest::entry!(main);
@@ -49,6 +50,7 @@ pub struct BlockProofInput {
     pub parent_hash: [u8; 32],
     pub actions_data: Vec<u8>,
     pub prev_journal: Option<Vec<u8>>,
+    pub prev_receipt_bytes: Option<Vec<u8>>,
     pub data_proof: Option<DataProof>,
     pub row_commitments: Vec<KzgCommitment>,
     pub cell_proofs: Vec<CellProof>,
@@ -92,20 +94,44 @@ fn main() {
     env::commit(&output);
 }
 
-/// Verify header chain continuity
+/// Verify header chain continuity with recursive proof verification
 fn verify_header_chain(input: &BlockProofInput) {
     if input.block_number == 0 {
-        // Genesis block
+        // Genesis block - no previous proof to verify
         assert!(input.prev_journal.is_none(), "Genesis has no previous proof");
+        assert!(input.prev_receipt_bytes.is_none(), "Genesis has no previous receipt");
         assert_eq!(input.prev_state_root, [0u8; 32], "Genesis starts with empty state");
     } else {
-        // Continuation block
+        // Continuation block - verify previous proof recursively
         assert!(input.prev_journal.is_some(), "Non-genesis needs previous proof");
 
         let prev_journal = input.prev_journal.as_ref().unwrap();
+
+        // Cryptographically verify previous proof using RISC Zero composition
+        // This adds an "assumption" that must be resolved during proving
+        //
+        // TODO: For self-recursion, we need our own image ID (sbo_zkvm_methods::SBO_ZKVM_GUEST_ID)
+        // This creates a chicken-and-egg problem: the guest needs to be built to get the ID,
+        // but the ID is needed to build the guest. Solutions:
+        // 1. Two-stage build: build once, extract ID, rebuild with ID embedded
+        // 2. Include generated file: use include! macro to inject ID at build time
+        // 3. Accept ID as input: pass the image ID as part of BlockProofInput
+        //
+        // For now, we use a placeholder guest ID. This will be updated in a future task
+        // to use the actual generated ID through a proper build mechanism.
+        //
+        // Placeholder ID (will be replaced with actual sbo_zkvm_methods::SBO_ZKVM_GUEST_ID)
+        let guest_id_words: [u32; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
+        let guest_id = Digest::from(guest_id_words);
+
+        env::verify(guest_id, prev_journal)
+            .expect("Previous proof verification failed");
+
+        // Decode previous output for chain continuity checks
         let prev_output: BlockProofOutput = postcard::from_bytes(prev_journal)
             .expect("Invalid previous journal");
 
+        // Verify header chain continuity
         assert_eq!(input.parent_hash, prev_output.block_hash, "Parent hash mismatch");
         assert_eq!(input.block_number, prev_output.block_number + 1, "Block number mismatch");
         assert_eq!(input.prev_state_root, prev_output.new_state_root, "State root mismatch");
