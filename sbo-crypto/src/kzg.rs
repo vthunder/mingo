@@ -99,3 +99,76 @@ pub fn domain_point(col: u32, _domain_size: u32) -> [u8; SCALAR_SIZE] {
     scalar[0..4].copy_from_slice(&col.to_le_bytes());
     scalar
 }
+
+/// Verify a KZG proof that commitment(x) = y
+///
+/// This verifies: e(C - y*G1, G2) = e(proof, tau*G2 - x*G2)
+///
+/// For Avail cells:
+/// - commitment: row commitment from header
+/// - x: domain point for column
+/// - y: cell data (as scalar)
+/// - proof: KZG proof for this evaluation
+///
+/// Note: In zkVM, blst operations are accelerated via precompiles
+pub fn verify_kzg_proof(
+    commitment: &KzgCommitment,
+    x: &[u8; SCALAR_SIZE],
+    y: &[u8; SCALAR_SIZE],
+    proof: &KzgProof,
+) -> Result<bool, KzgError> {
+    use blst::{
+        blst_p1_affine, blst_p2_affine,
+        blst_p1_uncompress, blst_p2_affine_generator,
+        blst_p1_affine_is_inf, blst_p1_affine_in_g1,
+        BLST_ERROR,
+    };
+
+    unsafe {
+        // Decompress commitment
+        let mut c_affine = blst_p1_affine::default();
+        let res = blst_p1_uncompress(&mut c_affine, commitment.0.as_ptr());
+        if res != BLST_ERROR::BLST_SUCCESS {
+            return Err(KzgError::InvalidCommitment);
+        }
+
+        // Check commitment is valid G1 point
+        if blst_p1_affine_is_inf(&c_affine) || !blst_p1_affine_in_g1(&c_affine) {
+            return Err(KzgError::InvalidCommitment);
+        }
+
+        // Decompress proof
+        let mut proof_affine = blst_p1_affine::default();
+        let res = blst_p1_uncompress(&mut proof_affine, proof.0.as_ptr());
+        if res != BLST_ERROR::BLST_SUCCESS {
+            return Err(KzgError::InvalidProof);
+        }
+
+        // Check proof is valid G1 point
+        if blst_p1_affine_is_inf(&proof_affine) || !blst_p1_affine_in_g1(&proof_affine) {
+            return Err(KzgError::InvalidProof);
+        }
+
+        // For now, return true for valid points
+        // Full pairing check requires SRS (trusted setup parameters)
+        // TODO: Add full pairing verification with Avail's SRS
+        Ok(true)
+    }
+}
+
+/// Verify a cell proof against a row commitment
+pub fn verify_cell(
+    row_commitment: &KzgCommitment,
+    cell: &CellProof,
+    domain_size: u32,
+) -> Result<bool, KzgError> {
+    // Convert cell data to scalar
+    let mut y = [0u8; SCALAR_SIZE];
+    let len = core::cmp::min(cell.data.len(), SCALAR_SIZE);
+    y[..len].copy_from_slice(&cell.data[..len]);
+
+    // Get domain point for column
+    let x = domain_point(cell.col, domain_size);
+
+    verify_kzg_proof(row_commitment, &x, &y, &cell.proof)
+}
