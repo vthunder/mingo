@@ -232,3 +232,48 @@ pub fn prove_chain(
 
     Ok(current_receipt)
 }
+
+/// Compress a receipt to a more compact form
+///
+/// Compression levels:
+/// - Composite → Succinct: Aggregates segments
+/// - Succinct → Groth16: STARK-to-SNARK (requires Docker)
+///
+/// If already at requested level or more compressed, returns unchanged.
+#[cfg(feature = "prove")]
+pub fn compress_receipt(
+    receipt: &ProofReceipt,
+    target_kind: crate::types::ReceiptKind,
+) -> Result<ProofReceipt, ProverError> {
+    use risc0_zkvm::{default_prover, ProverOpts, Receipt};
+
+    // Deserialize the receipt
+    let r0_receipt: Receipt = postcard::from_bytes(&receipt.receipt_bytes)
+        .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+
+    // Determine target opts
+    let opts = match target_kind {
+        crate::types::ReceiptKind::Composite => {
+            // Already composite, nothing to do
+            return Ok(receipt.clone());
+        }
+        crate::types::ReceiptKind::Succinct => ProverOpts::succinct(),
+        crate::types::ReceiptKind::Groth16 => ProverOpts::groth16(),
+    };
+
+    // Compress using the prover
+    let prover = default_prover();
+    let compressed = prover
+        .compress(&opts, &r0_receipt)
+        .map_err(|e| ProverError::ProofFailed(format!("Compression failed: {}", e)))?;
+
+    // Serialize compressed receipt
+    let receipt_bytes = postcard::to_allocvec(&compressed)
+        .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+
+    Ok(ProofReceipt {
+        journal: receipt.journal.clone(),
+        receipt_bytes,
+        kind: target_kind,
+    })
+}
