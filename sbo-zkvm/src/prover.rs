@@ -25,15 +25,27 @@ pub struct ProofReceipt {
     pub receipt_bytes: Vec<u8>,
 }
 
-/// Generate a proof for a block
+/// Generate a proof for a block with optional recursive verification
 #[cfg(feature = "prove")]
-pub fn prove_block(input: BlockProofInput) -> Result<ProofReceipt, ProverError> {
-    use risc0_zkvm::{default_prover, ExecutorEnv};
+pub fn prove_block(input: BlockProofInput, prev_receipt: Option<&[u8]>) -> Result<ProofReceipt, ProverError> {
+    use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
 
     // Build executor environment
-    let env = ExecutorEnv::builder()
+    let mut env_builder = ExecutorEnv::builder();
+
+    // Write input
+    env_builder
         .write(&input)
-        .map_err(|e| ProverError::SerializationError(e.to_string()))?
+        .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+
+    // Add assumption for previous receipt (if continuation block)
+    if let Some(receipt_bytes) = prev_receipt {
+        let prev_receipt: Receipt = postcard::from_bytes(receipt_bytes)
+            .map_err(|e| ProverError::SerializationError(format!("Invalid previous receipt: {}", e)))?;
+        env_builder.add_assumption(prev_receipt);
+    }
+
+    let env = env_builder
         .build()
         .map_err(|e| ProverError::ProofFailed(e.to_string()))?;
 
@@ -60,7 +72,7 @@ pub fn prove_block(input: BlockProofInput) -> Result<ProofReceipt, ProverError> 
     })
 }
 
-/// Generate genesis proof (block 0) without DA
+/// Generate genesis proof (block 0) - no recursion needed
 #[cfg(feature = "prove")]
 pub fn prove_genesis(
     block_hash: [u8; 32],
@@ -73,16 +85,17 @@ pub fn prove_genesis(
         parent_hash: [0u8; 32],
         actions_data: genesis_actions,
         prev_journal: None,
+        prev_receipt_bytes: None,
         data_proof: None,
         row_commitments: Vec::new(),
         cell_proofs: Vec::new(),
         grid_cols: 256,
     };
 
-    prove_block(input)
+    prove_block(input, None)
 }
 
-/// Generate genesis proof with DA verification
+/// Generate genesis proof with DA verification - no recursion needed
 #[cfg(feature = "prove")]
 pub fn prove_genesis_with_da(
     block_hash: [u8; 32],
@@ -99,25 +112,32 @@ pub fn prove_genesis_with_da(
         parent_hash: [0u8; 32],
         actions_data: genesis_actions,
         prev_journal: None,
+        prev_receipt_bytes: None,
         data_proof: Some(data_proof),
         row_commitments,
         cell_proofs,
         grid_cols,
     };
 
-    prove_block(input)
+    prove_block(input, None)
 }
 
-/// Generate continuation proof (block N > 0)
+/// Generate continuation proof (block N > 0) with recursive verification
 #[cfg(feature = "prove")]
 pub fn prove_continuation(
-    prev_journal: Vec<u8>,
+    prev_receipt_bytes: &[u8],
     block_number: u64,
     block_hash: [u8; 32],
     parent_hash: [u8; 32],
     actions_data: Vec<u8>,
 ) -> Result<ProofReceipt, ProverError> {
-    // Decode previous output to get state root
+    use risc0_zkvm::Receipt;
+
+    // Decode previous receipt to get journal
+    let prev_receipt: Receipt = postcard::from_bytes(prev_receipt_bytes)
+        .map_err(|e| ProverError::SerializationError(format!("Invalid previous receipt: {}", e)))?;
+
+    let prev_journal = prev_receipt.journal.bytes.clone();
     let prev_output: BlockProofOutput = postcard::from_bytes(&prev_journal)
         .map_err(|e| ProverError::SerializationError(e.to_string()))?;
 
@@ -128,19 +148,20 @@ pub fn prove_continuation(
         parent_hash,
         actions_data,
         prev_journal: Some(prev_journal),
+        prev_receipt_bytes: Some(prev_receipt_bytes.to_vec()),
         data_proof: None,
         row_commitments: Vec::new(),
         cell_proofs: Vec::new(),
         grid_cols: 256,
     };
 
-    prove_block(input)
+    prove_block(input, Some(prev_receipt_bytes))
 }
 
-/// Generate continuation proof with DA verification
+/// Generate continuation proof with DA verification and recursive verification
 #[cfg(feature = "prove")]
 pub fn prove_continuation_with_da(
-    prev_journal: Vec<u8>,
+    prev_receipt_bytes: &[u8],
     block_number: u64,
     block_hash: [u8; 32],
     parent_hash: [u8; 32],
@@ -150,6 +171,13 @@ pub fn prove_continuation_with_da(
     cell_proofs: Vec<CellProof>,
     grid_cols: u32,
 ) -> Result<ProofReceipt, ProverError> {
+    use risc0_zkvm::Receipt;
+
+    // Decode previous receipt to get journal
+    let prev_receipt: Receipt = postcard::from_bytes(prev_receipt_bytes)
+        .map_err(|e| ProverError::SerializationError(format!("Invalid previous receipt: {}", e)))?;
+
+    let prev_journal = prev_receipt.journal.bytes.clone();
     let prev_output: BlockProofOutput = postcard::from_bytes(&prev_journal)
         .map_err(|e| ProverError::SerializationError(e.to_string()))?;
 
@@ -160,11 +188,12 @@ pub fn prove_continuation_with_da(
         parent_hash,
         actions_data,
         prev_journal: Some(prev_journal),
+        prev_receipt_bytes: Some(prev_receipt_bytes.to_vec()),
         data_proof: Some(data_proof),
         row_commitments,
         cell_proofs,
         grid_cols,
     };
 
-    prove_block(input)
+    prove_block(input, Some(prev_receipt_bytes))
 }
