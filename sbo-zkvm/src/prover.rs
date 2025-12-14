@@ -277,3 +277,58 @@ pub fn compress_receipt(
         kind: target_kind,
     })
 }
+
+/// Generate a Groth16 proof directly (skips intermediate STARK)
+///
+/// This is more efficient than prove_block + compress when you know
+/// you want a Groth16 proof. Requires Docker.
+#[cfg(feature = "prove")]
+pub fn prove_block_groth16(
+    input: BlockProofInput,
+    prev_receipt: Option<&[u8]>,
+) -> Result<ProofReceipt, ProverError> {
+    use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, Receipt};
+
+    // Build executor environment
+    let mut env_builder = ExecutorEnv::builder();
+
+    // Write input
+    env_builder
+        .write(&input)
+        .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+
+    // Add assumption for previous receipt (if continuation block)
+    if let Some(receipt_bytes) = prev_receipt {
+        let prev_receipt: Receipt = postcard::from_bytes(receipt_bytes)
+            .map_err(|e| ProverError::SerializationError(format!("Invalid previous receipt: {}", e)))?;
+        env_builder.add_assumption(prev_receipt);
+    }
+
+    let env = env_builder
+        .build()
+        .map_err(|e| ProverError::ProofFailed(e.to_string()))?;
+
+    // Get prover and generate Groth16 proof directly
+    let prover = default_prover();
+    let prove_info = prover
+        .prove_with_opts(env, SBO_ZKVM_GUEST_ELF, &ProverOpts::groth16())
+        .map_err(|e| ProverError::ProofFailed(e.to_string()))?;
+
+    let receipt = prove_info.receipt;
+
+    // Decode journal
+    let journal: BlockProofOutput = receipt
+        .journal
+        .decode()
+        .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+
+    // Serialize receipt
+    let receipt_bytes = postcard::to_allocvec(&receipt)
+        .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+
+    Ok(ProofReceipt {
+        journal,
+        receipt_bytes,
+        kind: crate::types::ReceiptKind::Groth16,
+    })
+}
