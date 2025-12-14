@@ -12,6 +12,10 @@ pub struct Config {
     pub turbo_da: TurboDaConfig,
     #[serde(default)]
     pub alerts: AlertsConfig,
+    #[serde(default)]
+    pub prover: ProverConfig,
+    #[serde(default)]
+    pub light: LightModeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +54,63 @@ pub struct AlertsConfig {
     pub webhook_url: Option<String>,
 }
 
+/// Prover configuration for ZK proof generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProverConfig {
+    /// Enable prover mode (also via --prover flag)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Blocks per proof batch (1 = every block)
+    #[serde(default = "default_batch_size")]
+    pub batch_size: u64,
+
+    /// Receipt kind: composite, succinct, groth16
+    #[serde(default = "default_receipt_kind")]
+    pub receipt_kind: String,
+
+    /// Use RISC0_DEV_MODE for testing (fake proofs)
+    #[serde(default)]
+    pub dev_mode: bool,
+}
+
+fn default_batch_size() -> u64 { 1 }
+fn default_receipt_kind() -> String { "composite".to_string() }
+
+impl Default for ProverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            batch_size: default_batch_size(),
+            receipt_kind: default_receipt_kind(),
+            dev_mode: false,
+        }
+    }
+}
+
+/// Light client mode configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightModeConfig {
+    /// Enable light client mode (also via --light flag)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Verify object proofs when requested
+    #[serde(default = "default_true")]
+    pub verify_objects: bool,
+}
+
+fn default_true() -> bool { true }
+
+impl Default for LightModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            verify_objects: true,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         let sbo_dir = dirs::home_dir()
@@ -80,6 +141,8 @@ impl Default for Config {
                 app_id: None,
             },
             alerts: AlertsConfig::default(),
+            prover: ProverConfig::default(),
+            light: LightModeConfig::default(),
         }
     }
 }
