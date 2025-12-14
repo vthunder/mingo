@@ -17,6 +17,7 @@ pub mod policy;
 pub mod state;
 pub mod error;
 pub mod presets;
+pub mod proof;
 
 mod genesis;
 mod indexer;
@@ -24,6 +25,7 @@ mod indexer;
 pub use error::SboError;
 pub use genesis::Genesis;
 pub use indexer::Indexer;
+pub use proof::{SbopMessage, parse_sbop, serialize_sbop, is_sbop_message, SbopError};
 
 // Re-export types from sbo-types
 pub use sbo_types::id::Id;
