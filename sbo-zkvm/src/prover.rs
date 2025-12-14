@@ -197,3 +197,33 @@ pub fn prove_continuation_with_da(
 
     prove_block(input, Some(prev_receipt_bytes))
 }
+
+/// Prove an entire chain of blocks from genesis
+///
+/// Takes a list of (block_hash, parent_hash, actions) tuples.
+/// Returns the final receipt that proves the entire chain.
+#[cfg(feature = "prove")]
+pub fn prove_chain(
+    blocks: Vec<([u8; 32], [u8; 32], Vec<u8>)>,
+) -> Result<ProofReceipt, ProverError> {
+    if blocks.is_empty() {
+        return Err(ProverError::InvalidInput("Empty block list".to_string()));
+    }
+
+    // Prove genesis
+    let (genesis_hash, _, genesis_actions) = &blocks[0];
+    let mut current_receipt = prove_genesis(*genesis_hash, genesis_actions.clone())?;
+
+    // Prove each continuation block
+    for (i, (block_hash, parent_hash, actions)) in blocks.iter().enumerate().skip(1) {
+        current_receipt = prove_continuation(
+            &current_receipt.receipt_bytes,
+            i as u64,
+            *block_hash,
+            *parent_hash,
+            actions.clone(),
+        )?;
+    }
+
+    Ok(current_receipt)
+}

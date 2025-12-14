@@ -18,6 +18,7 @@ pub use types::{
 pub use prover::{
     prove_block, prove_genesis, prove_genesis_with_da,
     prove_continuation, prove_continuation_with_da,
+    prove_chain,
     ProofReceipt, ProverError
 };
 
