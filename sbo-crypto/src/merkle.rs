@@ -7,6 +7,20 @@ extern crate alloc;
 use alloc::vec::Vec;
 use crate::sha256;
 
+/// Calculate ceil(log2(n)) without floating point
+fn log2_ceil(n: u32) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let mut bits = 32 - n.leading_zeros() as usize;
+    // If n is not a power of 2, we need one more level
+    if n & (n - 1) != 0 {
+        bits
+    } else {
+        bits - 1
+    }
+}
+
 /// Merkle proof for data inclusion
 #[derive(Debug, Clone)]
 pub struct DataProof {
@@ -51,7 +65,7 @@ impl DataProof {
             return Err(MerkleError::InvalidLeafIndex);
         }
 
-        let expected_depth = (self.number_of_leaves as f64).log2().ceil() as usize;
+        let expected_depth = log2_ceil(self.number_of_leaves);
         if self.proof.len() != expected_depth {
             return Err(MerkleError::InvalidProofLength);
         }
