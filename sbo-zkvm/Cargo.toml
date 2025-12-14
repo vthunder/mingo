@@ -1,0 +1,24 @@
+[package]
+name = "sbo-zkvm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SBO ZK validity proof generation and verification"
+
+[dependencies]
+sbo-zkvm-methods = { path = "methods" }
+sbo-types = { path = "../sbo-types", features = ["serde"] }
+sbo-crypto = { path = "../sbo-crypto" }
+risc0-zkvm = { version = "3.0", default-features = false, features = ["client"] }
+serde = { version = "1", features = ["derive"] }
+hex = "0.4"
+thiserror = "2"
+postcard = "1"
+
+[dev-dependencies]
+risc0-zkvm = { version = "3.0", features = ["prove"] }
+
+[features]
+default = []
+prove = ["risc0-zkvm/prove"]
+cuda = ["risc0-zkvm/cuda"]

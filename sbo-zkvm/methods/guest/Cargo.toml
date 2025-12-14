@@ -1,0 +1,13 @@
+[package]
+name = "sbo-zkvm-guest"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+risc0-zkvm = { version = "3.0", default-features = false }
+sbo-types = { path = "../../../sbo-types", default-features = false, features = ["alloc"] }
+sbo-crypto = { path = "../../../sbo-crypto", default-features = false, features = ["alloc", "ed25519"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
