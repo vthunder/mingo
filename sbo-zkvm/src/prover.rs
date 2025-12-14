@@ -17,12 +17,16 @@ pub enum ProverError {
 }
 
 /// Receipt containing proof and journal
+#[derive(Clone)]
 pub struct ProofReceipt {
     /// The verified output (journal)
     pub journal: BlockProofOutput,
 
     /// Raw receipt bytes (for transmission)
     pub receipt_bytes: Vec<u8>,
+
+    /// Kind of receipt (affects size)
+    pub kind: crate::types::ReceiptKind,
 }
 
 /// Generate a proof for a block with optional recursive verification
@@ -69,6 +73,7 @@ pub fn prove_block(input: BlockProofInput, prev_receipt: Option<&[u8]>) -> Resul
     Ok(ProofReceipt {
         journal,
         receipt_bytes,
+        kind: crate::types::ReceiptKind::Composite,
     })
 }
 
