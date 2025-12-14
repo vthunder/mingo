@@ -62,6 +62,24 @@ pub fn verify_block_proof(
     Ok(output)
 }
 
+/// Verify proof matches expected block and data root (DA anchored)
+pub fn verify_block_proof_with_da(
+    receipt_bytes: &[u8],
+    expected_block_number: u64,
+    expected_block_hash: [u8; 32],
+    expected_data_root: [u8; 32],
+) -> Result<BlockProofOutput, VerifierError> {
+    let output = verify_block_proof(receipt_bytes, expected_block_number, expected_block_hash)?;
+
+    if output.data_root != expected_data_root {
+        return Err(VerifierError::InvalidProof(
+            "Data root mismatch".to_string()
+        ));
+    }
+
+    Ok(output)
+}
+
 /// Verify a chain of proofs
 pub fn verify_proof_chain(
     receipts: &[Vec<u8>],
