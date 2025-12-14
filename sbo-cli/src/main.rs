@@ -106,13 +106,36 @@ enum Commands {
     /// Daemon management
     #[command(subcommand)]
     Daemon(DaemonCommands),
+
+    /// Proof operations
+    #[command(subcommand)]
+    Proof(ProofCommands),
+}
+
+#[derive(Subcommand)]
+enum ProofCommands {
+    /// Generate a trie proof for an object (SBOQ format)
+    ///
+    /// Examples:
+    ///   sbo proof generate ./my-repo/sys/names/alice
+    ///   sbo proof generate /home/user/repos/nft-collection/tokens/123
+    Generate {
+        /// Full path to object: <repo-mount>/<sbo-path>/<object-id>
+        /// e.g., ./my-repo/sys/names/alice
+        object_path: String,
+    },
+    /// Verify a trie proof (SBOQ message)
+    Verify {
+        /// Path to SBOQ file, or - for stdin
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
 enum RepoCommands {
     /// Add a repository to follow
     Add {
-        /// SBO URI (e.g., sbo://Avail:13/)
+        /// SBO URI (e.g., sbo://avail:turing:13/)
         uri: String,
         /// Local path to sync to
         path: PathBuf,
@@ -122,8 +145,8 @@ enum RepoCommands {
     },
     /// Remove a repository
     Remove {
-        /// Local path of the repo
-        path: PathBuf,
+        /// Local path or SBO URI of the repo to remove
+        target: String,
     },
     /// List followed repositories
     List,
@@ -310,9 +333,16 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                RepoCommands::Remove { path } => {
-                    let path = canonicalize_path(&path)?;
-                    match client.request(Request::RepoRemove { path }).await {
+                RepoCommands::Remove { target } => {
+                    // Detect if target is a URI or a path
+                    let request = if target.starts_with("sbo://") {
+                        Request::RepoRemoveByUri { uri: target }
+                    } else {
+                        let path = canonicalize_path(&PathBuf::from(&target))?;
+                        Request::RepoRemove { path }
+                    };
+
+                    match client.request(request).await {
                         Ok(Response::Ok { data }) => {
                             println!("Removed: {}", data["removed"].as_str().unwrap_or("?"));
                         }
@@ -430,6 +460,190 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Commands::Proof(proof_cmd) => {
+            let config = Config::load(&Config::config_path()).unwrap_or_default();
+            let client = IpcClient::new(config.daemon.socket_path);
+
+            match proof_cmd {
+                ProofCommands::Generate { object_path } => {
+                    // Parse the unified path like ./my-repo/sys/names/alice
+                    // Find which repo contains this path and extract the SBO path + id
+                    let (repo_path, sbo_path, id) = match parse_object_path(&object_path, &client).await {
+                        Ok(parsed) => parsed,
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            return Ok(());
+                        }
+                    };
+
+                    match client.request(Request::ObjectProof {
+                        repo_path,
+                        path: sbo_path,
+                        id,
+                    }).await {
+                        Ok(Response::Ok { data }) => {
+                            // Print the SBOQ message
+                            if let Some(sboq) = data["sboq"].as_str() {
+                                println!("{}", sboq);
+                            } else {
+                                println!("{}", serde_json::to_string_pretty(&data)?);
+                            }
+                        }
+                        Ok(Response::Error { message }) => {
+                            eprintln!("Error: {}", message);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to connect to daemon: {}", e);
+                        }
+                    }
+                }
+                ProofCommands::Verify { file } => {
+                    // Read the SBOQ file
+                    let contents = if file.to_string_lossy() == "-" {
+                        use std::io::Read;
+                        let mut buf = Vec::new();
+                        std::io::stdin().read_to_end(&mut buf)?;
+                        buf
+                    } else {
+                        std::fs::read(&file)?
+                    };
+
+                    // Parse and verify the proof
+                    match sbo_core::proof::parse_sboq(&contents) {
+                        Ok(sboq) => {
+                            // Verify the trie proof
+                            let trie_valid = match sbo_crypto::verify_trie_proof(&sboq.trie_proof) {
+                                Ok(true) => true,
+                                Ok(false) | Err(_) => false,
+                            };
+
+                            // If embedded object is present, verify it matches the object_hash
+                            let object_valid = if let Some(ref obj_bytes) = sboq.object {
+                                // Compute object_hash = sha256(raw_sbo_bytes)
+                                let computed_hash = sbo_crypto::hash::sha256(obj_bytes);
+
+                                if let Some(expected_hash) = sboq.object_hash {
+                                    if computed_hash == expected_hash {
+                                        Some(true)
+                                    } else {
+                                        eprintln!("Object verification FAILED: hash mismatch");
+                                        eprintln!("  Expected: {}", hex::encode(expected_hash));
+                                        eprintln!("  Computed: {}", hex::encode(computed_hash));
+                                        Some(false)
+                                    }
+                                } else {
+                                    // Non-existence proof shouldn't have an object
+                                    eprintln!("Object verification FAILED: object present but proof claims non-existence");
+                                    Some(false)
+                                }
+                            } else {
+                                None // No embedded object - trie proof only
+                            };
+
+                            // Try to verify block → state_root mapping against historical records
+                            let block_verified = {
+                                let data_dir = std::env::var("HOME").ok()
+                                    .map(|h| std::path::PathBuf::from(h).join(".sbo").join("repos"));
+
+                                if let Some(repos_dir) = data_dir {
+                                    if repos_dir.exists() {
+                                        let mut found_match = false;
+                                        let mut checked_any = false;
+                                        let mut block_in_future = false;
+
+                                        if let Ok(entries) = std::fs::read_dir(&repos_dir) {
+                                            for entry in entries.flatten() {
+                                                let state_path = entry.path().join("state");
+                                                if state_path.exists() {
+                                                    if let Ok(state_db) = sbo_core::state::StateDb::open(&state_path) {
+                                                        checked_any = true;
+
+                                                        // First check: is the claimed block in the future?
+                                                        if let Ok(Some(last_block)) = state_db.get_last_block() {
+                                                            if sboq.block > last_block {
+                                                                block_in_future = true;
+                                                                continue; // Try other repos
+                                                            }
+                                                        }
+
+                                                        // Get the state root at or before the claimed block
+                                                        if let Ok(Some((_recorded_block, stored_root))) = state_db.get_state_root_at_or_before(sboq.block) {
+                                                            if stored_root == sboq.state_root {
+                                                                found_match = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if found_match {
+                                            Some(true)
+                                        } else if block_in_future && !found_match {
+                                            Some(false)
+                                        } else if checked_any {
+                                            Some(false)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            };
+
+                            let is_existence_proof = sboq.object_hash.is_some();
+
+                            if trie_valid && object_valid != Some(false) && block_verified != Some(false) {
+                                println!("Proof VALID");
+                                println!("  Type:       {}", if is_existence_proof { "inclusion" } else { "non-existence" });
+                                println!("  Path:       {}", sboq.path);
+                                println!("  ID:         {}", sboq.id);
+                                println!("  Creator:    {}", sboq.creator);
+                                println!("  Block:      {}", sboq.block);
+                                println!("  State Root: {}", hex::encode(sboq.state_root));
+                                if let Some(obj_hash) = sboq.object_hash {
+                                    println!("  Object Hash: {}", hex::encode(obj_hash));
+                                } else {
+                                    println!("  Object Hash: null (non-existence)");
+                                }
+                                if sboq.object.is_some() {
+                                    if object_valid == Some(true) {
+                                        println!("  Object:     verified (hash matches)");
+                                    } else {
+                                        println!("  Object:     present (could not verify)");
+                                    }
+                                } else {
+                                    println!("  Object:     not included");
+                                }
+                                match block_verified {
+                                    Some(true) => println!("  Block:      verified (state root matches history)"),
+                                    Some(false) => {} // Won't reach here due to condition above
+                                    None => println!("  Block:      unverified (no local state history)"),
+                                }
+                            } else if !trie_valid {
+                                eprintln!("Proof INVALID: trie verification failed");
+                                std::process::exit(1);
+                            } else if block_verified == Some(false) {
+                                eprintln!("Proof INVALID: state root does not match history for block {}", sboq.block);
+                                eprintln!("  Declared: {}", hex::encode(sboq.state_root));
+                                std::process::exit(1);
+                            } else {
+                                eprintln!("Proof INVALID: object verification failed");
+                                std::process::exit(1);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to parse SBOQ: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -447,4 +661,121 @@ fn canonicalize_path(path: &PathBuf) -> anyhow::Result<PathBuf> {
         };
         Ok(abs)
     }
+}
+
+/// Normalize a path by resolving . and .. without requiring the path to exist
+fn normalize_path(path: &PathBuf) -> PathBuf {
+    use std::path::Component;
+
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {
+                // Skip current directory markers
+            }
+            _ => {
+                result.push(component);
+            }
+        }
+    }
+    result
+}
+
+/// Parse a unified object path like ./my-repo/sys/names/alice
+/// Returns (repo_path, sbo_path, object_id)
+async fn parse_object_path(
+    object_path: &str,
+    client: &IpcClient,
+) -> anyhow::Result<(PathBuf, String, String)> {
+    // Make the path absolute and clean (resolve . and ..)
+    let full_path = if object_path.starts_with('/') {
+        PathBuf::from(object_path)
+    } else {
+        std::env::current_dir()?.join(object_path)
+    };
+
+    // Normalize the path (resolve . and .. without requiring it to exist)
+    let full_path = normalize_path(&full_path);
+
+    // Query daemon for list of repos
+    let repos = match client.request(Request::RepoList).await {
+        Ok(Response::Ok { data }) => {
+            data.as_array()
+                .map(|arr| arr.iter()
+                    .filter_map(|r| {
+                        let path = r["path"].as_str()?.to_string();
+                        Some(PathBuf::from(path))
+                    })
+                    .collect::<Vec<_>>())
+                .unwrap_or_default()
+        }
+        Ok(Response::Error { message }) => {
+            return Err(anyhow::anyhow!("Failed to list repos: {}", message));
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to connect to daemon: {}", e));
+        }
+    };
+
+    if repos.is_empty() {
+        return Err(anyhow::anyhow!("No repos found. Add a repo first with: sbo repo add <uri> <path>"));
+    }
+
+    // Find which repo contains this path (longest prefix match)
+    let full_path_str = full_path.to_string_lossy();
+    let mut best_match: Option<(PathBuf, usize)> = None;
+
+    for repo_path in &repos {
+        let repo_str = repo_path.to_string_lossy();
+        if full_path_str.starts_with(repo_str.as_ref()) {
+            let len = repo_str.len();
+            if best_match.is_none() || len > best_match.as_ref().unwrap().1 {
+                best_match = Some((repo_path.clone(), len));
+            }
+        }
+    }
+
+    let repo_path = match best_match {
+        Some((path, _)) => path,
+        None => {
+            return Err(anyhow::anyhow!(
+                "Path '{}' is not inside any known repo. Known repos:\n{}",
+                object_path,
+                repos.iter().map(|p| format!("  {}", p.display())).collect::<Vec<_>>().join("\n")
+            ));
+        }
+    };
+
+    // Extract the SBO path portion (everything after repo_path)
+    let repo_str = repo_path.to_string_lossy();
+    let remainder = &full_path_str[repo_str.len()..];
+
+    // Parse the remainder as /sbo/path/object_id
+    // e.g., /sys/names/alice -> path=/sys/names/, id=alice
+    let remainder = remainder.trim_start_matches('/');
+    if remainder.is_empty() {
+        return Err(anyhow::anyhow!("Missing SBO path and object ID after repo path"));
+    }
+
+    // Split into path components
+    let parts: Vec<&str> = remainder.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return Err(anyhow::anyhow!("Missing SBO path and object ID"));
+    }
+    if parts.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "Need at least a path and object ID. Got: /{}",
+            parts.join("/")
+        ));
+    }
+
+    // Last component is the object ID
+    let id = parts[parts.len() - 1].to_string();
+    // Everything before is the path (with trailing slash)
+    let sbo_path = format!("/{}/", parts[..parts.len() - 1].join("/"));
+
+    Ok((repo_path, sbo_path, id))
 }

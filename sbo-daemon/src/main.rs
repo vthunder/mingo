@@ -217,6 +217,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
     let verbose_for_sync = verbose.clone();
     let prover_config = config.prover.clone();
     let turbo_config = config.turbo_da.clone();
+    let light_mode = config.light.enabled;
     let sync_handle = tokio::spawn(async move {
         // Give IPC server time to start
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -274,6 +275,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
                 LcManager::new(lc_config),
                 RpcClient::new(rpc_config, verbose_for_sync.rpc),
                 verbose_for_sync.raw_incoming,
+                light_mode,
             );
 
             // Get repo info with read lock
@@ -443,6 +445,16 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             }
         }
 
+        Request::RepoRemoveByUri { uri } => {
+            let mut state = state.write().await;
+            match state.repos.remove_by_uri(&uri) {
+                Ok(repo) => Response::ok(serde_json::json!({
+                    "removed": repo.uri.to_string(),
+                })),
+                Err(e) => Response::error(e.to_string()),
+            }
+        }
+
         Request::RepoList => {
             let state = state.read().await;
             let repos: Vec<_> = state
@@ -510,6 +522,81 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                     "app_id": repo.uri.app_id,
                 })),
                 Err(e) => Response::error(e.to_string()),
+            }
+        }
+
+        Request::GetObject { repo_path: _, path, id, with_proof: _ } => {
+            // TODO: Implement GetObject with proof support
+            Response::error(format!("GetObject not yet implemented for {}:{}", path, id))
+        }
+
+        Request::ObjectProof { repo_path, path, id } => {
+            let state = state.read().await;
+
+            // Find the repo
+            let repo = match state.repos.get_by_path(&repo_path) {
+                Some(r) => r,
+                None => return Response::error(format!("No repo at path: {}", repo_path.display())),
+            };
+
+            // Get state db for this repo
+            let state_db = match repo.state_db() {
+                Ok(db) => db,
+                Err(e) => return Response::error(format!("Failed to open state db: {}", e)),
+            };
+
+            // Parse path and id
+            let sbo_path = match sbo_core::message::Path::parse(&path) {
+                Ok(p) => p,
+                Err(e) => return Response::error(format!("Invalid path: {}", e)),
+            };
+            let sbo_id = match sbo_core::message::Id::new(&id) {
+                Ok(i) => i,
+                Err(e) => return Response::error(format!("Invalid id: {}", e)),
+            };
+
+            // Generate trie proof (auto-detects creator)
+            match state_db.generate_trie_proof_auto(&sbo_path, &sbo_id) {
+                Ok(Some((creator, trie_proof))) => {
+                    // Read the object file from disk
+                    // Object path is: repo_path / sbo_path (without leading /) / id
+                    let object_file_path = repo.path.join(path.trim_start_matches('/')).join(&id);
+                    let object_bytes = match std::fs::read(&object_file_path) {
+                        Ok(bytes) => Some(bytes),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Could not read object file at {}: {}",
+                                object_file_path.display(), e
+                            );
+                            None
+                        }
+                    };
+
+                    // Create SBOQ message with trie proof
+                    let sboq = sbo_core::proof::SboqMessage {
+                        version: "0.2".to_string(),
+                        path: path.clone(),
+                        id: id.clone(),
+                        creator: creator.to_string(),
+                        block: repo.head,
+                        state_root: trie_proof.state_root,
+                        object_hash: trie_proof.object_hash,
+                        trie_proof,
+                        object: object_bytes,
+                    };
+
+                    let sboq_bytes = sbo_core::proof::serialize_sboq(&sboq);
+                    let sboq_text = String::from_utf8_lossy(&sboq_bytes).to_string();
+
+                    Response::ok(serde_json::json!({
+                        "sboq": sboq_text,
+                        "creator": creator.to_string(),
+                        "state_root": hex::encode(sboq.state_root),
+                        "object_hash": sboq.object_hash.map(hex::encode),
+                    }))
+                }
+                Ok(None) => Response::error("Object not found"),
+                Err(e) => Response::error(format!("Failed to generate proof: {}", e)),
             }
         }
 

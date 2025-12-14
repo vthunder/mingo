@@ -47,5 +47,6 @@ clap = { version = "4", features = ["derive"] }
 
 # Internal crates
 sbo-core = { path = "sbo-core" }
+sbo-crypto = { path = "sbo-crypto" }
 sbo-avail = { path = "sbo-avail" }
 sbo-daemon = { path = "sbo-daemon" }

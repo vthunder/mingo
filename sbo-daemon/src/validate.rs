@@ -378,10 +378,12 @@ fn check_policy(
 
 /// Create a StoredObject from a Message
 /// If state is provided, uses name resolution for the creator field
+/// object_hash should be sha256(raw_sbo_bytes) - the hash of the complete serialized message
 pub fn message_to_stored_object(
     msg: &Message,
     block_number: u64,
     state: Option<&StateDb>,
+    object_hash: [u8; 32],
 ) -> Option<StoredObject> {
     // Only objects with content can be stored
     let payload = msg.payload.as_ref()?;
@@ -405,5 +407,6 @@ pub fn message_to_stored_object(
         payload: payload.clone(),
         policy_ref: msg.policy_ref.clone(),
         block_number,
+        object_hash,
     })
 }

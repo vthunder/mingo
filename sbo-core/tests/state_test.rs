@@ -18,6 +18,7 @@ fn test_store_and_retrieve_object() {
         payload: b"{}".to_vec(),
         policy_ref: None,
         block_number: 1,
+        object_hash: [0u8; 32], // Placeholder - in production, this is sha256(raw_sbo_bytes)
     };
 
     db.put_object(&obj).unwrap();

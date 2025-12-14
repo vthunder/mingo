@@ -135,6 +135,11 @@ impl Path {
     pub fn ancestors(&self) -> impl Iterator<Item = Path> + '_ {
         (0..=self.0.len()).rev().map(|i| Path(self.0[..i].to_vec()))
     }
+
+    /// Get path segments
+    pub fn segments(&self) -> &[Id] {
+        &self.0
+    }
 }
 
 impl std::fmt::Display for Id {

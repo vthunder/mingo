@@ -13,8 +13,10 @@ use tokio::net::{UnixListener, UnixStream};
 pub enum Request {
     /// Add a new repo (from_block can be negative for relative to chain head)
     RepoAdd { uri: String, path: PathBuf, from_block: Option<i64> },
-    /// Remove a repo
+    /// Remove a repo by path
     RepoRemove { path: PathBuf },
+    /// Remove a repo by URI
+    RepoRemoveByUri { uri: String },
     /// List all repos
     RepoList,
     /// Force sync
@@ -23,6 +25,11 @@ pub enum Request {
     Status,
     /// Submit data via TurboDA
     Submit { repo_path: PathBuf, sbo_path: String, id: String, data: Vec<u8> },
+    /// Get an object with optional proof
+    GetObject { repo_path: PathBuf, path: String, id: String, with_proof: bool },
+    /// Get a merkle proof for an object (SBOQ format)
+    /// Creator is auto-detected from the stored object
+    ObjectProof { repo_path: PathBuf, path: String, id: String },
     /// Shutdown daemon
     Shutdown,
 }

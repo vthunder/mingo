@@ -16,6 +16,14 @@ pub struct StoredObject {
     pub payload: Vec<u8>,
     pub policy_ref: Option<String>,
     pub block_number: u64,
+    /// SHA-256 hash of the complete raw SBO object bytes (headers + payload)
+    /// Used for merkle tree leaf computation in the proof system
+    #[serde(default, skip_serializing_if = "is_zero_hash")]
+    pub object_hash: [u8; 32],
+}
+
+fn is_zero_hash(h: &[u8; 32]) -> bool {
+    h == &[0u8; 32]
 }
 
 // Custom serialization for Path and Id

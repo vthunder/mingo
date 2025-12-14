@@ -17,6 +17,24 @@ const CF_POLICIES: &str = "policies";
 const CF_NAMES: &str = "names";
 const CF_META: &str = "meta";
 const CF_STATE_ROOTS: &str = "state_roots";
+const CF_PROOFS: &str = "proofs";
+
+/// A verified proof stored in the database
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredProof {
+    /// Block range start
+    pub block_from: u64,
+    /// Block range end
+    pub block_to: u64,
+    /// Receipt kind (composite, succinct, groth16)
+    pub receipt_kind: String,
+    /// The raw receipt bytes
+    pub receipt_bytes: Vec<u8>,
+    /// Block number where this proof was received
+    pub received_at_block: u64,
+    /// Whether this proof was verified
+    pub verified: bool,
+}
 
 impl StateDb {
     /// Open or create the database at the given path
@@ -32,6 +50,7 @@ impl StateDb {
             rocksdb::ColumnFamilyDescriptor::new(CF_NAMES, rocksdb::Options::default()),
             rocksdb::ColumnFamilyDescriptor::new(CF_META, rocksdb::Options::default()),
             rocksdb::ColumnFamilyDescriptor::new(CF_STATE_ROOTS, rocksdb::Options::default()),
+            rocksdb::ColumnFamilyDescriptor::new(CF_PROOFS, rocksdb::Options::default()),
         ];
 
         let db = rocksdb::DB::open_cf_descriptors(&opts, path, cfs)
@@ -296,6 +315,194 @@ impl StateDb {
         }
 
         Ok(None)
+    }
+
+    /// Get the state root at or before a specific block
+    /// Returns the most recent state root recorded at or before the given block.
+    /// This handles the case where a state root was recorded at block N,
+    /// and we're verifying a proof for block N+k where nothing changed.
+    pub fn get_state_root_at_or_before(&self, block: u64) -> Result<Option<(u64, [u8; 32])>, DbError> {
+        let cf = self.db.cf_handle(CF_STATE_ROOTS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        let mut iter = self.db.raw_iterator_cf(&cf);
+
+        // seek_for_prev finds the largest key <= target
+        // This handles both exact matches and "nothing after" cases correctly
+        iter.seek_for_prev(&block.to_be_bytes());
+
+        if iter.valid() {
+            if let (Some(key), Some(value)) = (iter.key(), iter.value()) {
+                if let Ok(found_block_bytes) = <[u8; 8]>::try_from(key) {
+                    let found_block = u64::from_be_bytes(found_block_bytes);
+                    // Verify this is actually <= the requested block
+                    if found_block <= block {
+                        if let Ok(root) = <[u8; 32]>::try_from(value) {
+                            return Ok(Some((found_block, root)));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    // ========== Proof Storage ==========
+
+    /// Store a verified proof
+    /// Key is block_from:block_to for easy range queries
+    pub fn put_proof(&self, proof: &StoredProof) -> Result<(), DbError> {
+        let cf = self.db.cf_handle(CF_PROOFS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        let key = format!("{}:{}", proof.block_from, proof.block_to);
+        let value = serde_json::to_vec(proof)
+            .map_err(|e| DbError::Serialization(e.to_string()))?;
+
+        self.db.put_cf(&cf, key.as_bytes(), &value)
+            .map_err(|e| DbError::RocksDb(e.to_string()))
+    }
+
+    /// Get a proof by block range
+    pub fn get_proof(&self, block_from: u64, block_to: u64) -> Result<Option<StoredProof>, DbError> {
+        let cf = self.db.cf_handle(CF_PROOFS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        let key = format!("{}:{}", block_from, block_to);
+
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(bytes)) => {
+                let proof: StoredProof = serde_json::from_slice(&bytes)
+                    .map_err(|e| DbError::Serialization(e.to_string()))?;
+                Ok(Some(proof))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(DbError::RocksDb(e.to_string())),
+        }
+    }
+
+    /// Get a proof that covers a specific block number
+    pub fn get_proof_for_block(&self, block: u64) -> Result<Option<StoredProof>, DbError> {
+        let cf = self.db.cf_handle(CF_PROOFS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        // Iterate through all proofs to find one covering this block
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            match item {
+                Ok((_key, value)) => {
+                    let proof: StoredProof = serde_json::from_slice(&value)
+                        .map_err(|e| DbError::Serialization(e.to_string()))?;
+                    if proof.block_from <= block && block <= proof.block_to {
+                        return Ok(Some(proof));
+                    }
+                }
+                Err(e) => return Err(DbError::RocksDb(e.to_string())),
+            }
+        }
+        Ok(None)
+    }
+
+    // ========== Trie State Root ==========
+
+    /// Convert an object's path, creator, and id to trie path segments
+    /// E.g., path="/sys/names/", creator="user123", id="alice" -> ["sys", "names", "user123", "alice"]
+    pub fn object_to_segments(
+        path: &crate::message::Path,
+        creator: &crate::message::Id,
+        id: &crate::message::Id,
+    ) -> Vec<String> {
+        let mut segments: Vec<String> = path.segments()
+            .iter()
+            .map(|id| id.as_str().to_string())
+            .collect();
+        segments.push(creator.as_str().to_string());
+        segments.push(id.as_str().to_string());
+        segments
+    }
+
+    /// Get all objects for computing trie state root
+    /// Returns list of (path_segments, object_hash) tuples
+    pub fn get_all_objects_for_trie(&self) -> Result<Vec<(Vec<String>, [u8; 32])>, DbError> {
+        let cf = self.db.cf_handle(CF_OBJECTS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        let mut objects: Vec<(Vec<String>, [u8; 32])> = Vec::new();
+
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            match item {
+                Ok((_key, value)) => {
+                    let obj: StoredObject = serde_json::from_slice(&value)
+                        .map_err(|e| DbError::Serialization(e.to_string()))?;
+
+                    let segments = Self::object_to_segments(&obj.path, &obj.creator, &obj.id);
+                    objects.push((segments, obj.object_hash));
+                }
+                Err(e) => return Err(DbError::RocksDb(e.to_string())),
+            }
+        }
+
+        Ok(objects)
+    }
+
+    /// Compute trie state root from all objects
+    /// Returns [0u8; 32] if no objects exist
+    pub fn compute_trie_state_root(&self) -> Result<[u8; 32], DbError> {
+        let objects = self.get_all_objects_for_trie()?;
+        if objects.is_empty() {
+            return Ok([0u8; 32]);
+        }
+        Ok(sbo_crypto::compute_trie_root(&objects))
+    }
+
+    /// Generate a trie proof for a specific object
+    /// Returns TrieProof or None if object doesn't exist
+    pub fn generate_trie_proof(
+        &self,
+        path: &crate::message::Path,
+        creator: &crate::message::Id,
+        id: &crate::message::Id,
+    ) -> Result<Option<sbo_crypto::TrieProof>, DbError> {
+        // Get the object first to verify it exists
+        if self.get_object(path, creator, id)?.is_none() {
+            return Ok(None);
+        }
+
+        // Build trie from all objects
+        let all_objects = self.get_all_objects_for_trie()?;
+        let mut trie = sbo_crypto::SparseTrie::new();
+        for (segments, object_hash) in &all_objects {
+            trie.insert(segments.clone(), *object_hash);
+        }
+
+        // Generate proof for target object
+        let target_segments = Self::object_to_segments(path, creator, id);
+        match trie.generate_proof(&target_segments) {
+            Ok(proof) => Ok(Some(proof)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Generate a trie proof for an object by path and id, auto-detecting creator
+    /// Returns (creator, TrieProof) or None if object doesn't exist
+    pub fn generate_trie_proof_auto(
+        &self,
+        path: &crate::message::Path,
+        id: &crate::message::Id,
+    ) -> Result<Option<(crate::message::Id, sbo_crypto::TrieProof)>, DbError> {
+        // Find the object (auto-detects creator)
+        let obj = match self.get_first_object_at_path_id(path, id)? {
+            Some(o) => o,
+            None => return Ok(None),
+        };
+
+        // Now generate the proof using the found creator
+        match self.generate_trie_proof(path, &obj.creator, id)? {
+            Some(proof) => Ok(Some((obj.creator, proof))),
+            None => Ok(None),
+        }
     }
 }
 

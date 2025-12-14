@@ -21,18 +21,85 @@ fn compute_transition_root(prev_root: [u8; 32], actions_data: &[u8]) -> [u8; 32]
     hasher.finalize().into()
 }
 
+/// Verify an SBOP proof against historical state roots
+///
+/// Returns true if the proof is valid for the given state database.
+/// In dev mode, checks that:
+/// 1. Block range is valid (block_to >= block_from)
+/// 2. State roots exist for the claimed blocks
+/// 3. Receipt has DEV: prefix (dev mode format)
+///
+/// In production, this would verify the ZK proof via RISC Zero.
+fn verify_proof(
+    sbop: &sbo_core::proof::SbopMessage,
+    state_db: &StateDb,
+) -> Result<bool, crate::DaemonError> {
+    // Basic range validation
+    if sbop.block_to < sbop.block_from {
+        tracing::warn!(
+            "Invalid proof block range: {} > {}",
+            sbop.block_from, sbop.block_to
+        );
+        return Ok(false);
+    }
+
+    // Check we have state roots for the claimed blocks
+    let pre_root = state_db.get_state_root_at_block(sbop.block_from)
+        .map_err(|e| crate::DaemonError::State(format!("Failed to get pre-state root: {}", e)))?;
+    let post_root = state_db.get_state_root_at_block(sbop.block_to)
+        .map_err(|e| crate::DaemonError::State(format!("Failed to get post-state root: {}", e)))?;
+
+    // If we don't have state for these blocks yet, we can't verify
+    if pre_root.is_none() || post_root.is_none() {
+        tracing::debug!(
+            "Cannot verify proof: missing state roots for blocks {}-{}",
+            sbop.block_from, sbop.block_to
+        );
+        // Store as unverified - we may be able to verify later
+        return Ok(false);
+    }
+
+    // Check receipt format based on receipt_kind
+    match sbop.receipt_kind.as_str() {
+        "composite" | "succinct" | "groth16" => {
+            // Dev mode proofs start with "DEV:"
+            if sbop.receipt_bytes.starts_with(b"DEV:") {
+                tracing::debug!("Verified dev mode proof for blocks {}-{}", sbop.block_from, sbop.block_to);
+                return Ok(true);
+            }
+
+            // Production zkVM proof verification would go here
+            // For now, only dev mode proofs are supported
+            tracing::warn!(
+                "Production zkVM proof verification not yet implemented (receipt_kind: {})",
+                sbop.receipt_kind
+            );
+            Ok(false)
+        }
+        _ => {
+            tracing::warn!("Unknown receipt kind: {}", sbop.receipt_kind);
+            Ok(false)
+        }
+    }
+}
+
 /// Synchronization engine
 pub struct SyncEngine {
     lc: LcManager,
     rpc: RpcClient,
     verbose_raw: bool,
+    /// Light mode: only process SBOP proofs, skip state transitions
+    light_mode: bool,
     /// StateDb instances per repo URI
     state_dbs: HashMap<String, StateDb>,
 }
 
 impl SyncEngine {
-    pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool) -> Self {
-        Self { lc, rpc, verbose_raw, state_dbs: HashMap::new() }
+    pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool, light_mode: bool) -> Self {
+        if light_mode {
+            tracing::info!("SyncEngine running in LIGHT mode - proofs only, no state execution");
+        }
+        Self { lc, rpc, verbose_raw, light_mode, state_dbs: HashMap::new() }
     }
 
     /// Get or open StateDb for a repo by URI
@@ -95,6 +162,81 @@ impl SyncEngine {
                     tx.data.len(),
                     tx.app_id
                 );
+
+                // Check if this is an SBOP (proof) message
+                if sbo_core::proof::is_sbop_message(&tx.data) {
+                    match sbo_core::proof::parse_sbop(&tx.data) {
+                        Ok(sbop) => {
+                            tracing::info!(
+                                "[{}/{}] SBOP proof blocks {}-{} ({})",
+                                block_number,
+                                tx.index,
+                                sbop.block_from,
+                                sbop.block_to,
+                                sbop.receipt_kind
+                            );
+
+                            // Verify and store proof for each matching repo
+                            let matching_repos = repos.get_by_app_id(tx.app_id);
+                            for repo in matching_repos {
+                                let uri = repo.uri.to_string();
+                                if let Ok(state_db) = self.get_state_db(&uri) {
+                                    // Verify the proof against historical state
+                                    let verified = match verify_proof(&sbop, state_db) {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Failed to verify proof for {}: {}",
+                                                uri, e
+                                            );
+                                            false
+                                        }
+                                    };
+
+                                    let stored_proof = sbo_core::state::StoredProof {
+                                        block_from: sbop.block_from,
+                                        block_to: sbop.block_to,
+                                        receipt_kind: sbop.receipt_kind.clone(),
+                                        receipt_bytes: sbop.receipt_bytes.clone(),
+                                        received_at_block: block_number,
+                                        verified,
+                                    };
+                                    if let Err(e) = state_db.put_proof(&stored_proof) {
+                                        tracing::warn!(
+                                            "Failed to store proof for {}: {}",
+                                            uri, e
+                                        );
+                                    } else {
+                                        let status = if verified { "verified" } else { "unverified" };
+                                        tracing::info!(
+                                            "Stored {} SBOP proof for {} (blocks {}-{})",
+                                            status, uri, sbop.block_from, sbop.block_to
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "[{}/{}] SBOP parse failed: {}",
+                                block_number,
+                                tx.index,
+                                e
+                            );
+                        }
+                    }
+                    continue; // Don't try to parse as SBO message
+                }
+
+                // In light mode, only process SBOP proofs - skip SBO message execution
+                if self.light_mode {
+                    tracing::debug!(
+                        "[{}/{}] Light mode: skipping SBO message (proofs only)",
+                        block_number,
+                        tx.index
+                    );
+                    continue;
+                }
 
                 // Parse SBO messages (may be a batch with multiple messages)
                 let messages = match sbo_core::wire::parse_batch(&tx.data) {
@@ -210,38 +352,58 @@ impl SyncEngine {
             repos.update_head(&path, block_number)?;
         }
 
-        // 6. Compute and record state root for each repo
-        // Collect unique URIs that were updated this block
+        // 6. Compute and record trie state root for each repo
+        // Collect unique URIs for ALL repos we're syncing (not just ones with transactions)
         let uris: std::collections::HashSet<_> = app_ids
             .iter()
             .flat_map(|&app_id| repos.get_by_app_id(app_id))
             .map(|r| r.uri.to_string())
             .collect();
 
+        for uri in &uris {
+            // Ensure state_db is opened for ALL repos we're syncing
+            if let Err(e) = self.get_state_db(uri) {
+                tracing::warn!("Failed to open state DB for {}: {}", uri, e);
+                continue;
+            }
+        }
+
         for uri in uris {
             if let Some(state_db) = self.state_dbs.get(&uri) {
-                // Get previous state root (zeros for genesis)
-                let prev_root = if block_number == 0 {
-                    [0u8; 32]
-                } else {
-                    state_db.get_state_root_at_block(block_number - 1)
-                        .map_err(|e| crate::DaemonError::State(format!("Failed to get prev state root: {}", e)))?
-                        .unwrap_or([0u8; 32])
+                // Compute trie state root from all objects
+                let new_root = match state_db.compute_trie_state_root() {
+                    Ok(root) => root,
+                    Err(e) => {
+                        tracing::warn!("Failed to compute trie root for {}: {}", uri, e);
+                        // Fall back to transition root
+                        let prev_root = state_db.get_state_root_at_block(block_number.saturating_sub(1))
+                            .unwrap_or(None)
+                            .unwrap_or([0u8; 32]);
+                        let actions_data = block_number.to_le_bytes();
+                        compute_transition_root(prev_root, &actions_data)
+                    }
                 };
 
-                // For transition root, we hash the raw block data we received
-                // In a full implementation, this would be the serialized valid actions
-                // For now, use block_number as a simple differentiator
-                let actions_data = block_number.to_le_bytes();
-                let new_root = compute_transition_root(prev_root, &actions_data);
+                // Only record state root if it changed (optimization)
+                let should_record = match state_db.get_latest_state_root() {
+                    Ok(Some((_, prev_root))) => prev_root != new_root,
+                    _ => true, // No previous root, always record
+                };
 
-                if let Err(e) = state_db.record_state_root(block_number, new_root) {
-                    tracing::warn!("Failed to record state root for {}: {}", uri, e);
-                } else {
-                    tracing::debug!(
-                        "Recorded state root for {} at block {}: {}",
-                        uri, block_number, hex::encode(&new_root[..8])
-                    );
+                if should_record {
+                    if let Err(e) = state_db.record_state_root(block_number, new_root) {
+                        tracing::warn!("Failed to record state root for {}: {}", uri, e);
+                    } else {
+                        tracing::debug!(
+                            "Recorded trie state root for {} at block {}: {}",
+                            uri, block_number, hex::encode(&new_root[..8])
+                        );
+                    }
+                }
+
+                // ALWAYS record the last processed block (needed for "future block" check)
+                if let Err(e) = state_db.set_last_block(block_number) {
+                    tracing::warn!("Failed to set last block for {}: {}", uri, e);
                 }
             }
         }
@@ -271,6 +433,9 @@ impl SyncEngine {
         // Serialize to wire format
         let wire_data = sbo_core::wire::serialize(msg);
 
+        // Compute object hash for trie (hash of complete raw bytes)
+        let object_hash = sbo_core::sha256(&wire_data);
+
         // Atomic write: write to temp file, then rename
         let temp_path = file_path.with_extension("tmp");
         std::fs::write(&temp_path, &wire_data)?;
@@ -286,7 +451,7 @@ impl SyncEngine {
         // Update state DB (keyed by URI)
         let uri = repo.uri.to_string();
         let state_db = self.state_dbs.get(&uri);
-        if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_db) {
+        if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_db, object_hash) {
             if let Some(db) = state_db {
                 if let Err(e) = db.put_object(&stored_obj) {
                     tracing::warn!("Failed to update state DB: {}", e);

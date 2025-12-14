@@ -130,6 +130,50 @@ pub fn compute_root(leaves: &[[u8; 32]]) -> [u8; 32] {
     current_level[0]
 }
 
+/// Generate a merkle proof for a specific leaf index
+/// Returns (root, proof_siblings)
+pub fn generate_proof(leaves: &[[u8; 32]], leaf_index: usize) -> Option<([u8; 32], Vec<[u8; 32]>)> {
+    if leaves.is_empty() || leaf_index >= leaves.len() {
+        return None;
+    }
+    if leaves.len() == 1 {
+        return Some((leaves[0], Vec::new()));
+    }
+
+    let mut proof = Vec::new();
+    let mut current_level: Vec<[u8; 32]> = leaves.to_vec();
+    let mut idx = leaf_index;
+
+    while current_level.len() > 1 {
+        // Get sibling
+        let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+
+        // If sibling exists, add to proof; otherwise use self (odd case)
+        if sibling_idx < current_level.len() {
+            proof.push(current_level[sibling_idx]);
+        } else {
+            // This shouldn't happen with proper odd handling, but be safe
+            proof.push(current_level[idx]);
+        }
+
+        // Build next level
+        let mut next_level = Vec::new();
+        for chunk in current_level.chunks(2) {
+            let hash = if chunk.len() == 2 {
+                hash_pair(&chunk[0], &chunk[1])
+            } else {
+                chunk[0]
+            };
+            next_level.push(hash);
+        }
+
+        current_level = next_level;
+        idx /= 2;
+    }
+
+    Some((current_level[0], proof))
+}
+
 #[cfg(test)]
 #[path = "merkle_tests.rs"]
 mod tests;

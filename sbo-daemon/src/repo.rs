@@ -205,6 +205,14 @@ impl Repo {
         hasher.update(uri.to_string().as_bytes());
         hex::encode(&hasher.finalize()[..8])
     }
+
+    /// Get the state database for this repo
+    pub fn state_db(&self) -> crate::Result<sbo_core::state::StateDb> {
+        let repo_dir = crate::repo_dir_for_uri(&self.uri.to_string());
+        let state_dir = repo_dir.join("state");
+        sbo_core::state::StateDb::open(&state_dir)
+            .map_err(|e| crate::DaemonError::Repo(format!("Failed to open state db: {}", e)))
+    }
 }
 
 /// Manages the set of followed repositories
@@ -297,6 +305,32 @@ impl RepoManager {
             .find(|(_, r)| r.path == canonical)
             .map(|(id, _)| id.clone())
             .ok_or_else(|| crate::DaemonError::Repo(format!("No repo at path: {}", canonical.display())))?;
+
+        let repo = self.repos.remove(&id).unwrap();
+
+        // Remove repo directory (includes config.json and state/)
+        let repo_dir = crate::repo_dir_for_uri(&repo.uri.to_string());
+        if repo_dir.exists() {
+            tracing::info!("Removing repo directory at {}", repo_dir.display());
+            std::fs::remove_dir_all(&repo_dir)?;
+        }
+
+        self.save()?;
+        Ok(repo)
+    }
+
+    /// Remove a repo by URI
+    pub fn remove_by_uri(&mut self, uri: &str) -> crate::Result<Repo> {
+        // Parse and normalize the URI
+        let parsed = SboUri::parse(uri)?;
+        let normalized = parsed.to_string();
+
+        let id = self
+            .repos
+            .iter()
+            .find(|(_, r)| r.uri.to_string() == normalized)
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| crate::DaemonError::Repo(format!("No repo with URI: {}", uri)))?;
 
         let repo = self.repos.remove(&id).unwrap();
 
