@@ -1,6 +1,6 @@
 //! Proof generation for SBO blocks
 
-use crate::types::{BlockProofInput, BlockProofOutput};
+use crate::types::{BlockProofInput, BlockProofOutput, DataProof, CellProof, KzgCommitment};
 use sbo_zkvm_methods::SBO_ZKVM_GUEST_ELF;
 use thiserror::Error;
 
@@ -60,7 +60,7 @@ pub fn prove_block(input: BlockProofInput) -> Result<ProofReceipt, ProverError> 
     })
 }
 
-/// Generate genesis proof (block 0)
+/// Generate genesis proof (block 0) without DA
 #[cfg(feature = "prove")]
 pub fn prove_genesis(
     block_hash: [u8; 32],
@@ -73,6 +73,36 @@ pub fn prove_genesis(
         parent_hash: [0u8; 32],
         actions_data: genesis_actions,
         prev_journal: None,
+        data_proof: None,
+        row_commitments: Vec::new(),
+        cell_proofs: Vec::new(),
+        grid_cols: 256,
+    };
+
+    prove_block(input)
+}
+
+/// Generate genesis proof with DA verification
+#[cfg(feature = "prove")]
+pub fn prove_genesis_with_da(
+    block_hash: [u8; 32],
+    genesis_actions: Vec<u8>,
+    data_proof: DataProof,
+    row_commitments: Vec<KzgCommitment>,
+    cell_proofs: Vec<CellProof>,
+    grid_cols: u32,
+) -> Result<ProofReceipt, ProverError> {
+    let input = BlockProofInput {
+        prev_state_root: [0u8; 32],
+        block_number: 0,
+        block_hash,
+        parent_hash: [0u8; 32],
+        actions_data: genesis_actions,
+        prev_journal: None,
+        data_proof: Some(data_proof),
+        row_commitments,
+        cell_proofs,
+        grid_cols,
     };
 
     prove_block(input)
@@ -98,6 +128,42 @@ pub fn prove_continuation(
         parent_hash,
         actions_data,
         prev_journal: Some(prev_journal),
+        data_proof: None,
+        row_commitments: Vec::new(),
+        cell_proofs: Vec::new(),
+        grid_cols: 256,
+    };
+
+    prove_block(input)
+}
+
+/// Generate continuation proof with DA verification
+#[cfg(feature = "prove")]
+pub fn prove_continuation_with_da(
+    prev_journal: Vec<u8>,
+    block_number: u64,
+    block_hash: [u8; 32],
+    parent_hash: [u8; 32],
+    actions_data: Vec<u8>,
+    data_proof: DataProof,
+    row_commitments: Vec<KzgCommitment>,
+    cell_proofs: Vec<CellProof>,
+    grid_cols: u32,
+) -> Result<ProofReceipt, ProverError> {
+    let prev_output: BlockProofOutput = postcard::from_bytes(&prev_journal)
+        .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+
+    let input = BlockProofInput {
+        prev_state_root: prev_output.new_state_root,
+        block_number,
+        block_hash,
+        parent_hash,
+        actions_data,
+        prev_journal: Some(prev_journal),
+        data_proof: Some(data_proof),
+        row_commitments,
+        cell_proofs,
+        grid_cols,
     };
 
     prove_block(input)
