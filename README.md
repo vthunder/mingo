@@ -215,42 +215,161 @@ The state root is the hash of the trie's root node. It commits to all objects in
 
 ## ZK Validity Proofs
 
-The daemon can generate ZK validity proofs for state transitions using RISC Zero zkVM. This enables trustless verification of batch state updates.
+The daemon can generate ZK validity proofs for state transitions using RISC Zero zkVM. This enables trustless verification of batch state updates without re-executing all transactions.
 
-### Requirements for Real Proofs
+### Building with zkVM Support
 
-To build with real ZK proof generation:
+#### Prerequisites
 
 ```bash
-# Install RISC Zero toolchain
+# 1. Install RISC Zero toolchain
 curl -L https://risczero.com/install | bash
 rzup install
 
-# Install CMake (required for native code compilation)
-brew install cmake  # macOS
-# or: apt install cmake  # Linux
-
-# Build daemon with zkVM support
-cargo build -p sbo-daemon --features zkvm --release
+# 2. Install CMake (required for native code compilation)
+# macOS:
+brew install cmake
+# Linux:
+apt install cmake
 ```
 
-### Dev Mode (Fake Proofs)
+#### macOS-Specific Notes
 
-For development and testing, you can use fake proofs that don't require the full zkVM toolchain:
+On Apple Silicon (M1/M2/M3), you may encounter build issues:
 
-```toml
-# In ~/.sbo/config.toml
+```bash
+# If you see errors about missing SDK or compiler:
+xcode-select --install
+
+# If builds fail with Metal/GPU errors, the prover will fall back to CPU
+# This is normal - GPU acceleration is optional
+
+# If you see linker errors, ensure Xcode CLT is properly installed:
+sudo xcode-select --reset
+```
+
+#### Building the Daemon with zkVM
+
+```bash
+# Build with zkVM support (release mode recommended)
+cargo build --release --features zkvm
+
+# This builds:
+# - The RISC-V guest program (runs inside zkVM)
+# - The host prover (generates proofs)
+# - All verification code
+```
+
+Build times: First build compiles the RISC-V toolchain and may take 5-10 minutes. Subsequent builds are faster.
+
+### Running in Prover Mode
+
+#### Quick Start
+
+```bash
+# 1. Configure prover settings in ~/.sbo/config.toml
+cat >> ~/.sbo/config.toml << 'EOF'
 [prover]
 enabled = true
 batch_size = 10
-dev_mode = true  # Uses fake proofs for testing
+receipt_kind = "composite"
+dev_mode = false
+EOF
+
+# 2. Start daemon with prover flag
+./target/release/sbo-daemon start --prover
+```
+
+#### Prover Configuration
+
+Add to `~/.sbo/config.toml`:
+
+```toml
+[prover]
+# Enable proof generation
+enabled = true
+
+# Number of blocks to wait after state change before proving
+# Lower = more frequent proofs, higher = batches more changes
+batch_size = 10
+
+# Proof compression level (see "Proof Types" below)
+receipt_kind = "composite"
+
+# Dev mode uses fake proofs (no zkVM required)
+dev_mode = false
 ```
 
 ### Proof Types
 
-- **Composite** (default): Fastest to generate, larger proof size
-- **Succinct**: Compressed proof, smaller size
-- **Groth16**: SNARK proof, on-chain verifiable on Ethereum
+| Type | Size | Time | Use Case |
+|------|------|------|----------|
+| `composite` | ~400KB | Fast (~30s) | Development, testing |
+| `succinct` | ~100KB | 7-8x slower | Production, smaller payloads |
+| `groth16` | ~300 bytes | Slowest (needs Docker) | On-chain verification |
+
+**Recommendations:**
+- Start with `composite` during development
+- Use `succinct` for production if proof size matters
+- Use `groth16` only if you need Ethereum on-chain verification
+
+### Dev Mode (Testing Without zkVM)
+
+For development without the full zkVM toolchain:
+
+```toml
+[prover]
+enabled = true
+dev_mode = true  # Generates fake proofs (hash-based, not verifiable)
+```
+
+Dev mode proofs:
+- Don't require RISC Zero toolchain
+- Are NOT cryptographically verifiable
+- Useful for testing the proof submission flow
+
+### How Proving Works
+
+1. **Sync**: Daemon processes blocks and tracks state changes
+2. **Batch**: After `batch_size` blocks with changes, prover activates
+3. **Prove**: zkVM executes state transition and generates proof
+4. **Submit**: SBOP message (proof + metadata) sent to TurboDA
+5. **Verify**: Other nodes can verify the proof against their state
+
+The prover only generates proofs for blocks with actual state changes and only when the daemon is at the chain head (not while catching up).
+
+### Proof Submission
+
+Proofs are automatically submitted to TurboDA (Avail) when generated:
+
+```
+2024-01-15 12:34:56 INFO Generated composite proof for blocks 100-110 (428532 bytes)
+2024-01-15 12:34:57 INFO Submitted proof to Avail: 0x1234...
+```
+
+### Troubleshooting
+
+**Build fails with "risc0 toolchain not found":**
+```bash
+rzup install
+# Ensure ~/.risc0/bin is in PATH
+export PATH="$HOME/.risc0/bin:$PATH"
+```
+
+**Proof generation is very slow:**
+- First proof is slower (JIT compilation)
+- Ensure release mode: `cargo build --release --features zkvm`
+- Check CPU usage - proofs are CPU-intensive
+
+**Proofs too large for submission:**
+- Switch from `composite` to `succinct`
+- Note: `succinct` takes longer to generate
+
+**"zkVM feature not enabled" error:**
+```bash
+# Rebuild with zkvm feature
+cargo build --release --features zkvm
+```
 
 ---
 
