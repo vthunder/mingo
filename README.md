@@ -213,16 +213,57 @@ The state root is the hash of the trie's root node. It commits to all objects in
 
 ---
 
+## ZK Validity Proofs
+
+The daemon can generate ZK validity proofs for state transitions using RISC Zero zkVM. This enables trustless verification of batch state updates.
+
+### Requirements for Real Proofs
+
+To build with real ZK proof generation:
+
+```bash
+# Install RISC Zero toolchain
+curl -L https://risczero.com/install | bash
+rzup install
+
+# Install CMake (required for native code compilation)
+brew install cmake  # macOS
+# or: apt install cmake  # Linux
+
+# Build daemon with zkVM support
+cargo build -p sbo-daemon --features zkvm --release
+```
+
+### Dev Mode (Fake Proofs)
+
+For development and testing, you can use fake proofs that don't require the full zkVM toolchain:
+
+```toml
+# In ~/.sbo/config.toml
+[prover]
+enabled = true
+batch_size = 10
+dev_mode = true  # Uses fake proofs for testing
+```
+
+### Proof Types
+
+- **Composite** (default): Fastest to generate, larger proof size
+- **Succinct**: Compressed proof, smaller size
+- **Groth16**: SNARK proof, on-chain verifiable on Ethereum
+
+---
+
 ## Development
 
 ### Running Tests
 
 ```bash
-# Run all tests (requires risc0 toolchain for zkvm tests)
+# Run all tests
 cargo test
 
-# Run tests without zkvm
-RISC0_SKIP_BUILD_KERNELS=1 cargo test -p sbo-crypto -p sbo-core
+# Run tests without zkvm (faster)
+cargo test -p sbo-crypto -p sbo-core -p sbo-daemon
 ```
 
 ### Project Structure

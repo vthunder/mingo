@@ -302,56 +302,70 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
                     // Process block with write lock
                     let mut state = state_for_sync.write().await;
                     match sync.process_block(block_num, &mut state.repos).await {
-                        Ok(tx_count) => {
+                        Ok(result) => {
                             // Only log if there was data or verbose blocks enabled
-                            if tx_count > 0 || verbose_for_sync.blocks {
-                                tracing::info!("Processed block {} ({} transactions)", block_num, tx_count);
+                            if result.tx_count > 0 || verbose_for_sync.blocks {
+                                tracing::info!("Processed block {} ({} transactions)", block_num, result.tx_count);
                             }
 
-                            // Add block to prover if enabled
+                            // Add block to prover if enabled and genesis has been processed
                             if let Some(ref mut p) = prover {
-                                // Use placeholder state roots based on block number
-                                // Real implementation would get these from SyncEngine
-                                let pre_root = {
-                                    let mut r = [0u8; 32];
-                                    r[..8].copy_from_slice(&block_num.saturating_sub(1).to_le_bytes());
-                                    r
-                                };
-                                let post_root = {
-                                    let mut r = [0u8; 32];
-                                    r[..8].copy_from_slice(&block_num.to_le_bytes());
-                                    r
-                                };
-                                // Block data placeholder - real impl would capture tx data
-                                let block_data = block_num.to_le_bytes().to_vec();
-
-                                p.add_block(block_num, pre_root, post_root, block_data);
-
-                                // Check if we should generate and submit a proof
-                                if p.should_prove() {
-                                    if let Some(result) = p.generate_proof() {
-                                        let sbop_bytes = p.create_sbop_message(&result);
-                                        tracing::info!(
-                                            "Generated {} proof for blocks {}-{} ({} bytes)",
-                                            result.receipt_kind.as_str(),
-                                            result.from_block,
-                                            result.to_block,
-                                            sbop_bytes.len()
+                                // Only prove if genesis has been processed (objects exist)
+                                if !result.has_genesis {
+                                    // Skip proving until genesis is processed
+                                    if result.tx_count > 0 {
+                                        tracing::debug!(
+                                            "Skipping prover for block {} - genesis not yet processed",
+                                            block_num
                                         );
+                                    }
+                                } else if block_num < max_end {
+                                    // Skip proving while catching up (not at head yet)
+                                    // Only prove once we're processing the latest block
+                                    tracing::debug!(
+                                        "Skipping prover for block {} - catching up ({} blocks behind)",
+                                        block_num, max_end - block_num
+                                    );
+                                } else {
+                                    // Use real state roots and objects from process_block result
+                                    let pre_root = result.pre_state_root.unwrap_or([0u8; 32]);
+                                    let post_root = result.post_state_root;
 
-                                        // Submit to Avail via TurboDA
-                                        match turbo.submit_proof(sbop_bytes).await {
-                                            Ok(tx_hash) => {
-                                                tracing::info!(
-                                                    "Submitted proof to Avail: {}",
-                                                    tx_hash
-                                                );
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    "Failed to submit proof: {}",
-                                                    e
-                                                );
+                                    p.add_block(
+                                        block_num,
+                                        pre_root,
+                                        post_root,
+                                        result.block_data,
+                                        result.pre_objects,
+                                        result.post_objects,
+                                    );
+
+                                    // Check if we should generate and submit a proof
+                                    if p.should_prove(block_num) {
+                                        if let Some(proof_result) = p.generate_proof() {
+                                            let sbop_bytes = p.create_sbop_message(&proof_result);
+                                            tracing::info!(
+                                                "Generated {} proof for blocks {}-{} ({} bytes)",
+                                                proof_result.receipt_kind.as_str(),
+                                                proof_result.from_block,
+                                                proof_result.to_block,
+                                                sbop_bytes.len()
+                                            );
+
+                                            // Submit to Avail via TurboDA
+                                            match turbo.submit_proof(sbop_bytes).await {
+                                                Ok(tx_hash) => {
+                                                    tracing::info!(
+                                                        "Submitted proof to Avail: {}",
+                                                        tx_hash
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!(
+                                                        "Failed to submit proof: {}",
+                                                        e
+                                                    );
+                                                }
                                             }
                                         }
                                     }

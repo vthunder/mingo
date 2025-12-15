@@ -5550,6 +5550,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "rand 0.8.5",
+ "risc0-zkvm",
  "sha2 0.10.9",
 ]
 
@@ -5568,6 +5569,7 @@ dependencies = [
  "notify",
  "reqwest",
  "sbo-core",
+ "sbo-zkvm",
  "serde",
  "serde_json",
  "sha2 0.10.9",

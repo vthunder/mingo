@@ -422,6 +422,16 @@ impl StateDb {
         segments
     }
 
+    /// Check if any objects exist in the database (genesis has been processed)
+    pub fn has_objects(&self) -> Result<bool, DbError> {
+        let cf = self.db.cf_handle(CF_OBJECTS)
+            .ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+
+        let mut iter = self.db.raw_iterator_cf(&cf);
+        iter.seek_to_first();
+        Ok(iter.valid())
+    }
+
     /// Get all objects for computing trie state root
     /// Returns list of (path_segments, object_hash) tuples
     pub fn get_all_objects_for_trie(&self) -> Result<Vec<(Vec<String>, [u8; 32])>, DbError> {

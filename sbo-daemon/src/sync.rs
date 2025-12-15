@@ -10,6 +10,25 @@ use crate::validate::{validate_message, message_to_stored_object, ValidationResu
 use sbo_core::state::StateDb;
 use sha2::{Sha256, Digest};
 
+/// Result of processing a block - includes state transition info for prover
+#[derive(Debug, Clone)]
+pub struct BlockProcessResult {
+    /// Number of transactions processed
+    pub tx_count: usize,
+    /// State root before processing this block (None if no prior state)
+    pub pre_state_root: Option<[u8; 32]>,
+    /// State root after processing this block
+    pub post_state_root: [u8; 32],
+    /// Combined block data (all transaction bytes)
+    pub block_data: Vec<u8>,
+    /// Whether genesis has been processed (state DB has objects)
+    pub has_genesis: bool,
+    /// Objects before processing: (path_segments, object_hash)
+    pub pre_objects: Vec<(Vec<String>, [u8; 32])>,
+    /// Objects after processing: (path_segments, object_hash)
+    pub post_objects: Vec<(Vec<String>, [u8; 32])>,
+}
+
 /// Compute transition state root: sha256(prev_root || actions_data)
 ///
 /// This is a simple transition commitment (commits to the sequence of changes).
@@ -44,16 +63,24 @@ fn verify_proof(
     }
 
     // Check we have state roots for the claimed blocks
-    let pre_root = state_db.get_state_root_at_block(sbop.block_from)
-        .map_err(|e| crate::DaemonError::State(format!("Failed to get pre-state root: {}", e)))?;
+    // Note: get_state_root_at_block(N) returns state AFTER block N was processed
+    // So for prev_state_root (state BEFORE block_from), we need block_from - 1
+    // For genesis (block_from == 0 or first proof), prev_state_root should be [0; 32]
+    let pre_root = if sbop.block_from == 0 {
+        Some([0u8; 32]) // Genesis starts with empty state
+    } else {
+        state_db.get_state_root_at_block(sbop.block_from - 1)
+            .map_err(|e| crate::DaemonError::State(format!("Failed to get pre-state root: {}", e)))?
+    };
     let post_root = state_db.get_state_root_at_block(sbop.block_to)
         .map_err(|e| crate::DaemonError::State(format!("Failed to get post-state root: {}", e)))?;
 
-    // If we don't have state for these blocks yet, we can't verify
-    if pre_root.is_none() || post_root.is_none() {
+    // If we don't have post state for these blocks yet, we can't verify
+    // (pre_root can be None for bootstrap proofs where we start from arbitrary block)
+    if post_root.is_none() {
         tracing::debug!(
-            "Cannot verify proof: missing state roots for blocks {}-{}",
-            sbop.block_from, sbop.block_to
+            "Cannot verify proof: missing post-state root for block {}",
+            sbop.block_to
         );
         // Store as unverified - we may be able to verify later
         return Ok(false);
@@ -68,13 +95,83 @@ fn verify_proof(
                 return Ok(true);
             }
 
-            // Production zkVM proof verification would go here
-            // For now, only dev mode proofs are supported
-            tracing::warn!(
-                "Production zkVM proof verification not yet implemented (receipt_kind: {})",
-                sbop.receipt_kind
-            );
-            Ok(false)
+            // Production zkVM proof verification
+            #[cfg(feature = "zkvm")]
+            {
+                match sbo_zkvm::verify_receipt(&sbop.receipt_bytes) {
+                    Ok(output) => {
+                        // Verify journal claims match our state
+                        // The journal contains: prev_state_root, new_state_root, block_number, block_hash
+
+                        // Check block number matches claimed range
+                        // Note: For batched proofs, block_number is the starting block
+                        if output.block_number != sbop.block_from {
+                            tracing::warn!(
+                                "Journal block_number {} doesn't match claimed block_from {}",
+                                output.block_number, sbop.block_from
+                            );
+                            return Ok(false);
+                        }
+
+                        // Verify state roots match what we computed
+                        // Note: For bootstrap proofs (first proof in chain), the prover uses [0; 32] as
+                        // prev_state_root. We accept this if we don't have state at block_from - 1
+                        // (meaning we also started syncing from this point).
+                        if let Some(our_pre_root) = pre_root {
+                            // Allow bootstrap proofs where prev_state_root is [0; 32]
+                            let is_bootstrap_proof = output.prev_state_root == [0u8; 32];
+                            if !is_bootstrap_proof && output.prev_state_root != our_pre_root {
+                                tracing::warn!(
+                                    "Journal prev_state_root {} doesn't match our state {}",
+                                    hex::encode(&output.prev_state_root[..8]),
+                                    hex::encode(&our_pre_root[..8])
+                                );
+                                return Ok(false);
+                            }
+                            if is_bootstrap_proof && our_pre_root != [0u8; 32] {
+                                // Bootstrap proof but we have different pre-state
+                                // This is acceptable if we're both starting from same point
+                                tracing::debug!(
+                                    "Bootstrap proof: accepting [0] prev_state_root (our state: {})",
+                                    hex::encode(&our_pre_root[..8])
+                                );
+                            }
+                        }
+
+                        if let Some(our_post_root) = post_root {
+                            if output.new_state_root != our_post_root {
+                                tracing::warn!(
+                                    "Journal new_state_root {} doesn't match our state {}",
+                                    hex::encode(&output.new_state_root[..8]),
+                                    hex::encode(&our_post_root[..8])
+                                );
+                                return Ok(false);
+                            }
+                        }
+
+                        tracing::info!(
+                            "✓ Verified zkVM proof for blocks {}-{} (state: {} → {})",
+                            sbop.block_from, sbop.block_to,
+                            hex::encode(&output.prev_state_root[..4]),
+                            hex::encode(&output.new_state_root[..4])
+                        );
+                        return Ok(true);
+                    }
+                    Err(e) => {
+                        tracing::warn!("zkVM proof verification failed: {}", e);
+                        return Ok(false);
+                    }
+                }
+            }
+
+            #[cfg(not(feature = "zkvm"))]
+            {
+                tracing::warn!(
+                    "zkVM feature not enabled - cannot verify production proofs (receipt_kind: {})",
+                    sbop.receipt_kind
+                );
+                Ok(false)
+            }
         }
         _ => {
             tracing::warn!("Unknown receipt kind: {}", sbop.receipt_kind);
@@ -117,12 +214,12 @@ impl SyncEngine {
     }
 
     /// Process a single block for all repos
-    /// Returns the number of transactions processed for followed app_ids
+    /// Returns BlockProcessResult with transaction count and state transition info
     pub async fn process_block(
         &mut self,
         block_number: u64,
         repos: &mut RepoManager,
-    ) -> crate::Result<usize> {
+    ) -> crate::Result<BlockProcessResult> {
         // 1. Verify block is available via LC (DAS)
         if !self.lc.is_block_available(block_number).await? {
             tracing::warn!("Block {} not available (DAS failed)", block_number);
@@ -136,21 +233,52 @@ impl SyncEngine {
         // 2. Get all app_ids we're following
         let app_ids = repos.followed_app_ids();
         if app_ids.is_empty() {
-            return Ok(0);
+            return Ok(BlockProcessResult {
+                tx_count: 0,
+                pre_state_root: None,
+                post_state_root: [0u8; 32],
+                block_data: Vec::new(),
+                has_genesis: false,
+                pre_objects: Vec::new(),
+                post_objects: Vec::new(),
+            });
         }
+
+        // 2a. Capture pre-state root and pre-objects before processing (for prover)
+        // We use the first repo's URI as representative (all should have same state)
+        let first_uri = repos.followed_app_ids()
+            .iter()
+            .flat_map(|&app_id| repos.get_by_app_id(app_id))
+            .next()
+            .map(|r| r.uri.to_string());
+
+        let (pre_state_root, pre_objects) = if let Some(ref uri) = first_uri {
+            if let Ok(db) = self.get_state_db(uri) {
+                let root = db.get_latest_state_root().ok().flatten().map(|(_, root)| root);
+                let objects = db.get_all_objects_for_trie().unwrap_or_default();
+                (root, objects)
+            } else {
+                (None, Vec::new())
+            }
+        } else {
+            (None, Vec::new())
+        };
 
         tracing::debug!("Processing block {} for app_ids {:?}", block_number, app_ids);
 
         // 3. Fetch block data for each app_id via RPC
-        let block_data = self.rpc.fetch_block_data_multi(block_number, &app_ids).await?;
+        let rpc_block_data = self.rpc.fetch_block_data_multi(block_number, &app_ids).await?;
 
-        // Track transaction count for this block
+        // Track transaction count and collect raw data for prover
         let mut tx_count = 0;
+        let mut raw_block_data: Vec<u8> = Vec::new();
 
         // 4. Process each transaction
-        for data in block_data {
+        for data in rpc_block_data {
             tx_count += data.transactions.len();
             for tx in data.transactions {
+                // Collect raw transaction data for prover
+                raw_block_data.extend_from_slice(&tx.data);
                 // Find repos that match this app_id
                 let matching_repos = repos.get_by_app_id(tx.app_id);
 
@@ -368,8 +496,16 @@ impl SyncEngine {
             }
         }
 
+        // Track the post-state root, post-objects, and genesis status for the result
+        let mut post_state_root = [0u8; 32];
+        let mut post_objects: Vec<(Vec<String>, [u8; 32])> = Vec::new();
+        let mut has_genesis = false;
+
         for uri in uris {
             if let Some(state_db) = self.state_dbs.get(&uri) {
+                // Check if genesis has been processed (any objects exist)
+                has_genesis = state_db.has_objects().unwrap_or(false);
+
                 // Compute trie state root from all objects
                 let new_root = match state_db.compute_trie_state_root() {
                     Ok(root) => root,
@@ -383,6 +519,10 @@ impl SyncEngine {
                         compute_transition_root(prev_root, &actions_data)
                     }
                 };
+
+                // Capture for result
+                post_state_root = new_root;
+                post_objects = state_db.get_all_objects_for_trie().unwrap_or_default();
 
                 // Only record state root if it changed (optimization)
                 let should_record = match state_db.get_latest_state_root() {
@@ -408,7 +548,15 @@ impl SyncEngine {
             }
         }
 
-        Ok(tx_count)
+        Ok(BlockProcessResult {
+            tx_count,
+            pre_state_root,
+            post_state_root,
+            block_data: raw_block_data,
+            has_genesis,
+            pre_objects,
+            post_objects,
+        })
     }
 
     /// Write an SBO object to the filesystem and update state

@@ -9,8 +9,13 @@ description = "SBO daemon for repo sync and data availability verification"
 name = "sbo-daemon"
 path = "src/main.rs"
 
+[features]
+default = []
+zkvm = ["sbo-zkvm"]
+
 [dependencies]
 sbo-core.workspace = true
+sbo-zkvm = { path = "../sbo-zkvm", features = ["prove"], optional = true }
 tokio.workspace = true
 tokio-stream.workspace = true
 futures.workspace = true

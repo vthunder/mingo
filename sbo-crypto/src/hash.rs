@@ -1,5 +1,6 @@
 //! Hashing utilities (no_std compatible)
 
+#[cfg(not(feature = "zkvm"))]
 use sha2::{Sha256, Digest};
 use crate::error::CryptoError;
 
@@ -20,10 +21,24 @@ pub struct ContentHash {
 }
 
 /// Compute SHA-256 hash
+///
+/// When compiled with the `zkvm` feature, uses RISC Zero's accelerated
+/// SHA256 precompile which is orders of magnitude faster inside the zkVM.
+#[cfg(not(feature = "zkvm"))]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hasher.finalize().into()
+}
+
+/// Compute SHA-256 hash using RISC Zero accelerated precompile
+#[cfg(feature = "zkvm")]
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    use risc0_zkvm::sha::Sha256 as Sha256Trait;
+    // RISC Zero's sha module provides an accelerated implementation
+    // that runs outside the zkVM and is proven in constant cycles
+    let digest = risc0_zkvm::sha::Impl::hash_bytes(data);
+    digest.as_bytes().try_into().expect("SHA256 produces 32 bytes")
 }
 
 impl ContentHash {

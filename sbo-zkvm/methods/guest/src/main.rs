@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use risc0_zkvm::guest::env;
 use risc0_zkvm::sha::Digest;
@@ -51,6 +52,16 @@ pub struct BlockProofInput {
     pub actions_data: Vec<u8>,
     pub prev_journal: Option<Vec<u8>>,
     pub prev_receipt_bytes: Option<Vec<u8>>,
+    /// Bootstrap mode: first proof in chain (no previous proof required)
+    /// When true, prev_journal is not required even if block_number != 0
+    #[serde(default)]
+    pub is_first_proof: bool,
+    /// Objects in previous state: Vec<(path_segments, object_hash)>
+    #[serde(default)]
+    pub pre_objects: Vec<(Vec<String>, [u8; 32])>,
+    /// Objects in new state: Vec<(path_segments, object_hash)>
+    #[serde(default)]
+    pub post_objects: Vec<(Vec<String>, [u8; 32])>,
     pub data_proof: Option<DataProof>,
     pub row_commitments: Vec<KzgCommitment>,
     pub cell_proofs: Vec<CellProof>,
@@ -78,8 +89,16 @@ fn main() {
     // 2. Verify data availability (if proof provided)
     let data_root = verify_data_availability(&input);
 
-    // 3. Process SBO actions
-    let new_state_root = compute_new_state_root(&input.prev_state_root, &input.actions_data);
+    // 3. Compute and verify state roots using trie
+    // Verify prev_state_root matches pre_objects
+    let computed_prev_root = compute_trie_state_root(&input.pre_objects);
+    assert_eq!(
+        input.prev_state_root, computed_prev_root,
+        "prev_state_root doesn't match pre_objects trie root"
+    );
+
+    // Compute new_state_root from post_objects
+    let new_state_root = compute_trie_state_root(&input.post_objects);
 
     // 4. Commit output
     let output = BlockProofOutput {
@@ -101,6 +120,12 @@ fn verify_header_chain(input: &BlockProofInput) {
         assert!(input.prev_journal.is_none(), "Genesis has no previous proof");
         assert!(input.prev_receipt_bytes.is_none(), "Genesis has no previous receipt");
         assert_eq!(input.prev_state_root, [0u8; 32], "Genesis starts with empty state");
+    } else if input.is_first_proof {
+        // Bootstrap mode: first proof in chain starting from arbitrary block
+        // No previous proof required, but we accept the prev_state_root as trusted
+        // This allows starting a proof chain from any block, not just genesis
+        assert!(input.prev_journal.is_none(), "First proof has no previous proof");
+        // Note: prev_state_root can be non-zero - this is the trusted starting state
     } else {
         // Continuation block - verify previous proof recursively
         assert!(input.prev_journal.is_some(), "Non-genesis needs previous proof");
@@ -242,9 +267,8 @@ fn reassemble_data(cells: &[CellProof]) -> Vec<u8> {
     data
 }
 
-/// Compute new state root (SHA-256 of prev + actions)
-fn compute_new_state_root(prev: &[u8; 32], actions: &[u8]) -> [u8; 32] {
-    let mut data = prev.to_vec();
-    data.extend_from_slice(actions);
-    sbo_crypto::sha256(&data)
+/// Compute state root using sparse path-segment trie
+/// This matches the daemon's trie-based state commitment
+fn compute_trie_state_root(objects: &[(Vec<String>, [u8; 32])]) -> [u8; 32] {
+    sbo_crypto::compute_trie_root(objects)
 }

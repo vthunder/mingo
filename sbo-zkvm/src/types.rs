@@ -178,12 +178,31 @@ pub struct BlockProofInput {
     pub actions_data: Vec<u8>,
 
     /// Previous proof's journal (for chain verification)
-    /// None for genesis proof
+    /// None for genesis proof or first proof in chain
     pub prev_journal: Option<Vec<u8>>,
 
     /// Previous proof's receipt bytes (for recursive verification)
     /// None for genesis proof - passed via assumption mechanism
     pub prev_receipt_bytes: Option<Vec<u8>>,
+
+    /// Bootstrap mode: first proof in chain (no previous proof required)
+    /// Use this when starting to prove from an arbitrary block (not genesis).
+    /// When true, prev_journal and prev_receipt_bytes are not required even if block_number != 0.
+    #[serde(default)]
+    pub is_first_proof: bool,
+
+    // --- State Commitment fields ---
+
+    /// Objects in previous state: Vec<(path_segments, object_hash)>
+    /// Used to compute prev_state_root via trie
+    /// Empty for genesis block
+    #[serde(default)]
+    pub pre_objects: Vec<(Vec<String>, [u8; 32])>,
+
+    /// Objects in new state: Vec<(path_segments, object_hash)>
+    /// Used to compute new_state_root via trie
+    #[serde(default)]
+    pub post_objects: Vec<(Vec<String>, [u8; 32])>,
 
     // --- Data Availability fields ---
 
@@ -243,6 +262,9 @@ impl Default for BlockProofInput {
             actions_data: Vec::new(),
             prev_journal: None,
             prev_receipt_bytes: None,
+            is_first_proof: false,
+            pre_objects: Vec::new(),
+            post_objects: Vec::new(),
             data_proof: None,
             row_commitments: Vec::new(),
             cell_proofs: Vec::new(),
