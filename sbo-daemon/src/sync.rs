@@ -273,6 +273,96 @@ fn verify_proof(
     }
 }
 
+/// Verified proof output from light mode verification
+#[derive(Debug)]
+pub struct VerifiedProofOutput {
+    pub block_from: u64,
+    pub block_to: u64,
+    pub prev_state_root: [u8; 32],
+    pub new_state_root: [u8; 32],
+}
+
+/// Verify an SBOP proof in light mode (cryptographic verification only)
+///
+/// Unlike verify_proof, this doesn't require existing state roots.
+/// It verifies the zkVM receipt cryptographically and extracts the proven state roots.
+/// Returns Ok(Some(output)) if verified, Ok(None) if not verifiable, Err on error.
+fn verify_proof_light_mode(
+    sbop: &sbo_core::proof::SbopMessage,
+) -> Result<Option<VerifiedProofOutput>, crate::DaemonError> {
+    // Basic range validation
+    if sbop.block_to < sbop.block_from {
+        tracing::warn!(
+            "Invalid proof block range: {} > {}",
+            sbop.block_from, sbop.block_to
+        );
+        return Ok(None);
+    }
+
+    // Check receipt format
+    match sbop.receipt_kind.as_str() {
+        "composite" | "succinct" | "groth16" => {
+            // Dev mode proofs start with "DEV:"
+            if sbop.receipt_bytes.starts_with(b"DEV:") {
+                // Parse dev mode proof format: "DEV:prev_root:new_root"
+                // For now, we can't extract state roots from dev mode proofs
+                // Just mark as verified with placeholder roots
+                tracing::warn!(
+                    "Light mode: dev mode proofs don't contain verifiable state roots"
+                );
+                return Ok(None);
+            }
+
+            // Production zkVM proof verification
+            #[cfg(feature = "zkvm")]
+            {
+                match sbo_zkvm::verify_receipt(&sbop.receipt_bytes) {
+                    Ok(output) => {
+                        // Verify journal claims match SBOP metadata
+                        if output.block_number != sbop.block_from {
+                            tracing::warn!(
+                                "Journal block_number {} doesn't match SBOP block_from {}",
+                                output.block_number, sbop.block_from
+                            );
+                            return Ok(None);
+                        }
+
+                        tracing::info!(
+                            "✓ Light mode: verified zkVM proof for blocks {}-{} (state: {} → {})",
+                            sbop.block_from, sbop.block_to,
+                            hex::encode(&output.prev_state_root[..4]),
+                            hex::encode(&output.new_state_root[..4])
+                        );
+
+                        return Ok(Some(VerifiedProofOutput {
+                            block_from: sbop.block_from,
+                            block_to: sbop.block_to,
+                            prev_state_root: output.prev_state_root,
+                            new_state_root: output.new_state_root,
+                        }));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Light mode: zkVM proof verification failed: {}", e);
+                        return Ok(None);
+                    }
+                }
+            }
+
+            #[cfg(not(feature = "zkvm"))]
+            {
+                tracing::warn!(
+                    "Light mode: zkVM feature not enabled - cannot verify production proofs"
+                );
+                Ok(None)
+            }
+        }
+        _ => {
+            tracing::warn!("Light mode: unknown receipt kind: {}", sbop.receipt_kind);
+            Ok(None)
+        }
+    }
+}
+
 /// Synchronization engine
 pub struct SyncEngine {
     lc: LcManager,
@@ -286,9 +376,6 @@ pub struct SyncEngine {
 
 impl SyncEngine {
     pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool, light_mode: bool) -> Self {
-        if light_mode {
-            tracing::info!("SyncEngine running in LIGHT mode - proofs only, no state execution");
-        }
         Self { lc, rpc, verbose_raw, light_mode, state_dbs: HashMap::new() }
     }
 
@@ -443,18 +530,54 @@ impl SyncEngine {
 
                             // Verify and store proof for each matching repo
                             let matching_repos = repos.get_by_app_id(tx.app_id);
+                            let light_mode = self.light_mode; // Copy to avoid borrow checker issues
                             for repo in matching_repos {
                                 let uri = repo.uri.to_string();
                                 if let Ok(state_db) = self.get_state_db(&uri) {
-                                    // Verify the proof against historical state
-                                    let verified = match verify_proof(&sbop, state_db) {
-                                        Ok(v) => v,
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to verify proof for {}: {}",
-                                                uri, e
-                                            );
-                                            false
+                                    // In light mode: use cryptographic verification and store proven state roots
+                                    // In normal mode: verify against existing computed state
+                                    let verified = if light_mode {
+                                        match verify_proof_light_mode(&sbop) {
+                                            Ok(Some(output)) => {
+                                                // Store the proven state root from the verified proof
+                                                if let Err(e) = state_db.record_state_root(
+                                                    output.block_to,
+                                                    output.new_state_root
+                                                ) {
+                                                    tracing::warn!(
+                                                        "Failed to store proven state root for {}: {}",
+                                                        uri, e
+                                                    );
+                                                } else {
+                                                    tracing::info!(
+                                                        "Light mode: stored proven state root {} at block {} for {}",
+                                                        hex::encode(&output.new_state_root[..4]),
+                                                        output.block_to,
+                                                        uri
+                                                    );
+                                                }
+                                                true
+                                            }
+                                            Ok(None) => false,
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "Light mode verification error for {}: {}",
+                                                    uri, e
+                                                );
+                                                false
+                                            }
+                                        }
+                                    } else {
+                                        // Normal mode: verify against existing state
+                                        match verify_proof(&sbop, state_db) {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "Failed to verify proof for {}: {}",
+                                                    uri, e
+                                                );
+                                                false
+                                            }
                                         }
                                     };
 

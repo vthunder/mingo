@@ -140,11 +140,15 @@ async fn main() -> anyhow::Result<()> {
             // Override config with CLI flags
             let mut config = config;
             if prover {
+                if config.light.enabled {
+                    anyhow::bail!("Cannot enable --prover when light mode is enabled in config");
+                }
                 config.prover.enabled = true;
                 tracing::info!("Prover mode enabled via CLI flag");
             }
             if light {
                 config.light.enabled = true;
+                config.prover.enabled = false; // Mutually exclusive with light mode
                 tracing::info!("Light mode enabled via CLI flag");
             }
 
