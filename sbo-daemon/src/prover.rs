@@ -5,6 +5,7 @@
 
 use crate::config::ProverConfig;
 use sbo_core::proof::{SbopMessage, serialize_sbop};
+use sbo_core::StateTransitionWitness;
 use sha2::{Sha256, Digest};
 
 /// Receipt kinds for proof generation
@@ -49,10 +50,8 @@ pub struct BlockBatch {
     pub post_state_root: [u8; 32],
     /// Serialized block data (all transactions)
     pub block_data: Vec<u8>,
-    /// Objects before processing: (path_segments, object_hash)
-    pub pre_objects: Vec<(Vec<String>, [u8; 32])>,
-    /// Objects after processing: (path_segments, object_hash)
-    pub post_objects: Vec<(Vec<String>, [u8; 32])>,
+    /// Witness for state transition (creates, updates, deletes with proofs)
+    pub state_witness: StateTransitionWitness,
 }
 
 /// Proof generation result
@@ -96,8 +95,7 @@ impl Prover {
         pre_state_root: [u8; 32],
         post_state_root: [u8; 32],
         block_data: Vec<u8>,
-        pre_objects: Vec<(Vec<String>, [u8; 32])>,
-        post_objects: Vec<(Vec<String>, [u8; 32])>,
+        state_witness: StateTransitionWitness,
     ) {
         // Only add if state actually changed
         if pre_state_root == post_state_root {
@@ -115,8 +113,7 @@ impl Prover {
             pre_state_root,
             post_state_root,
             block_data,
-            pre_objects,
-            post_objects,
+            state_witness,
         };
         self.pending_blocks.push(batch);
     }
@@ -158,9 +155,18 @@ impl Prover {
         let pre_state_root = blocks.first()?.pre_state_root;
         let post_state_root = blocks.last()?.post_state_root;
 
-        // Use objects from first/last batch for state commitment
-        let pre_objects = blocks.first()?.pre_objects.clone();
-        let post_objects = blocks.last()?.post_objects.clone();
+        // Merge all witnesses from all blocks in the batch
+        let mut merged_witnesses = Vec::new();
+        let mut merged_sibling_hints = Vec::new();
+        for block in &blocks {
+            merged_witnesses.extend(block.state_witness.witnesses.clone());
+            merged_sibling_hints.extend(block.state_witness.sibling_hints.clone());
+        }
+        let state_witness = StateTransitionWitness {
+            prev_state_root: pre_state_root,
+            witnesses: merged_witnesses,
+            sibling_hints: merged_sibling_hints,
+        };
 
         // Combine all block data
         let combined_data: Vec<u8> = blocks.iter()
@@ -188,8 +194,7 @@ impl Prover {
                     &pre_state_root,
                     &post_state_root,
                     &combined_data,
-                    &pre_objects,
-                    &post_objects,
+                    &state_witness,
                     receipt_kind,
                 ) {
                     Ok(receipt) => receipt,
@@ -252,8 +257,7 @@ impl Prover {
         pre_state_root: &[u8; 32],
         _post_state_root: &[u8; 32],
         block_data: &[u8],
-        pre_objects: &[(Vec<String>, [u8; 32])],
-        post_objects: &[(Vec<String>, [u8; 32])],
+        state_witness: &StateTransitionWitness,
         receipt_kind: ReceiptKind,
     ) -> Result<Vec<u8>, String> {
         use sbo_zkvm::{BlockProofInput, prove_block, compress_receipt};
@@ -262,8 +266,8 @@ impl Prover {
         let is_first_proof = !self.first_proof_generated;
 
         tracing::info!(
-            "Generating zkVM proof for blocks {}-{} (kind: {:?}, first_proof: {}, pre_objects: {}, post_objects: {})",
-            from_block, to_block, receipt_kind, is_first_proof, pre_objects.len(), post_objects.len()
+            "Generating zkVM proof for blocks {}-{} (kind: {:?}, first_proof: {}, witnesses: {})",
+            from_block, to_block, receipt_kind, is_first_proof, state_witness.witnesses.len()
         );
 
         // Build block hash from data
@@ -283,8 +287,7 @@ impl Prover {
             prev_journal: None,
             prev_receipt_bytes: None,
             is_first_proof,  // Bootstrap mode for first proof
-            pre_objects: pre_objects.to_vec(),
-            post_objects: post_objects.to_vec(),
+            state_witness: state_witness.clone(),
             data_proof: None,
             row_commitments: Vec::new(),
             cell_proofs: Vec::new(),
@@ -369,7 +372,7 @@ mod tests {
         let mut prover = Prover::new(config);
 
         // Block with state change at block 100
-        prover.add_block(100, [0u8; 32], [1u8; 32], vec![1, 2, 3], vec![], vec![]);
+        prover.add_block(100, [0u8; 32], [1u8; 32], vec![1, 2, 3], StateTransitionWitness::default());
 
         // Not enough blocks passed yet (need 3 blocks after change)
         assert!(!prover.should_prove(100)); // Same block
@@ -406,7 +409,7 @@ mod tests {
         let mut prover = Prover::new(config);
 
         // Block with NO state change (pre == post)
-        prover.add_block(100, [0u8; 32], [0u8; 32], vec![1, 2, 3], vec![], vec![]);
+        prover.add_block(100, [0u8; 32], [0u8; 32], vec![1, 2, 3], StateTransitionWitness::default());
 
         // Should not have any pending blocks
         assert_eq!(prover.pending_count(), 0);
@@ -425,8 +428,8 @@ mod tests {
         let mut prover = Prover::new(config);
 
         // Multiple state changes within batch window
-        prover.add_block(100, [0u8; 32], [1u8; 32], vec![1, 2, 3], vec![], vec![]);
-        prover.add_block(101, [1u8; 32], [2u8; 32], vec![4, 5, 6], vec![], vec![]);
+        prover.add_block(100, [0u8; 32], [1u8; 32], vec![1, 2, 3], StateTransitionWitness::default());
+        prover.add_block(101, [1u8; 32], [2u8; 32], vec![4, 5, 6], StateTransitionWitness::default());
 
         // 2 pending changes
         assert_eq!(prover.pending_count(), 2);

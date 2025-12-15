@@ -336,8 +336,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
                                         pre_root,
                                         post_root,
                                         result.block_data,
-                                        result.pre_objects,
-                                        result.post_objects,
+                                        result.state_witness,
                                     );
 
                                     // Check if we should generate and submit a proof

@@ -2,6 +2,11 @@
 
 use serde::{Serialize, Deserialize};
 
+// Re-export witness types from sbo-crypto for convenience
+pub use sbo_crypto::trie::{
+    ObjectWitness, StateTransitionWitness, SiblingHint, TrieProof, TrieProofStep,
+};
+
 /// Kind of proof receipt (affects size and verification cost)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReceiptKind {
@@ -193,16 +198,10 @@ pub struct BlockProofInput {
 
     // --- State Commitment fields ---
 
-    /// Objects in previous state: Vec<(path_segments, object_hash)>
-    /// Used to compute prev_state_root via trie
-    /// Empty for genesis block
+    /// Witness for state transition (creates, updates, deletes with proofs)
+    /// Replaces pre_objects/post_objects - scales with touched objects, not total state
     #[serde(default)]
-    pub pre_objects: Vec<(Vec<String>, [u8; 32])>,
-
-    /// Objects in new state: Vec<(path_segments, object_hash)>
-    /// Used to compute new_state_root via trie
-    #[serde(default)]
-    pub post_objects: Vec<(Vec<String>, [u8; 32])>,
+    pub state_witness: StateTransitionWitness,
 
     // --- Data Availability fields ---
 
@@ -263,8 +262,7 @@ impl Default for BlockProofInput {
             prev_journal: None,
             prev_receipt_bytes: None,
             is_first_proof: false,
-            pre_objects: Vec::new(),
-            post_objects: Vec::new(),
+            state_witness: StateTransitionWitness::default(),
             data_proof: None,
             row_commitments: Vec::new(),
             cell_proofs: Vec::new(),

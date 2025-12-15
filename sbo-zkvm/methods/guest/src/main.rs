@@ -7,11 +7,15 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use risc0_zkvm::guest::env;
 use risc0_zkvm::sha::Digest;
 use serde::{Serialize, Deserialize};
+
+// Import witness types from sbo-crypto
+use sbo_crypto::trie::{
+    StateTransitionWitness, verify_state_transition,
+};
 
 risc0_zkvm::guest::entry!(main);
 
@@ -56,12 +60,10 @@ pub struct BlockProofInput {
     /// When true, prev_journal is not required even if block_number != 0
     #[serde(default)]
     pub is_first_proof: bool,
-    /// Objects in previous state: Vec<(path_segments, object_hash)>
+    /// Witness for state transition (creates, updates, deletes with proofs)
+    /// Scales with touched objects, not total state size
     #[serde(default)]
-    pub pre_objects: Vec<(Vec<String>, [u8; 32])>,
-    /// Objects in new state: Vec<(path_segments, object_hash)>
-    #[serde(default)]
-    pub post_objects: Vec<(Vec<String>, [u8; 32])>,
+    pub state_witness: StateTransitionWitness,
     pub data_proof: Option<DataProof>,
     pub row_commitments: Vec<KzgCommitment>,
     pub cell_proofs: Vec<CellProof>,
@@ -89,16 +91,15 @@ fn main() {
     // 2. Verify data availability (if proof provided)
     let data_root = verify_data_availability(&input);
 
-    // 3. Compute and verify state roots using trie
-    // Verify prev_state_root matches pre_objects
-    let computed_prev_root = compute_trie_state_root(&input.pre_objects);
-    assert_eq!(
-        input.prev_state_root, computed_prev_root,
-        "prev_state_root doesn't match pre_objects trie root"
-    );
+    // 3. Verify state transition using witnesses
+    // This is O(batch_size * depth) instead of O(total_objects)
+    let (prev_state_root, new_state_root) = verify_state_transition_witness(&input);
 
-    // Compute new_state_root from post_objects
-    let new_state_root = compute_trie_state_root(&input.post_objects);
+    // Verify prev_state_root matches what we expect
+    assert_eq!(
+        input.prev_state_root, prev_state_root,
+        "prev_state_root doesn't match witness"
+    );
 
     // 4. Commit output
     let output = BlockProofOutput {
@@ -111,6 +112,23 @@ fn main() {
     };
 
     env::commit(&output);
+}
+
+/// Verify state transition using witness proofs
+/// Returns (prev_state_root, new_state_root)
+fn verify_state_transition_witness(input: &BlockProofInput) -> ([u8; 32], [u8; 32]) {
+    let witness = &input.state_witness;
+
+    // For empty witness, state doesn't change
+    if witness.witnesses.is_empty() {
+        return (witness.prev_state_root, witness.prev_state_root);
+    }
+
+    // Verify the witness and compute new state root
+    let new_state_root = verify_state_transition(witness)
+        .expect("State transition witness verification failed");
+
+    (witness.prev_state_root, new_state_root)
 }
 
 /// Verify header chain continuity with recursive proof verification
@@ -265,10 +283,4 @@ fn reassemble_data(cells: &[CellProof]) -> Vec<u8> {
         data.extend_from_slice(&cell.data);
     }
     data
-}
-
-/// Compute state root using sparse path-segment trie
-/// This matches the daemon's trie-based state commitment
-fn compute_trie_state_root(objects: &[(Vec<String>, [u8; 32])]) -> [u8; 32] {
-    sbo_crypto::compute_trie_root(objects)
 }

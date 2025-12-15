@@ -6,9 +6,104 @@ use std::collections::HashMap;
 use crate::lc::LcManager;
 use crate::repo::{Repo, RepoManager};
 use crate::rpc::RpcClient;
-use crate::validate::{validate_message, message_to_stored_object, ValidationResult};
+use crate::validate::{validate_message, message_to_stored_object, resolve_creator, ValidationResult};
 use sbo_core::state::StateDb;
+use sbo_core::{StateTransitionWitness, ObjectWitness, SparseTrie};
 use sha2::{Sha256, Digest};
+
+/// Tracking touched objects during block processing for witness generation
+#[derive(Debug, Default)]
+pub struct TouchedObjects {
+    pub creates: Vec<TouchedCreate>,
+    pub updates: Vec<TouchedUpdate>,
+    pub deletes: Vec<TouchedDelete>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TouchedCreate {
+    pub path_segments: Vec<String>,
+    pub new_object_hash: [u8; 32],
+}
+
+#[derive(Debug, Clone)]
+pub struct TouchedUpdate {
+    pub path_segments: Vec<String>,
+    pub old_object_hash: [u8; 32],
+    pub new_object_hash: [u8; 32],
+}
+
+#[derive(Debug, Clone)]
+pub struct TouchedDelete {
+    pub path_segments: Vec<String>,
+    pub old_object_hash: [u8; 32],
+}
+
+/// Generate a state transition witness from pre-state trie and touched objects
+fn generate_witness(
+    pre_trie: &SparseTrie,
+    touched: &TouchedObjects,
+    prev_state_root: [u8; 32],
+) -> StateTransitionWitness {
+    let mut witnesses = Vec::new();
+
+    // Generate witnesses for creates (non-existence proofs)
+    for create in &touched.creates {
+        match pre_trie.generate_nonexistence_proof(&create.path_segments) {
+            Ok(nonexistence_proof) => {
+                witnesses.push(ObjectWitness::Create {
+                    path_segments: create.path_segments.clone(),
+                    new_object_hash: create.new_object_hash,
+                    nonexistence_proof,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to generate nonexistence proof for {:?}: {:?}",
+                    create.path_segments, e);
+            }
+        }
+    }
+
+    // Generate witnesses for updates (inclusion proofs)
+    for update in &touched.updates {
+        match pre_trie.generate_proof(&update.path_segments) {
+            Ok(inclusion_proof) => {
+                witnesses.push(ObjectWitness::Update {
+                    path_segments: update.path_segments.clone(),
+                    old_object_hash: update.old_object_hash,
+                    new_object_hash: update.new_object_hash,
+                    inclusion_proof,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to generate inclusion proof for update {:?}: {:?}",
+                    update.path_segments, e);
+            }
+        }
+    }
+
+    // Generate witnesses for deletes (inclusion proofs)
+    for delete in &touched.deletes {
+        match pre_trie.generate_proof(&delete.path_segments) {
+            Ok(inclusion_proof) => {
+                witnesses.push(ObjectWitness::Delete {
+                    path_segments: delete.path_segments.clone(),
+                    old_object_hash: delete.old_object_hash,
+                    inclusion_proof,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to generate inclusion proof for delete {:?}: {:?}",
+                    delete.path_segments, e);
+            }
+        }
+    }
+
+    StateTransitionWitness {
+        prev_state_root,
+        witnesses,
+        sibling_hints: Vec::new(), // Sibling hints computed during verification
+    }
+}
 
 /// Result of processing a block - includes state transition info for prover
 #[derive(Debug, Clone)]
@@ -23,10 +118,8 @@ pub struct BlockProcessResult {
     pub block_data: Vec<u8>,
     /// Whether genesis has been processed (state DB has objects)
     pub has_genesis: bool,
-    /// Objects before processing: (path_segments, object_hash)
-    pub pre_objects: Vec<(Vec<String>, [u8; 32])>,
-    /// Objects after processing: (path_segments, object_hash)
-    pub post_objects: Vec<(Vec<String>, [u8; 32])>,
+    /// State transition witness for zkVM (touched objects with proofs)
+    pub state_witness: StateTransitionWitness,
 }
 
 /// Compute transition state root: sha256(prev_root || actions_data)
@@ -239,12 +332,11 @@ impl SyncEngine {
                 post_state_root: [0u8; 32],
                 block_data: Vec::new(),
                 has_genesis: false,
-                pre_objects: Vec::new(),
-                post_objects: Vec::new(),
+                state_witness: StateTransitionWitness::default(),
             });
         }
 
-        // 2a. Capture pre-state root and pre-objects before processing (for prover)
+        // 2a. Capture pre-state root before processing (for prover)
         // We use the first repo's URI as representative (all should have same state)
         let first_uri = repos.followed_app_ids()
             .iter()
@@ -252,17 +344,62 @@ impl SyncEngine {
             .next()
             .map(|r| r.uri.to_string());
 
-        let (pre_state_root, pre_objects) = if let Some(ref uri) = first_uri {
-            if let Ok(db) = self.get_state_db(uri) {
-                let root = db.get_latest_state_root().ok().flatten().map(|(_, root)| root);
+        // Collect all unique repo URIs upfront
+        let all_uris: Vec<String> = app_ids
+            .iter()
+            .flat_map(|&app_id| repos.get_by_app_id(app_id))
+            .map(|r| r.uri.to_string())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        // Open ALL state_dbs BEFORE processing (so write_object can track touched objects)
+        for uri in &all_uris {
+            if let Err(e) = self.get_state_db(uri) {
+                tracing::warn!("Failed to open state DB for {}: {}", uri, e);
+            }
+        }
+
+        // Capture pre-state root and build trie for proof generation
+        // IMPORTANT: pre_state_root MUST be computed from the trie, not from the database
+        // The trie is the authoritative source - proofs are generated against it
+        let pre_trie = if let Some(ref uri) = first_uri {
+            // Make sure state_db is opened for first_uri (might not be in all_uris)
+            if let Err(e) = self.get_state_db(uri) {
+                tracing::warn!("Failed to open state DB for first_uri {}: {}", uri, e);
+            }
+            if let Some(db) = self.state_dbs.get(uri) {
+                // Build trie from existing objects for generating proofs
                 let objects = db.get_all_objects_for_trie().unwrap_or_default();
-                (root, objects)
+                tracing::debug!(
+                    "Building pre_trie from {} objects for uri {}",
+                    objects.len(), uri
+                );
+                let mut trie = SparseTrie::new();
+                for (segments, hash) in objects {
+                    trie.insert(segments, hash);
+                }
+                trie
             } else {
-                (None, Vec::new())
+                tracing::warn!("No state_db found for first_uri: {}", uri);
+                SparseTrie::new()
             }
         } else {
-            (None, Vec::new())
+            tracing::warn!("No first_uri found");
+            SparseTrie::new()
         };
+
+        // Compute pre_state_root from the trie - this is the authoritative source
+        // Proofs are generated against pre_trie, so witness.prev_state_root must match
+        let pre_state_root = pre_trie.root_hash();
+        tracing::debug!(
+            "pre_trie.root_hash() = {}",
+            hex::encode(&pre_state_root[..8])
+        );
+        let pre_state_root_opt = if pre_state_root == [0u8; 32] { None } else { Some(pre_state_root) };
+
+        // Track touched objects for witness generation
+        let mut touched_objects = TouchedObjects::default();
 
         tracing::debug!("Processing block {} for app_ids {:?}", block_number, app_ids);
 
@@ -463,7 +600,7 @@ impl SyncEngine {
                         }
 
                         // Write to filesystem and update state
-                        self.write_object(repo, msg, block_number)?;
+                        self.write_object(repo, msg, block_number, &mut touched_objects)?;
                     }
                 }
             }
@@ -496,9 +633,8 @@ impl SyncEngine {
             }
         }
 
-        // Track the post-state root, post-objects, and genesis status for the result
+        // Track the post-state root and genesis status for the result
         let mut post_state_root = [0u8; 32];
-        let mut post_objects: Vec<(Vec<String>, [u8; 32])> = Vec::new();
         let mut has_genesis = false;
 
         for uri in uris {
@@ -522,7 +658,6 @@ impl SyncEngine {
 
                 // Capture for result
                 post_state_root = new_root;
-                post_objects = state_db.get_all_objects_for_trie().unwrap_or_default();
 
                 // Only record state root if it changed (optimization)
                 let should_record = match state_db.get_latest_state_root() {
@@ -548,19 +683,28 @@ impl SyncEngine {
             }
         }
 
+        // Generate state transition witness from pre_trie and touched_objects
+        // Use pre_state_root (computed from trie) - this matches what proofs are generated against
+        let state_witness = generate_witness(&pre_trie, &touched_objects, pre_state_root);
+
         Ok(BlockProcessResult {
             tx_count,
-            pre_state_root,
+            pre_state_root: pre_state_root_opt,
             post_state_root,
             block_data: raw_block_data,
             has_genesis,
-            pre_objects,
-            post_objects,
+            state_witness,
         })
     }
 
     /// Write an SBO object to the filesystem and update state
-    fn write_object(&mut self, repo: &Repo, msg: &sbo_core::message::Message, block_number: u64) -> crate::Result<()> {
+    fn write_object(
+        &mut self,
+        repo: &Repo,
+        msg: &sbo_core::message::Message,
+        block_number: u64,
+        touched: &mut TouchedObjects,
+    ) -> crate::Result<()> {
         // Build path: repo_root / sbo_path / sbo_id
         let mut file_path = repo.path.clone();
 
@@ -583,6 +727,42 @@ impl SyncEngine {
 
         // Compute object hash for trie (hash of complete raw bytes)
         let object_hash = sbo_core::sha256(&wire_data);
+
+        // Check if object exists and track the touch operation
+        let uri = repo.uri.to_string();
+        if let Some(state_db) = self.state_dbs.get(&uri) {
+            // Get the creator ID using the same resolution as message_to_stored_object
+            // This ensures witness path segments match what gets stored in the database
+            let creator = resolve_creator(msg, Some(state_db));
+
+            // Build path segments for witness tracking
+            let path_segments = StateDb::object_to_segments(&msg.path, &creator, &msg.id);
+            // Use get_first_object_at_path_id to find existing object regardless of creator
+            let existing = state_db.get_first_object_at_path_id(&msg.path, &msg.id).ok().flatten();
+
+            if matches!(msg.action, sbo_core::message::Action::Delete) {
+                // Delete operation
+                if let Some(old_obj) = existing {
+                    touched.deletes.push(TouchedDelete {
+                        path_segments: path_segments.clone(),
+                        old_object_hash: old_obj.object_hash,
+                    });
+                }
+            } else if let Some(old_obj) = existing {
+                // Update operation (object existed)
+                touched.updates.push(TouchedUpdate {
+                    path_segments: path_segments.clone(),
+                    old_object_hash: old_obj.object_hash,
+                    new_object_hash: object_hash,
+                });
+            } else {
+                // Create operation (object didn't exist)
+                touched.creates.push(TouchedCreate {
+                    path_segments: path_segments.clone(),
+                    new_object_hash: object_hash,
+                });
+            }
+        }
 
         // Atomic write: write to temp file, then rename
         let temp_path = file_path.with_extension("tmp");

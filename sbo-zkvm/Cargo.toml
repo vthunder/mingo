@@ -8,7 +8,7 @@ description = "SBO ZK validity proof generation and verification"
 [dependencies]
 sbo-zkvm-methods = { path = "methods" }
 sbo-types = { path = "../sbo-types", features = ["serde"] }
-sbo-crypto = { path = "../sbo-crypto" }
+sbo-crypto = { path = "../sbo-crypto", features = ["serde"] }
 risc0-zkvm = { version = "3.0", default-features = false, features = ["client"] }
 serde = { version = "1", features = ["derive"] }
 hex = "0.4"

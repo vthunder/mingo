@@ -47,7 +47,7 @@ const ROOT_POLICY_ID: &str = "root";
 /// Resolve the creator ID for a message.
 /// If the message has an explicit creator, use it.
 /// Otherwise, look up the signer's claimed name, or fall back to truncated key hex.
-fn resolve_creator(msg: &Message, state: Option<&StateDb>) -> Id {
+pub fn resolve_creator(msg: &Message, state: Option<&StateDb>) -> Id {
     // If message has explicit creator, use it
     if let Some(creator) = &msg.creator {
         return creator.clone();
@@ -70,10 +70,18 @@ fn resolve_creator(msg: &Message, state: Option<&StateDb>) -> Id {
         }
     }
 
-    // Fall back to truncated key hex (without ed25519: prefix)
-    let key_hex = pubkey.strip_prefix("ed25519:").unwrap_or(&pubkey);
-    let truncated = &key_hex[..std::cmp::min(16, key_hex.len())];
-    Id::new(truncated).unwrap_or_else(|_| Id::new("unknown").unwrap())
+    // Fall back to truncated key hex with type disambiguation
+    // 16 hex chars of key material + 2 char prefix = 18 chars total
+    let (prefix, key_hex) = if let Some(hex) = pubkey.strip_prefix("ed25519:") {
+        ("e_", hex)
+    } else if let Some(hex) = pubkey.strip_prefix("bls12-381:") {
+        ("b_", hex)
+    } else {
+        ("", pubkey.as_str())
+    };
+    let key_part = &key_hex[..std::cmp::min(16, key_hex.len())];
+    let creator_str = format!("{}{}", prefix, key_part);
+    Id::new(&creator_str).unwrap_or_else(|_| Id::new("unknown").unwrap())
 }
 
 /// Validate a message against the current state

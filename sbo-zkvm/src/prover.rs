@@ -1,6 +1,6 @@
 //! Proof generation for SBO blocks
 
-use crate::types::{BlockProofInput, BlockProofOutput, DataProof, CellProof, KzgCommitment};
+use crate::types::{BlockProofInput, BlockProofOutput, DataProof, CellProof, KzgCommitment, StateTransitionWitness};
 use sbo_zkvm_methods::SBO_ZKVM_GUEST_ELF;
 use thiserror::Error;
 
@@ -92,8 +92,7 @@ pub fn prove_genesis(
         prev_journal: None,
         prev_receipt_bytes: None,
         is_first_proof: false, // Block 0 is true genesis, not bootstrap
-        pre_objects: Vec::new(),
-        post_objects: Vec::new(),
+        state_witness: StateTransitionWitness::default(),
         data_proof: None,
         row_commitments: Vec::new(),
         cell_proofs: Vec::new(),
@@ -122,8 +121,7 @@ pub fn prove_genesis_with_da(
         prev_journal: None,
         prev_receipt_bytes: None,
         is_first_proof: false, // Block 0 is true genesis, not bootstrap
-        pre_objects: Vec::new(),
-        post_objects: Vec::new(),
+        state_witness: StateTransitionWitness::default(),
         data_proof: Some(data_proof),
         row_commitments,
         cell_proofs,
@@ -161,8 +159,7 @@ pub fn prove_continuation(
         prev_journal: Some(prev_journal),
         prev_receipt_bytes: Some(prev_receipt_bytes.to_vec()),
         is_first_proof: false, // Has prev_journal, not bootstrap
-        pre_objects: Vec::new(),
-        post_objects: Vec::new(),
+        state_witness: StateTransitionWitness::default(),
         data_proof: None,
         row_commitments: Vec::new(),
         cell_proofs: Vec::new(),
@@ -204,8 +201,7 @@ pub fn prove_continuation_with_da(
         prev_journal: Some(prev_journal),
         prev_receipt_bytes: Some(prev_receipt_bytes.to_vec()),
         is_first_proof: false, // Has prev_journal, not bootstrap
-        pre_objects: Vec::new(),
-        post_objects: Vec::new(),
+        state_witness: StateTransitionWitness::default(),
         data_proof: Some(data_proof),
         row_commitments,
         cell_proofs,

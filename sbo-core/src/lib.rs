@@ -38,3 +38,10 @@ pub use sbo_crypto::{sha256, ContentHash, HashAlgo, CryptoError};
 pub use sbo_crypto::ed25519 as ed25519_new;
 #[cfg(feature = "bls")]
 pub use sbo_crypto::bls;
+
+// Re-export trie types for witness-based state verification
+pub use sbo_crypto::trie::{
+    SparseTrie, TrieProof, TrieProofStep, TrieError,
+    ObjectWitness, StateTransitionWitness, SiblingHint,
+    compute_trie_root, verify_state_transition, verify_trie_proof,
+};
