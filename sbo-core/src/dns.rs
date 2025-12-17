@@ -3,6 +3,8 @@
 //! Resolves sbo://domain.com/ URIs via DNS TXT records at _sbo.domain.com
 
 use std::fmt;
+use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 
 /// Parsed SBO DNS record
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +111,89 @@ pub fn parse_record(txt: &str) -> Result<SboRecord, DnsError> {
     })
 }
 
+/// Resolve a domain to an SBO record via DNS TXT lookup
+///
+/// Queries _sbo.{domain} for TXT records
+pub async fn resolve(domain: &str) -> Result<SboRecord, DnsError> {
+    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+
+    let lookup_name = format!("_sbo.{}", domain);
+
+    let response = resolver
+        .txt_lookup(&lookup_name)
+        .await
+        .map_err(|e| {
+            use hickory_resolver::error::ResolveErrorKind;
+            match e.kind() {
+                ResolveErrorKind::NoRecordsFound { .. } => DnsError::NoRecord,
+                _ => DnsError::LookupFailed(e.to_string()),
+            }
+        })?;
+
+    // Try each TXT record until we find a valid one
+    let mut last_error = DnsError::NoRecord;
+    for record in response.iter() {
+        let txt: String = record.iter()
+            .map(|data| String::from_utf8_lossy(data))
+            .collect();
+
+        match parse_record(&txt) {
+            Ok(sbo_record) => return Ok(sbo_record),
+            Err(e) => last_error = e,
+        }
+    }
+
+    Err(last_error)
+}
+
+/// Convert an sbo:// URI to sbo+raw:// using DNS resolution
+///
+/// Example: sbo://myapp.com/alice/nft -> sbo+raw://avail:mainnet:13/alice/nft
+pub async fn resolve_uri(uri: &str) -> Result<String, DnsError> {
+    let uri = uri.trim();
+
+    if !uri.starts_with("sbo://") {
+        return Err(DnsError::NotSboUri);
+    }
+
+    // Parse: sbo://domain.com/path/to/thing
+    let rest = &uri[6..]; // Remove "sbo://"
+
+    let (domain, path) = if let Some(idx) = rest.find('/') {
+        (&rest[..idx], &rest[idx..])
+    } else {
+        (rest, "/")
+    };
+
+    let record = resolve(domain).await?;
+
+    Ok(format!("sbo+raw://{}:{}{}", record.chain, record.app_id, path))
+}
+
+/// Extract domain from an sbo:// URI
+///
+/// Returns None if not an sbo:// URI
+pub fn extract_domain(uri: &str) -> Option<String> {
+    let uri = uri.trim();
+    if !uri.starts_with("sbo://") {
+        return None;
+    }
+
+    let rest = &uri[6..];
+    let domain = if let Some(idx) = rest.find('/') {
+        &rest[..idx]
+    } else {
+        rest
+    };
+
+    Some(domain.to_string())
+}
+
+/// Check if a URI is a DNS-based sbo:// URI
+pub fn is_dns_uri(uri: &str) -> bool {
+    uri.trim().starts_with("sbo://")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +255,21 @@ mod tests {
         let txt = "sbo=v1 chain=avail:mainnet appId=13 futureField=whatever";
         let record = parse_record(txt).unwrap();
         assert_eq!(record.app_id, 13);
+    }
+
+    #[test]
+    fn test_extract_domain() {
+        assert_eq!(extract_domain("sbo://myapp.com/path"), Some("myapp.com".to_string()));
+        assert_eq!(extract_domain("sbo://myapp.com/"), Some("myapp.com".to_string()));
+        assert_eq!(extract_domain("sbo://myapp.com"), Some("myapp.com".to_string()));
+        assert_eq!(extract_domain("sbo+raw://avail:mainnet:13/"), None);
+    }
+
+    #[test]
+    fn test_is_dns_uri() {
+        assert!(is_dns_uri("sbo://myapp.com/"));
+        assert!(is_dns_uri("sbo://myapp.com/path/to/thing"));
+        assert!(!is_dns_uri("sbo+raw://avail:mainnet:13/"));
+        assert!(!is_dns_uri("https://example.com"));
     }
 }
