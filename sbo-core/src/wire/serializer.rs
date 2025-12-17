@@ -27,7 +27,7 @@ const HEADER_ORDER: &[&str] = &[
     "Proof-Type",
     "Registry-Path",
     "Related",
-    "Signing-Key",
+    "Public-Key",
     "Signature",
 ];
 
@@ -69,7 +69,7 @@ pub fn serialize(msg: &Message) -> Vec<u8> {
         headers.push(("Policy-Ref".to_string(), pr.clone()));
     }
 
-    headers.push(("Signing-Key".to_string(), msg.signing_key.to_string()));
+    headers.push(("Public-Key".to_string(), msg.signing_key.to_string()));
     headers.push(("Signature".to_string(), msg.signature.to_hex()));
 
     // Sort by canonical order

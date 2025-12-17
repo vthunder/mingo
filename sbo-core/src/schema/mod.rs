@@ -30,7 +30,7 @@ pub enum SchemaError {
         reason: String,
     },
 
-    #[error("Key mismatch: signing_key in payload ({payload_key}) does not match Signing-Key header ({header_key})")]
+    #[error("Key mismatch: public_key in payload ({payload_key}) does not match Public-Key header ({header_key})")]
     KeyMismatch {
         payload_key: String,
         header_key: String,
@@ -147,10 +147,10 @@ mod tests {
     fn test_identity_schema_valid() {
         use crate::crypto::SigningKey;
 
-        // Generate a key and create identity with matching signing_key
+        // Generate a key and create identity with matching public_key
         let key = SigningKey::generate();
         let key_str = key.public_key().to_string();
-        let payload = format!(r#"{{"signing_key":"{}","display_name":"Alice"}}"#, key_str);
+        let payload = format!(r#"{{"public_key":"{}","display_name":"Alice"}}"#, key_str);
 
         // Need to create message with the same key
         use crate::message::{Message, Action, ObjectType, Id, Path};
@@ -191,7 +191,7 @@ mod tests {
 
         // Create identity with a DIFFERENT key than what signs the message
         let other_key_str = other_key.public_key().to_string();
-        let payload = format!(r#"{{"signing_key":"{}"}}"#, other_key_str);
+        let payload = format!(r#"{{"public_key":"{}"}}"#, other_key_str);
 
         let placeholder_sig = Signature::parse(&"0".repeat(128)).unwrap();
         let mut msg = Message {

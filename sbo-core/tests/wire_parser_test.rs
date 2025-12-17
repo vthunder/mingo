@@ -38,7 +38,7 @@ Type: object\n\
 Content-Type: application/json\n\
 Content-Length: 17\n\
 Content-Hash: sha256:4b7a3c8f2e1d5a9b0c6e3f7a2d4b8c1e5f9a3d7b0c4e8f2a6d9b3c7e1f5a9d3b\n\
-Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Public-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 \n\
 {\"hello\":\"world\"}";
@@ -61,7 +61,7 @@ Type: object\n\
 Content-Type: application/json\n\
 Content-Length: 17\n\
 Content-Hash: sha256:4d7953c30e8f2c3a7b6d0f1e5a9c8b2d4f6e3a1b0c9d8e7f6a5b4c3d2e1f0a9b\n\
-Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Public-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 \n\
 {\"hello\":\"world\"}";
@@ -86,7 +86,7 @@ Type: object\n\
 Content-Type: application/json\n\
 Content-Length: 9\n\
 Content-Hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
-Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Public-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 \n\
 {\"a\":\"b\"}";
@@ -100,7 +100,7 @@ Type: object\n\
 Content-Type: application/json\n\
 Content-Length: 9\n\
 Content-Hash: sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\n\
-Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Public-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 \n\
 {\"c\":\"d\"}";
@@ -127,7 +127,7 @@ Type: object\n\
 Content-Type: application/json\n\
 Content-Length: 2\n\
 Content-Hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
-Signing-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+Public-Key: ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 Signature: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
 \n\
 {}";

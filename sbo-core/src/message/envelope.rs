@@ -163,7 +163,7 @@ impl Message {
             "Content-Type", "Content-Encoding", "Content-Length", "Content-Hash",
             "Attestation", "Content-Schema", "Creator", "New-ID", "New-Owner",
             "New-Path", "Object-Path", "Origin", "Owner", "Policy-Ref",
-            "Proof", "Proof-Type", "Registry-Path", "Related", "Signing-Key",
+            "Proof", "Proof-Type", "Registry-Path", "Related", "Public-Key",
             // NOTE: Signature is NOT included in signing content
         ];
 
@@ -202,7 +202,7 @@ impl Message {
         if let Some(ref pr) = self.policy_ref {
             headers.push(("Policy-Ref".to_string(), pr.clone()));
         }
-        headers.push(("Signing-Key".to_string(), self.signing_key.to_string()));
+        headers.push(("Public-Key".to_string(), self.signing_key.to_string()));
         // NOTE: Signature is NOT included
 
         // Sort by canonical order

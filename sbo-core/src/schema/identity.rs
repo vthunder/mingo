@@ -3,7 +3,7 @@
 //! Schema for user identity objects per SBO Identity Specification v0.1.
 //!
 //! Required fields:
-//! - `signing_key`: Public key in `algorithm:hex` format (e.g., `ed25519:abc123...`)
+//! - `public_key`: Public key in `algorithm:hex` format (e.g., `ed25519:abc123...`)
 //!
 //! Optional fields:
 //! - `display_name`: Human-readable name
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     /// Public key in algorithm:hex format (required)
-    pub signing_key: String,
+    pub public_key: String,
 
     /// Human-readable display name
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -45,10 +45,10 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Create a new identity with just a signing key
-    pub fn new(signing_key: String) -> Self {
+    /// Create a new identity with just a public key
+    pub fn new(public_key: String) -> Self {
         Self {
-            signing_key,
+            public_key,
             display_name: None,
             description: None,
             avatar: None,
@@ -87,8 +87,8 @@ pub fn parse_identity(payload: &[u8]) -> SchemaResult<Identity> {
 
 /// Validate identity fields
 pub fn validate_identity_fields(identity: &Identity) -> SchemaResult<()> {
-    // Validate signing_key format
-    validate_signing_key_format(&identity.signing_key)?;
+    // Validate public_key format
+    validate_public_key_format(&identity.public_key)?;
 
     // Validate optional fields
     if let Some(ref name) = identity.display_name {
@@ -144,13 +144,13 @@ pub fn validate_identity_fields(identity: &Identity) -> SchemaResult<()> {
     Ok(())
 }
 
-/// Validate that the signing_key in the payload matches the Signing-Key header
+/// Validate that the public_key in the payload matches the Public-Key header
 pub fn validate_identity_key_match(identity: &Identity, header_key: &PublicKey) -> SchemaResult<()> {
     let header_key_str = header_key.to_string();
 
-    if identity.signing_key != header_key_str {
+    if identity.public_key != header_key_str {
         return Err(SchemaError::KeyMismatch {
-            payload_key: identity.signing_key.clone(),
+            payload_key: identity.public_key.clone(),
             header_key: header_key_str,
         });
     }
@@ -158,12 +158,12 @@ pub fn validate_identity_key_match(identity: &Identity, header_key: &PublicKey) 
     Ok(())
 }
 
-/// Validate signing key format (algorithm:hex)
-fn validate_signing_key_format(key: &str) -> SchemaResult<()> {
+/// Validate public key format (algorithm:hex)
+fn validate_public_key_format(key: &str) -> SchemaResult<()> {
     // Must have algorithm prefix
     let (algo, hex_part) = key.split_once(':')
         .ok_or_else(|| SchemaError::InvalidField {
-            field: "signing_key".to_string(),
+            field: "public_key".to_string(),
             reason: "must be in algorithm:hex format (e.g., ed25519:abc123...)".to_string(),
         })?;
 
@@ -173,7 +173,7 @@ fn validate_signing_key_format(key: &str) -> SchemaResult<()> {
             // ed25519 public key is 32 bytes = 64 hex chars
             if hex_part.len() != 64 {
                 return Err(SchemaError::InvalidField {
-                    field: "signing_key".to_string(),
+                    field: "public_key".to_string(),
                     reason: format!("ed25519 key must be 64 hex chars, got {}", hex_part.len()),
                 });
             }
@@ -182,14 +182,14 @@ fn validate_signing_key_format(key: &str) -> SchemaResult<()> {
             // BLS public key is 48 bytes = 96 hex chars
             if hex_part.len() != 96 {
                 return Err(SchemaError::InvalidField {
-                    field: "signing_key".to_string(),
+                    field: "public_key".to_string(),
                     reason: format!("bls12-381 key must be 96 hex chars, got {}", hex_part.len()),
                 });
             }
         }
         _ => {
             return Err(SchemaError::InvalidField {
-                field: "signing_key".to_string(),
+                field: "public_key".to_string(),
                 reason: format!("unknown algorithm '{}', supported: ed25519, bls12-381", algo),
             });
         }
@@ -198,7 +198,7 @@ fn validate_signing_key_format(key: &str) -> SchemaResult<()> {
     // Validate hex
     if !hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(SchemaError::InvalidField {
-            field: "signing_key".to_string(),
+            field: "public_key".to_string(),
             reason: "key material must be valid hex".to_string(),
         });
     }
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_parse_minimal_identity() {
-        let json = r#"{"signing_key":"ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
+        let json = r#"{"public_key":"ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
         let identity = parse_identity(json.as_bytes()).unwrap();
         assert!(identity.display_name.is_none());
     }
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn test_parse_full_identity() {
         let json = r#"{
-            "signing_key": "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "public_key": "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "display_name": "Alice",
             "description": "Test identity",
             "avatar": "/alice/avatar.png",
@@ -241,20 +241,20 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_signing_key_format() {
+    fn test_validate_public_key_format() {
         // Valid ed25519
-        assert!(validate_signing_key_format(
+        assert!(validate_public_key_format(
             "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         ).is_ok());
 
         // Missing algorithm
-        assert!(validate_signing_key_format("0123456789abcdef").is_err());
+        assert!(validate_public_key_format("0123456789abcdef").is_err());
 
         // Wrong length
-        assert!(validate_signing_key_format("ed25519:0123").is_err());
+        assert!(validate_public_key_format("ed25519:0123").is_err());
 
         // Invalid hex
-        assert!(validate_signing_key_format("ed25519:gggg").is_err());
+        assert!(validate_public_key_format("ed25519:gggg").is_err());
     }
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
 
         let json = id.to_json().unwrap();
         let parsed: Identity = serde_json::from_slice(&json).unwrap();
-        assert_eq!(parsed.signing_key, id.signing_key);
+        assert_eq!(parsed.public_key, id.public_key);
         assert_eq!(parsed.display_name, id.display_name);
     }
 }

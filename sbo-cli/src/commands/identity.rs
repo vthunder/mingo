@@ -275,7 +275,7 @@ pub async fn show(name_or_uri: &str) -> Result<()> {
                 println!("Identity: {}", name);
                 println!("  URI:          {}", identity_uri);
                 println!("  Chain:        {}", chain);
-                println!("  Signing Key:  {}", data["signing_key"].as_str().unwrap_or(&public_key));
+                println!("  Public Key:   {}", data["public_key"].as_str().unwrap_or(&public_key));
 
                 if let Some(dn) = data["display_name"].as_str() {
                     println!("  Display Name: {}", dn);
@@ -308,7 +308,7 @@ pub async fn show(name_or_uri: &str) -> Result<()> {
                 println!("Identity: {}", name);
                 println!("  URI:          {}", identity_uri);
                 println!("  Chain:        {}", chain);
-                println!("  Signing Key:  {}", public_key);
+                println!("  Public Key:   {}", public_key);
                 println!("  Local Key:    {}", key_alias);
                 println!("  Status:       unverified (not yet on chain)");
             }
@@ -317,7 +317,7 @@ pub async fn show(name_or_uri: &str) -> Result<()> {
                 println!("Identity: {}", name);
                 println!("  URI:          {}", identity_uri);
                 println!("  Chain:        {}", chain);
-                println!("  Signing Key:  {}", public_key);
+                println!("  Public Key:   {}", public_key);
                 println!("  Local Key:    {}", key_alias);
                 println!("  Status:       unknown (daemon error: {})", e);
             }
@@ -365,10 +365,10 @@ pub async fn update(
         }
     };
 
-    // Get the signing key from the existing identity
-    let existing_signing_key = existing["signing_key"]
+    // Get the public key from the existing identity
+    let existing_public_key = existing["public_key"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing signing_key in identity"))?;
+        .ok_or_else(|| anyhow::anyhow!("Missing public_key in identity"))?;
 
     // Open keyring and find the matching key
     let keyring = Keyring::open()?;
@@ -380,11 +380,11 @@ pub async fn update(
         keyring
             .list()
             .iter()
-            .find(|(_, entry)| entry.public_key == existing_signing_key)
+            .find(|(_, entry)| entry.public_key == existing_public_key)
             .map(|(alias, _)| alias.clone())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "No local key matches identity signing key. Import the key first."
+                    "No local key matches identity public key. Import the key first."
                 )
             })?
     };
@@ -393,12 +393,12 @@ pub async fn update(
     let public_key = signing_key.public_key();
 
     // Verify the key matches
-    if public_key.to_string() != existing_signing_key {
+    if public_key.to_string() != existing_public_key {
         eprintln!(
-            "Error: Key '{}' ({}) does not match identity's signing key ({})",
+            "Error: Key '{}' ({}) does not match identity's public key ({})",
             alias,
             public_key.to_string(),
-            existing_signing_key
+            existing_public_key
         );
         std::process::exit(1);
     }
@@ -577,7 +577,7 @@ pub async fn import(
     println!("Importing identity '{}' from {}", name, chain_uri);
 
     // Get identity data - either from proof or from daemon
-    let signing_key = if let Some(proof_path) = proof_file {
+    let identity_public_key = if let Some(proof_path) = proof_file {
         // Verify proof and extract identity
         println!("  Verifying proof from {}...", proof_path.display());
 
@@ -614,7 +614,7 @@ pub async fn import(
             .map_err(|e| anyhow::anyhow!("Failed to parse identity: {}", e))?;
 
         println!("  Proof valid ✓");
-        identity.signing_key
+        identity.public_key
     } else {
         // No proof - try daemon (only works in full mode with synced repo)
         let config = Config::load(&Config::config_path())?;
@@ -622,9 +622,9 @@ pub async fn import(
 
         match client.request(Request::GetIdentity { uri: identity_uri.clone() }).await {
             Ok(Response::Ok { data }) => {
-                data["signing_key"]
+                data["public_key"]
                     .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Identity missing signing_key"))?
+                    .ok_or_else(|| anyhow::anyhow!("Identity missing public_key"))?
                     .to_string()
             }
             Ok(Response::Error { message }) => {
@@ -645,14 +645,14 @@ pub async fn import(
     let matching_alias = keyring
         .list()
         .iter()
-        .find(|(_, entry)| entry.public_key == signing_key)
+        .find(|(_, entry)| entry.public_key == identity_public_key)
         .map(|(alias, _)| alias.clone());
 
     let alias = match matching_alias {
         Some(a) => a,
         None => {
-            eprintln!("Error: No local key matches identity signing key.");
-            eprintln!("  Identity key: {}", signing_key);
+            eprintln!("Error: No local key matches identity public key.");
+            eprintln!("  Identity key: {}", identity_public_key);
             eprintln!("\nYou must import the private key first:");
             eprintln!("  sbo key import <key-file-or-hex> --name <alias>");
             std::process::exit(1);

@@ -170,9 +170,9 @@ fn parse_at(bytes: &[u8], start: usize) -> Result<(Message, usize), ParseError> 
     // Real validation will happen in a later task
 
     // Crypto headers
-    let signing_key = PublicKey::parse(headers.get("Signing-Key")
-        .ok_or_else(|| ParseError::MissingHeader("Signing-Key".to_string()))?)
-        .map_err(|e| ParseError::InvalidHeader(format!("Signing-Key: {:?}", e)))?;
+    let signing_key = PublicKey::parse(headers.get("Public-Key")
+        .ok_or_else(|| ParseError::MissingHeader("Public-Key".to_string()))?)
+        .map_err(|e| ParseError::InvalidHeader(format!("Public-Key: {:?}", e)))?;
 
     let signature = Signature::parse(headers.get("Signature")
         .ok_or_else(|| ParseError::MissingHeader("Signature".to_string()))?)

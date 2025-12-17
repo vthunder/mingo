@@ -695,40 +695,54 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 }
 
                 // Scan /sys/names/ directory
-                // Structure: /sys/names/<name>/<object_id> (name is a directory)
+                // Structure: /sys/names/<name> (file) or /sys/names/<name>/<object_id> (directory)
                 let names_path = repo.path.join("sys").join("names");
                 if names_path.exists() {
                     if let Ok(entries) = std::fs::read_dir(&names_path) {
                         for entry in entries.flatten() {
-                            // Each entry is a directory named after the identity (e.g., "alice")
-                            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                                let name = entry.file_name().to_string_lossy().to_string();
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            let entry_path = entry.path();
 
-                                // Look for identity file inside the directory
-                                // Common patterns: "identity", or just the first file
-                                let name_dir = entry.path();
-                                if let Ok(files) = std::fs::read_dir(&name_dir) {
-                                    for file_entry in files.flatten() {
-                                        if file_entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                                            // Try to parse as identity.v1
-                                            if let Ok(content) = std::fs::read(file_entry.path()) {
-                                                // Parse wire format to extract payload
-                                                if let Ok(msg) = sbo_core::wire::parse(&content) {
-                                                    if let Some(payload) = &msg.payload {
-                                                        if let Ok(identity) = sbo_core::schema::parse_identity(payload) {
-                                                            identities.push(serde_json::json!({
-                                                                "uri": format!("{}/sys/names/{}", repo.uri.to_string().trim_end_matches('/'), name),
-                                                                "chain": repo.uri.to_string(),
-                                                                "name": name,
-                                                                "display_name": identity.display_name,
-                                                                "signing_key": identity.signing_key,
-                                                                "status": "verified",
-                                                            }));
-                                                            break; // Found identity for this name
-                                                        }
-                                                    }
-                                                }
-                                            }
+                            // Try to find identity content - either direct file or file in directory
+                            let content = if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                                // Direct file (e.g., /sys/names/sys)
+                                std::fs::read(&entry_path).ok()
+                            } else if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                // Directory - look for first file inside
+                                std::fs::read_dir(&entry_path).ok().and_then(|files| {
+                                    files.flatten().find(|f| f.file_type().map(|t| t.is_file()).unwrap_or(false))
+                                        .and_then(|f| std::fs::read(f.path()).ok())
+                                })
+                            } else {
+                                None
+                            };
+
+                            if let Some(content) = content {
+                                if let Ok(msg) = sbo_core::wire::parse(&content) {
+                                    if let Some(payload) = &msg.payload {
+                                        // Parse identity payload
+                                        let identity_data = if let Ok(identity) = sbo_core::schema::parse_identity(payload) {
+                                            Some((identity.public_key, identity.display_name))
+                                        } else {
+                                            // Fallback for raw JSON
+                                            serde_json::from_slice::<serde_json::Value>(payload).ok().and_then(|v| {
+                                                let public_key = v.get("public_key")
+                                                    .and_then(|k| k.as_str())
+                                                    .map(|s| s.to_string())?;
+                                                let display_name = v.get("display_name").and_then(|d| d.as_str()).map(|s| s.to_string());
+                                                Some((public_key, display_name))
+                                            })
+                                        };
+
+                                        if let Some((public_key, display_name)) = identity_data {
+                                            identities.push(serde_json::json!({
+                                                "uri": format!("{}/sys/names/{}", repo.uri.to_string().trim_end_matches('/'), name),
+                                                "chain": repo.uri.to_string(),
+                                                "name": name,
+                                                "display_name": display_name,
+                                                "public_key": public_key,
+                                                "status": "verified",
+                                            }));
                                         }
                                     }
                                 }
@@ -775,18 +789,32 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 if identity_path.exists() {
                     if let Ok(content) = std::fs::read(&identity_path) {
                         if let Ok(msg) = sbo_core::wire::parse(&content) {
-                            if let Some(payload) = msg.payload {
-                                if let Ok(identity) = sbo_core::schema::parse_identity(&payload) {
+                            if let Some(payload) = &msg.payload {
+                                // Parse identity payload
+                                let identity_data = if let Ok(identity) = sbo_core::schema::parse_identity(payload) {
+                                    Some((identity.public_key, identity.display_name, identity.description, identity.avatar, identity.links, identity.binding))
+                                } else {
+                                    // Fallback for raw JSON
+                                    serde_json::from_slice::<serde_json::Value>(payload).ok().and_then(|v| {
+                                        let public_key = v.get("public_key")
+                                            .and_then(|k| k.as_str())
+                                            .map(|s| s.to_string())?;
+                                        let display_name = v.get("display_name").and_then(|d| d.as_str()).map(|s| s.to_string());
+                                        Some((public_key, display_name, None, None, None, None))
+                                    })
+                                };
+
+                                if let Some((public_key, display_name, description, avatar, links, binding)) = identity_data {
                                     found_identities.push(serde_json::json!({
                                         "uri": format!("{}/sys/names/{}", repo.uri.to_string().trim_end_matches('/'), name),
                                         "chain": repo.uri.to_string(),
                                         "name": name,
-                                        "signing_key": identity.signing_key,
-                                        "display_name": identity.display_name,
-                                        "description": identity.description,
-                                        "avatar": identity.avatar,
-                                        "links": identity.links,
-                                        "binding": identity.binding,
+                                        "public_key": public_key,
+                                        "display_name": display_name,
+                                        "description": description,
+                                        "avatar": avatar,
+                                        "links": links,
+                                        "binding": binding,
                                         "status": "verified",
                                     }));
                                 }

@@ -447,7 +447,7 @@ fn format_schema_error(e: &SchemaError) -> String {
         }
         SchemaError::KeyMismatch { payload_key, header_key } => {
             format!(
-                "Key mismatch: signing_key in payload ({}) does not match Signing-Key header ({})",
+                "Key mismatch: public_key in payload ({}) does not match Public-Key header ({})",
                 payload_key, header_key
             )
         }
