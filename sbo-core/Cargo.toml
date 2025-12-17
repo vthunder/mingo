@@ -18,6 +18,7 @@ tracing.workspace = true
 sbo-types = { path = "../sbo-types", features = ["serde"] }
 sbo-crypto = { path = "../sbo-crypto" }
 base64 = "0.22"
+dirs = "5"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

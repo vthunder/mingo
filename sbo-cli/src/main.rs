@@ -764,36 +764,144 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Key(key_cmd) => {
+            use sbo_core::keyring::Keyring;
+
+            let mut keyring = match Keyring::open() {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("Failed to open keyring: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
             match key_cmd {
                 KeyCommands::Generate { name } => {
                     let alias = name.as_deref().unwrap_or("default");
-                    println!("Generating key with alias: {}", alias);
-                    todo!("Implement key generate")
+                    match keyring.generate(alias) {
+                        Ok(pubkey) => {
+                            println!("Generated key '{}'", alias);
+                            println!("  Public key: {}", pubkey.to_string());
+                            if keyring.default_key() == Some(alias) {
+                                println!("  (set as default)");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to generate key: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 KeyCommands::List => {
-                    println!("Listing keys in keyring");
-                    todo!("Implement key list")
+                    let keys = keyring.list();
+                    if keys.is_empty() {
+                        println!("No keys in keyring. Generate one with: sbo key generate");
+                    } else {
+                        let default = keyring.default_key();
+                        for (alias, entry) in keys {
+                            let marker = if Some(alias.as_str()) == default { "*" } else { " " };
+                            println!("{} {} ({})", marker, alias, entry.algorithm);
+                            println!("    {}", entry.public_key);
+                            println!("    Created: {}", entry.created_at);
+                            if !entry.identities.is_empty() {
+                                println!("    Identities: {}", entry.identities.join(", "));
+                            }
+                        }
+                        println!();
+                        println!("* = default key");
+                    }
                 }
                 KeyCommands::Import { source, name } => {
                     let alias = name.as_deref().unwrap_or("default");
-                    println!("Importing key as '{}' from: {}", alias, source);
-                    todo!("Implement key import")
+
+                    // Determine if source is a file path or hex string
+                    let result = if std::path::Path::new(&source).exists() {
+                        keyring.import_file(alias, std::path::Path::new(&source))
+                    } else {
+                        keyring.import_hex(alias, &source)
+                    };
+
+                    match result {
+                        Ok(pubkey) => {
+                            println!("Imported key '{}'", alias);
+                            println!("  Public key: {}", pubkey.to_string());
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to import key: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 KeyCommands::Export { name, output } => {
-                    let alias = name.as_deref().unwrap_or("default");
-                    println!("Exporting key '{}' to: {:?}", alias, output);
-                    todo!("Implement key export")
+                    let alias = keyring.resolve_alias(name.as_deref());
+                    let alias = match alias {
+                        Ok(a) => a,
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+
+                    match keyring.export(&alias) {
+                        Ok(key_hex) => {
+                            if let Some(output_path) = output {
+                                match std::fs::write(&output_path, &key_hex) {
+                                    Ok(_) => {
+                                        // Set restrictive permissions on the output file
+                                        #[cfg(unix)]
+                                        {
+                                            use std::os::unix::fs::PermissionsExt;
+                                            let _ = std::fs::set_permissions(
+                                                &output_path,
+                                                std::fs::Permissions::from_mode(0o600),
+                                            );
+                                        }
+                                        println!("Exported key '{}' to {}", alias, output_path.display());
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to write file: {}", e);
+                                        std::process::exit(1);
+                                    }
+                                }
+                            } else {
+                                // Print to stdout
+                                println!("{}", key_hex);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to export key: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 KeyCommands::Delete { name } => {
-                    println!("Deleting key: {}", name);
-                    todo!("Implement key delete")
+                    match keyring.delete(&name) {
+                        Ok(_) => {
+                            println!("Deleted key '{}'", name);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to delete key: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 KeyCommands::Default { name } => {
                     match name {
-                        Some(alias) => println!("Setting default key to: {}", alias),
-                        None => println!("Showing default key"),
+                        Some(alias) => {
+                            match keyring.set_default(&alias) {
+                                Ok(_) => println!("Set '{}' as the default key", alias),
+                                Err(e) => {
+                                    eprintln!("Error: {}", e);
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        None => {
+                            match keyring.default_key() {
+                                Some(alias) => println!("Default key: {}", alias),
+                                None => println!("No default key set"),
+                            }
+                        }
                     }
-                    todo!("Implement key default")
                 }
             }
         }

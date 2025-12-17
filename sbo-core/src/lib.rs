@@ -19,6 +19,7 @@ pub mod error;
 pub mod presets;
 pub mod proof;
 pub mod schema;
+pub mod keyring;
 
 mod genesis;
 mod indexer;
@@ -46,3 +47,12 @@ pub use sbo_crypto::trie::{
     ObjectWitness, StateTransitionWitness, SiblingHint,
     compute_trie_root, verify_state_transition, verify_trie_proof,
 };
+
+use std::path::PathBuf;
+
+/// Get the base SBO directory (~/.sbo)
+pub fn sbo_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".sbo"))
+        .unwrap_or_else(|| PathBuf::from(".sbo"))
+}
