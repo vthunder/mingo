@@ -578,10 +578,39 @@ async fn main() -> anyhow::Result<()> {
                 }
                 RepoCommands::Add { uri, path, from_block } => {
                     let path = canonicalize_path(&path)?;
-                    match client.request(Request::RepoAdd { uri, path: path.clone(), from_block }).await {
+
+                    // Resolve sbo:// URIs via DNS
+                    let (display_uri, resolved_uri) = if sbo_core::dns::is_dns_uri(&uri) {
+                        print!("Resolving {}...", uri);
+                        std::io::Write::flush(&mut std::io::stdout())?;
+
+                        match sbo_core::dns::resolve_uri(&uri).await {
+                            Ok(resolved) => {
+                                println!(" -> {}", resolved);
+                                (uri.clone(), resolved)
+                            }
+                            Err(e) => {
+                                println!();
+                                eprintln!("Error: Failed to resolve DNS for {}: {}", uri, e);
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        (uri.clone(), uri.clone())
+                    };
+
+                    match client.request(Request::RepoAdd {
+                        display_uri: display_uri.clone(),
+                        resolved_uri,
+                        path: path.clone(),
+                        from_block,
+                    }).await {
                         Ok(Response::Ok { data }) => {
                             println!("Added repository:");
-                            println!("  URI:  {}", data["uri"].as_str().unwrap_or("?"));
+                            println!("  URI:  {}", data["display_uri"].as_str().unwrap_or("?"));
+                            if data["display_uri"] != data["resolved_uri"] {
+                                println!("  Chain: {}", data["resolved_uri"].as_str().unwrap_or("?"));
+                            }
                             println!("  Path: {}", path.display());
                             println!("  Head: {}", data["head"].as_u64().unwrap_or(0));
                         }

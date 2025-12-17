@@ -12,7 +12,12 @@ use tokio::net::{UnixListener, UnixStream};
 #[serde(tag = "cmd")]
 pub enum Request {
     /// Add a new repo (from_block can be negative for relative to chain head)
-    RepoAdd { uri: String, path: PathBuf, from_block: Option<i64> },
+    RepoAdd {
+        display_uri: String,
+        resolved_uri: String,
+        path: PathBuf,
+        from_block: Option<i64>,
+    },
     /// Remove a repo by path
     RepoRemove { path: PathBuf },
     /// Remove a repo by URI

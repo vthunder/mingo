@@ -407,11 +407,25 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
 
 async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Response {
     match req {
-        Request::RepoAdd { uri, path, from_block } => {
-            let parsed_uri = match SboUri::parse(&uri) {
+        Request::RepoAdd { display_uri, resolved_uri, path, from_block } => {
+            // Parse the resolved URI (always sbo+raw://)
+            let uri = match SboUri::parse(&resolved_uri) {
                 Ok(u) => u,
-                Err(e) => return Response::error(e.to_string()),
+                Err(e) => return Response::error(format!("Invalid URI: {}", e)),
             };
+
+            // Check for duplicates
+            {
+                let state = state.read().await;
+                for repo in state.repos.list() {
+                    if repo.uri.to_string() == uri.to_string() {
+                        return Response::error(format!(
+                            "Already tracking this chain as {}",
+                            repo.display_uri
+                        ));
+                    }
+                }
+            }
 
             // Resolve negative from_block relative to current chain head
             let resolved_from_block = match from_block {
@@ -441,10 +455,11 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             };
 
             let mut state = state.write().await;
-            match state.repos.add(uri.clone(), parsed_uri, path, resolved_from_block) {
+            match state.repos.add(display_uri.clone(), uri, path, resolved_from_block) {
                 Ok(repo) => Response::ok(serde_json::json!({
                     "id": repo.id,
-                    "uri": repo.uri.to_string(),
+                    "display_uri": repo.display_uri,
+                    "resolved_uri": repo.uri.to_string(),
                     "path": repo.path,
                     "head": repo.head,
                 })),
