@@ -19,6 +19,7 @@ sbo-types = { path = "../sbo-types", features = ["serde"] }
 sbo-crypto = { path = "../sbo-crypto" }
 base64 = "0.22"
 dirs = "5"
+hickory-resolver = "0.24"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
