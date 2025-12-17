@@ -177,21 +177,26 @@ pub struct Repo {
     pub id: String,
     /// The SBO URI
     pub uri: SboUri,
+    /// Display URI (may be sbo:// DNS-based or sbo+raw://)
+    pub display_uri: String,
     /// Local filesystem path
     pub path: PathBuf,
     /// Last synced block number
     pub head: u64,
     /// Creation timestamp
     pub created_at: u64,
+    /// Last DNS check timestamp (None if never checked, or sbo+raw://)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_checked_at: Option<u64>,
 }
 
 impl Repo {
     /// Create a new repo with optional starting block
-    pub fn new(uri: SboUri, path: PathBuf, from_block: Option<u64>) -> Self {
+    pub fn new(display_uri: String, uri: SboUri, path: PathBuf, from_block: Option<u64>) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let id = Self::compute_id(&uri);
-        let created_at = SystemTime::now()
+        let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
@@ -200,12 +205,21 @@ impl Repo {
         // (sync processes blocks from head+1 onwards)
         let head = from_block.map(|b| b.saturating_sub(1)).unwrap_or(0);
 
+        // Set dns_checked_at to now if display_uri is sbo://, None for sbo+raw://
+        let dns_checked_at = if display_uri.starts_with("sbo://") {
+            Some(now)
+        } else {
+            None
+        };
+
         Self {
             id,
             uri,
+            display_uri,
             path,
             head,
-            created_at,
+            created_at: now,
+            dns_checked_at,
         }
     }
 
@@ -263,7 +277,7 @@ impl RepoManager {
     }
 
     /// Add a new repo with optional starting block
-    pub fn add(&mut self, uri: SboUri, path: PathBuf, from_block: Option<u64>) -> crate::Result<&Repo> {
+    pub fn add(&mut self, display_uri: String, uri: SboUri, path: PathBuf, from_block: Option<u64>) -> crate::Result<&Repo> {
         // Create repo directory first (needed for canonicalization)
         std::fs::create_dir_all(&path)?;
 
@@ -283,7 +297,7 @@ impl RepoManager {
             }
         }
 
-        let repo = Repo::new(uri.clone(), canonical_path, from_block);
+        let repo = Repo::new(display_uri, uri.clone(), canonical_path, from_block);
         let id = repo.id.clone();
 
         // Create repo metadata directory using sanitized URI

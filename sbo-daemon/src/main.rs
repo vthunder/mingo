@@ -441,7 +441,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             };
 
             let mut state = state.write().await;
-            match state.repos.add(parsed_uri, path, resolved_from_block) {
+            match state.repos.add(uri.clone(), parsed_uri, path, resolved_from_block) {
                 Ok(repo) => Response::ok(serde_json::json!({
                     "id": repo.id,
                     "uri": repo.uri.to_string(),
@@ -874,7 +874,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
                     // Add repo starting from current block
                     let mut state_write = state.write().await;
-                    match state_write.repos.add(parsed_uri.clone(), path.clone(), Some(current_block)) {
+                    match state_write.repos.add(uri.clone(), parsed_uri.clone(), path.clone(), Some(current_block)) {
                         Ok(repo) => {
                             Response::ok(serde_json::json!({
                                 "uri": repo.uri.to_string(),
