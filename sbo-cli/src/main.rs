@@ -25,12 +25,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Claim an identity name
-    Claim {
-        /// Name to claim
-        name: String,
-    },
-
     /// Post an object
     Post {
         /// Path (e.g., /alice/nfts/)
@@ -77,9 +71,6 @@ enum Commands {
         /// Path to list
         path: String,
     },
-
-    /// Show database status
-    Status,
 
     /// DA layer test commands
     #[command(subcommand)]
@@ -286,10 +277,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Commands::Claim { name } => {
-            println!("Claiming identity: {}", name);
-            todo!("Implement claim")
-        }
         Commands::Post { path, id, file, content_type } => {
             println!("Posting object: {}:{}", path, id);
             todo!("Implement post")
@@ -305,10 +292,6 @@ async fn main() -> anyhow::Result<()> {
         Commands::List { path } => {
             println!("Listing objects at: {}", path);
             todo!("Implement list")
-        }
-        Commands::Status => {
-            println!("Database status");
-            todo!("Implement status")
         }
         Commands::Da(da_cmd) => {
             match da_cmd {
