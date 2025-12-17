@@ -4,6 +4,7 @@
 
 use sbo_core::message::{Message, Action, Id, Path as SboPath};
 use sbo_core::policy::{evaluate, ActionType, PolicyResult};
+use sbo_core::schema::{validate_schema, SchemaError};
 use sbo_core::state::{StateDb, StoredObject};
 use std::path::Path;
 
@@ -11,6 +12,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationStage {
     Signature,
+    Schema,
     State,
     Policy,
 }
@@ -19,6 +21,7 @@ impl std::fmt::Display for ValidationStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ValidationStage::Signature => write!(f, "sig"),
+            ValidationStage::Schema => write!(f, "schema"),
             ValidationStage::State => write!(f, "state"),
             ValidationStage::Policy => write!(f, "policy"),
         }
@@ -98,7 +101,15 @@ pub fn validate_message(
         };
     }
 
-    // 2. Check if root policy exists (genesis check)
+    // 2. Validate payload against Content-Schema (if specified)
+    if let Err(e) = validate_schema(msg) {
+        return ValidationResult::Invalid {
+            stage: ValidationStage::Schema,
+            reason: format_schema_error(&e),
+        };
+    }
+
+    // 3. Check if root policy exists (genesis check)
     // SECURITY: Fail closed if we can't determine root policy state
     let root_policy_status = check_root_policy_exists(state);
     if let RootPolicyCheck::Error(e) = &root_policy_status {
@@ -110,7 +121,7 @@ pub fn validate_message(
     }
     let root_policy_exists = matches!(root_policy_status, RootPolicyCheck::Exists);
 
-    // 3. Handle based on action
+    // 4. Handle based on action
     match &msg.action {
         Action::Post => validate_post(msg, state, root_policy_exists),
         Action::Transfer { .. } => validate_transfer(msg, state, root_policy_exists),
@@ -417,4 +428,31 @@ pub fn message_to_stored_object(
         block_number,
         object_hash,
     })
+}
+
+/// Format a schema error for display
+fn format_schema_error(e: &SchemaError) -> String {
+    match e {
+        SchemaError::UnknownSchema(schema) => {
+            format!("Unknown Content-Schema: {}", schema)
+        }
+        SchemaError::InvalidJson(err) => {
+            format!("Invalid JSON payload: {}", err)
+        }
+        SchemaError::MissingField(field) => {
+            format!("Missing required field: {}", field)
+        }
+        SchemaError::InvalidField { field, reason } => {
+            format!("Invalid field '{}': {}", field, reason)
+        }
+        SchemaError::KeyMismatch { payload_key, header_key } => {
+            format!(
+                "Key mismatch: signing_key in payload ({}) does not match Signing-Key header ({})",
+                payload_key, header_key
+            )
+        }
+        SchemaError::EmptyPayload => {
+            "Payload is empty but Content-Schema requires validation".to_string()
+        }
+    }
 }

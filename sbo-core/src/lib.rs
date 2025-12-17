@@ -18,6 +18,7 @@ pub mod state;
 pub mod error;
 pub mod presets;
 pub mod proof;
+pub mod schema;
 
 mod genesis;
 mod indexer;

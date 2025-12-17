@@ -110,6 +110,10 @@ enum Commands {
     /// Proof operations
     #[command(subcommand)]
     Proof(ProofCommands),
+
+    /// Identity operations
+    #[command(subcommand)]
+    Identity(IdentityCommands),
 }
 
 #[derive(Subcommand)]
@@ -128,6 +132,48 @@ enum ProofCommands {
     Verify {
         /// Path to SBOQ file, or - for stdin
         file: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdentityCommands {
+    /// Create an identity object (identity.v1 schema)
+    ///
+    /// Creates a JSON payload with signing_key and optional profile fields,
+    /// then posts it with Content-Schema: identity.v1
+    Create {
+        /// Name to claim (will post to /sys/names/<claim>/)
+        #[arg(long)]
+        claim: Option<String>,
+
+        /// Display name (e.g., "Alice Smith")
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Description / bio
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Avatar path (SBO path like /alice/avatar.png or URL)
+        #[arg(long)]
+        avatar: Option<String>,
+
+        /// Website link
+        #[arg(long)]
+        website: Option<String>,
+
+        /// Cross-chain identity binding (SBO URI)
+        #[arg(long)]
+        binding: Option<String>,
+
+        /// Output the SBO message to stdout instead of submitting
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show identity information for a name
+    Show {
+        /// Name to look up (e.g., "alice")
+        name: String,
     },
 }
 
@@ -641,6 +687,16 @@ async fn main() -> anyhow::Result<()> {
                             std::process::exit(1);
                         }
                     }
+                }
+            }
+        }
+        Commands::Identity(identity_cmd) => {
+            match identity_cmd {
+                IdentityCommands::Create { claim, name, description, avatar, website, binding, dry_run } => {
+                    commands::identity::create(claim, name, description, avatar, website, binding, dry_run).await?;
+                }
+                IdentityCommands::Show { name } => {
+                    commands::identity::show(&name).await?;
                 }
             }
         }

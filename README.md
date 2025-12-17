@@ -176,15 +176,17 @@ The proof shows the trie structure at the divergence point, proving the path isn
 ### Daemon Modes
 
 ```bash
-# Full node (default) - validates all blocks
+# Full node (default) - executes and validates all blocks
 ./target/release/sbo-daemon start
 
-# Light mode - trusts remote state, only validates owned objects
+# Light mode - verifies zkVM proofs instead of executing blocks (see "Light Mode" section)
 ./target/release/sbo-daemon start --light
 
-# Prover mode - generates ZK proofs for state transitions
+# Prover mode - generates ZK proofs for state transitions (see "ZK Validity Proofs" section)
 ./target/release/sbo-daemon start --prover
 ```
+
+Note: `--light` and `--prover` are mutually exclusive.
 
 ---
 
@@ -346,6 +348,106 @@ Proofs are automatically submitted to TurboDA (Avail) when generated:
 2024-01-15 12:34:56 INFO Generated composite proof for blocks 100-110 (428532 bytes)
 2024-01-15 12:34:57 INFO Submitted proof to Avail: 0x1234...
 ```
+
+---
+
+## Light Mode
+
+Light mode allows running a daemon that verifies zkVM proofs instead of executing every state transition. This enables trustless verification with much lower resource requirements.
+
+### When to Use Light Mode
+
+- **Resource-constrained environments**: Light mode doesn't need to execute all blocks
+- **Bootstrapping new nodes**: Quickly sync to chain head by verifying proofs
+- **Read-only applications**: Only need to trust proven state, not execute writes
+- **Embedded/mobile clients**: Lower CPU and storage requirements
+
+### How Light Mode Works
+
+```
+Full Node:                          Light Node:
+┌──────────────┐                    ┌──────────────┐
+│ Process all  │                    │ Skip block   │
+│ blocks       │                    │ execution    │
+│ (O(N) work)  │                    │              │
+└──────┬───────┘                    └──────┬───────┘
+       │                                   │
+       ▼                                   ▼
+┌──────────────┐                    ┌──────────────┐
+│ Compute      │                    │ Verify zkVM  │
+│ state root   │                    │ proof        │
+└──────┬───────┘                    └──────┬───────┘
+       │                                   │
+       ▼                                   ▼
+┌──────────────┐                    ┌──────────────┐
+│ Store state  │                    │ Store proven │
+│ in DB        │                    │ state root   │
+└──────────────┘                    └──────────────┘
+```
+
+1. **Full node**: Executes every block, computes state roots from scratch
+2. **Light node**: Waits for SBOP proofs, cryptographically verifies them, trusts proven state roots
+
+### Running in Light Mode
+
+```bash
+# Start daemon in light mode
+./target/release/sbo-daemon start --light
+
+# Light mode is mutually exclusive with prover mode
+# This will error:
+./target/release/sbo-daemon start --light --prover  # ❌ Cannot combine
+```
+
+### Building with Light Mode Support
+
+Light mode requires the `zkvm` feature for production proof verification:
+
+```bash
+# Build with zkVM support (required for real proof verification)
+cargo build --release --features zkvm
+
+# Without zkvm feature, light mode can only validate proof formats
+# but cannot cryptographically verify them
+```
+
+### Light Mode Configuration
+
+Light mode can also be enabled via config file:
+
+```toml
+# ~/.sbo/config.toml
+[light]
+enabled = true
+```
+
+When enabled in config, you can start normally:
+
+```bash
+./target/release/sbo-daemon start
+# Light mode enabled automatically from config
+```
+
+### What Light Mode Verifies
+
+When an SBOP proof is received:
+
+1. **Receipt verification**: Cryptographically verify the zkVM receipt
+2. **Block range check**: Ensure proof covers expected block range
+3. **State root extraction**: Extract `prev_state_root` and `new_state_root` from proof journal
+4. **Root storage**: Store the proven state roots for later queries
+
+```
+2024-01-15 12:34:56 INFO ✓ Light mode: verified zkVM proof for blocks 100-110 (state: abcd... → ef01...)
+2024-01-15 12:34:56 INFO Light mode: stored proven state root ef01... at block 110 for sbo://avail:turing:506/
+```
+
+### Limitations
+
+- **No object storage**: Light mode doesn't store individual objects, only state roots
+- **No state queries**: Cannot answer queries about specific object contents
+- **Proof-dependent**: Relies on prover nodes submitting proofs
+- **Dev mode proofs**: Cannot extract state roots from dev mode proofs (hash-based, not cryptographic)
 
 ### Troubleshooting
 
