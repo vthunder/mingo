@@ -20,6 +20,7 @@ pub mod presets;
 pub mod proof;
 pub mod schema;
 pub mod keyring;
+pub mod dns;
 
 mod genesis;
 mod indexer;
