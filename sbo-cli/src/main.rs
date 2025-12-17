@@ -44,9 +44,13 @@ enum Commands {
     #[command(subcommand)]
     Proof(ProofCommands),
 
-    /// Identity operations
+    /// Local keyring management (signing keys)
     #[command(subcommand)]
-    Identity(IdentityCommands),
+    Key(KeyCommands),
+
+    /// On-chain identity management (identity.v1 objects)
+    #[command(subcommand)]
+    Id(IdCommands),
 
     /// Debugging and low-level tools
     #[command(subcommand)]
@@ -130,25 +134,82 @@ enum ProofCommands {
 }
 
 #[derive(Subcommand)]
-enum IdentityCommands {
-    /// Create an identity object (identity.v1 schema)
+enum KeyCommands {
+    /// Generate a new signing key and add to keyring
+    ///
+    /// Keys are stored in ~/.sbo/keys/
+    Generate {
+        /// Alias for the key (default: "default")
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// List keys in the local keyring
+    ///
+    /// Shows key aliases, public keys, and associated identities
+    List,
+
+    /// Import a key from file or hex string
+    Import {
+        /// Path to key file, or hex string of 32-byte secret key
+        source: String,
+        /// Alias for the imported key
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Export a key (for backup)
+    Export {
+        /// Key alias to export (default: "default")
+        name: Option<String>,
+        /// Output file (default: stdout as hex)
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
+
+    /// Delete a key from the keyring
+    Delete {
+        /// Key alias to delete
+        name: String,
+    },
+
+    /// Get or set the default signing key
+    Default {
+        /// Key alias to set as default (omit to show current default)
+        name: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdCommands {
+    /// Create an identity on chain (identity.v1 schema)
     ///
     /// Creates a JSON payload with signing_key and optional profile fields,
-    /// then posts it with Content-Schema: identity.v1
+    /// then posts it to /sys/names/<name>/ with Content-Schema: identity.v1
+    ///
+    /// Examples:
+    ///   sbo id create sbo://avail:turing:506/ alice
+    ///   sbo id create sbo://avail:turing:506/ alice --display-name "Alice Smith"
     Create {
-        /// Name to claim (will post to /sys/names/<claim>/)
+        /// SBO URI of the chain/app (e.g., sbo://avail:turing:506/)
+        uri: String,
+
+        /// Name to claim (will post to /sys/names/<name>/)
+        name: String,
+
+        /// Key alias to use for signing (default: "default")
         #[arg(long)]
-        claim: Option<String>,
+        key: Option<String>,
 
         /// Display name (e.g., "Alice Smith")
         #[arg(long)]
-        name: Option<String>,
+        display_name: Option<String>,
 
         /// Description / bio
         #[arg(long)]
         description: Option<String>,
 
-        /// Avatar path (SBO path like /alice/avatar.png or URL)
+        /// Avatar path (SBO path or URL)
         #[arg(long)]
         avatar: Option<String>,
 
@@ -164,10 +225,46 @@ enum IdentityCommands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Show identity information for a name
+
+    /// List identities on chain
+    ///
+    /// Shows identities and which local keys they're associated with
+    List {
+        /// SBO URI to search (e.g., sbo://avail:turing:506/)
+        uri: Option<String>,
+    },
+
+    /// Show detailed identity information
     Show {
-        /// Name to look up (e.g., "alice")
+        /// SBO URI of identity (e.g., sbo://avail:turing:506/sys/names/alice)
+        /// or just the name if URI context is set
         name: String,
+    },
+
+    /// Update an existing identity
+    Update {
+        /// SBO URI of identity (e.g., sbo://avail:turing:506/sys/names/alice)
+        uri: String,
+
+        /// Key alias to use for signing (must match identity's key)
+        #[arg(long)]
+        key: Option<String>,
+
+        /// New display name
+        #[arg(long)]
+        display_name: Option<String>,
+
+        /// New description / bio
+        #[arg(long)]
+        description: Option<String>,
+
+        /// New avatar path
+        #[arg(long)]
+        avatar: Option<String>,
+
+        /// New website link
+        #[arg(long)]
+        website: Option<String>,
     },
 }
 
@@ -666,13 +763,59 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Identity(identity_cmd) => {
-            match identity_cmd {
-                IdentityCommands::Create { claim, name, description, avatar, website, binding, dry_run } => {
-                    commands::identity::create(claim, name, description, avatar, website, binding, dry_run).await?;
+        Commands::Key(key_cmd) => {
+            match key_cmd {
+                KeyCommands::Generate { name } => {
+                    let alias = name.as_deref().unwrap_or("default");
+                    println!("Generating key with alias: {}", alias);
+                    todo!("Implement key generate")
                 }
-                IdentityCommands::Show { name } => {
-                    commands::identity::show(&name).await?;
+                KeyCommands::List => {
+                    println!("Listing keys in keyring");
+                    todo!("Implement key list")
+                }
+                KeyCommands::Import { source, name } => {
+                    let alias = name.as_deref().unwrap_or("default");
+                    println!("Importing key as '{}' from: {}", alias, source);
+                    todo!("Implement key import")
+                }
+                KeyCommands::Export { name, output } => {
+                    let alias = name.as_deref().unwrap_or("default");
+                    println!("Exporting key '{}' to: {:?}", alias, output);
+                    todo!("Implement key export")
+                }
+                KeyCommands::Delete { name } => {
+                    println!("Deleting key: {}", name);
+                    todo!("Implement key delete")
+                }
+                KeyCommands::Default { name } => {
+                    match name {
+                        Some(alias) => println!("Setting default key to: {}", alias),
+                        None => println!("Showing default key"),
+                    }
+                    todo!("Implement key default")
+                }
+            }
+        }
+        Commands::Id(id_cmd) => {
+            match id_cmd {
+                IdCommands::Create { uri, name, key, display_name, description, avatar, website, binding, dry_run } => {
+                    println!("Creating identity '{}' at {}", name, uri);
+                    let _ = (key, display_name, description, avatar, website, binding, dry_run);
+                    todo!("Implement id create")
+                }
+                IdCommands::List { uri } => {
+                    println!("Listing identities at: {:?}", uri);
+                    todo!("Implement id list")
+                }
+                IdCommands::Show { name } => {
+                    println!("Showing identity: {}", name);
+                    todo!("Implement id show")
+                }
+                IdCommands::Update { uri, key, display_name, description, avatar, website } => {
+                    println!("Updating identity at: {}", uri);
+                    let _ = (key, display_name, description, avatar, website);
+                    todo!("Implement id update")
                 }
             }
         }

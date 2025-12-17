@@ -545,6 +545,15 @@ poll_interval_secs = 12
 | `sbo uri post <uri> <file>` | Post an object to the DA layer |
 | `sbo uri list <uri>` | List objects at a path |
 | `sbo uri transfer <uri>` | Transfer an object |
+| `sbo key generate` | Generate a new signing key |
+| `sbo key list` | List keys in keyring |
+| `sbo key import <source>` | Import a key from file/hex |
+| `sbo key export [name]` | Export a key for backup |
+| `sbo key default [name]` | Get/set default key |
+| `sbo id create <uri> <name>` | Create an identity on chain |
+| `sbo id list [uri]` | List identities |
+| `sbo id show <name>` | Show identity details |
+| `sbo id update <uri>` | Update an identity |
 | `sbo proof generate <path>` | Generate inclusion proof |
 | `sbo proof verify <file>` | Verify a proof file |
 | `sbo repo add <uri> <path>` | Add a repository to sync |
@@ -553,8 +562,7 @@ poll_interval_secs = 12
 | `sbo daemon start` | Start the daemon |
 | `sbo daemon stop` | Stop the daemon |
 | `sbo daemon status` | Check daemon status |
-| `sbo identity create` | Create an identity object |
-| `sbo identity show <name>` | Show identity information |
+| `sbo debug da ...` | DA layer debugging commands |
 
 ### Daemon IPC
 
