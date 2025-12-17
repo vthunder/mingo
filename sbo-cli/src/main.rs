@@ -548,11 +548,21 @@ async fn main() -> anyhow::Result<()> {
                         genesis_data,
                     }).await {
                         Ok(Response::Ok { data }) => {
+                            let chain_uri = data["uri"].as_str().unwrap_or(&uri);
+                            let sys_identity_uri = format!("{}/sys/names/sys", chain_uri.trim_end_matches('/'));
+
+                            // Add sys identity to keyring
+                            let mut keyring = Keyring::open().expect("keyring was just opened");
+                            if let Err(e) = keyring.add_identity(&alias, &sys_identity_uri) {
+                                eprintln!("Warning: failed to add sys identity to keyring: {}", e);
+                            }
+
                             println!("\n✓ Repository created");
-                            println!("  URI:           {}", data["uri"].as_str().unwrap_or("?"));
+                            println!("  URI:           {}", chain_uri);
                             println!("  Path:          {}", path.display());
                             println!("  From Block:    {}", data["from_block"].as_u64().unwrap_or(0));
                             println!("  Submission ID: {}", data["submission_id"].as_str().unwrap_or("?"));
+                            println!("  Sys Identity:  {} → {}", sys_identity_uri, alias);
                             println!("\nThe daemon will sync this repo automatically.");
                         }
                         Ok(Response::Error { message }) => {
