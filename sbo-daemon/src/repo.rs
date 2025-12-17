@@ -94,19 +94,25 @@ pub struct SboUri {
 }
 
 impl SboUri {
-    /// Parse an SBO URI like "sbo+raw://avail:turing:18/" or "sbo+raw://polkadot:abc123:42/nft/"
-    /// Also accepts legacy "sbo://" format for backwards compatibility
+    /// Parse a raw SBO URI like "sbo+raw://avail:turing:18/" or "sbo+raw://polkadot:abc123:42/nft/"
+    ///
+    /// Note: This only handles direct chain references (sbo+raw://).
+    /// DNS-resolved URIs (sbo://) require resolution first - see SboUri::resolve_dns().
     pub fn parse(uri: &str) -> crate::Result<Self> {
         let uri = uri.trim();
 
-        // Accept both sbo+raw:// (correct) and sbo:// (legacy) for backwards compatibility
+        // Only accept sbo+raw:// for direct chain references
+        // sbo:// URIs require DNS resolution first
         let rest = if uri.starts_with("sbo+raw://") {
             &uri[10..] // Remove "sbo+raw://"
         } else if uri.starts_with("sbo://") {
-            &uri[6..] // Remove "sbo://" (legacy format)
+            return Err(crate::DaemonError::Repo(format!(
+                "DNS-based URI requires resolution: {}. Use sbo+raw:// for direct chain references.",
+                uri
+            )));
         } else {
             return Err(crate::DaemonError::Repo(format!(
-                "Invalid SBO URI: must start with 'sbo+raw://' (or legacy 'sbo://'): {}",
+                "Invalid SBO URI: must start with 'sbo+raw://' for direct chain references: {}",
                 uri
             )));
         };
@@ -426,13 +432,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_legacy_sbo_uri() {
-        // Test that legacy sbo:// format is still accepted
-        let uri = SboUri::parse("sbo://avail:turing:13/").unwrap();
-        assert_eq!(uri.chain.namespace, "avail");
-        assert_eq!(uri.app_id, 13);
-        // But output should be sbo+raw://
-        assert_eq!(uri.to_string(), "sbo+raw://avail:turing:13/");
+    fn test_sbo_dns_uri_requires_resolution() {
+        // sbo:// URIs are DNS-based and require resolution - they should not parse directly
+        let err = SboUri::parse("sbo://myapp.com/path").unwrap_err();
+        assert!(err.to_string().contains("DNS-based URI requires resolution"));
     }
 
     #[test]

@@ -571,7 +571,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 RepoCommands::Remove { target } => {
                     // Detect if target is a URI or a path
-                    let request = if target.starts_with("sbo://") {
+                    let request = if target.starts_with("sbo+raw://") || target.starts_with("sbo://") {
                         Request::RepoRemoveByUri { uri: target }
                     } else {
                         let path = canonicalize_path(&PathBuf::from(&target))?;

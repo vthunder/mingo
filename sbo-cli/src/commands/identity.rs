@@ -525,8 +525,8 @@ pub async fn import(
     let mut keyring = Keyring::open()?;
 
     // Build identity URI
-    // Handle both SBO URI (sbo://...) and local path (./my-repo)
-    let (identity_uri, chain_uri) = if repo.starts_with("sbo://") {
+    // Handle both SBO URI (sbo+raw://... or sbo://...) and local path (./my-repo)
+    let (identity_uri, chain_uri) = if repo.starts_with("sbo+raw://") || repo.starts_with("sbo://") {
         let chain = repo.trim_end_matches('/');
         (format!("{}/sys/names/{}", chain, name), format!("{}/", chain))
     } else {
