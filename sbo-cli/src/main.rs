@@ -290,6 +290,21 @@ enum IdCommands {
         #[arg(long)]
         proof: Option<PathBuf>,
     },
+
+    /// Remove an identity from local keyring (does not affect on-chain state)
+    ///
+    /// This only forgets the association between a local key and an on-chain identity.
+    /// The on-chain identity remains unchanged.
+    ///
+    /// Examples:
+    ///   sbo id remove sbo+raw://avail:turing:506/ alice
+    Remove {
+        /// SBO chain URI (e.g., sbo+raw://avail:turing:506/)
+        chain: String,
+
+        /// Identity name to remove
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1047,6 +1062,9 @@ async fn main() -> anyhow::Result<()> {
                         &name,
                         proof.as_deref(),
                     ).await?;
+                }
+                IdCommands::Remove { chain, name } => {
+                    commands::identity::remove(&chain, &name)?;
                 }
             }
         }

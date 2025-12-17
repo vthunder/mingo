@@ -678,6 +678,43 @@ pub async fn import(
     Ok(())
 }
 
+/// Remove an identity from the local keyring (does not affect on-chain state)
+pub fn remove(chain: &str, name: &str) -> Result<()> {
+    let mut keyring = Keyring::open()?;
+
+    // Build identity URI
+    let chain = chain.trim_end_matches('/');
+    let identity_uri = format!("{}/sys/names/{}", chain, name);
+
+    // Find which key has this identity
+    let mut found_alias = None;
+    for (alias, entry) in keyring.list() {
+        if entry.identities.contains(&identity_uri) {
+            found_alias = Some(alias.clone());
+            break;
+        }
+    }
+
+    let alias = match found_alias {
+        Some(a) => a,
+        None => {
+            println!("Identity not found in keyring: {}", identity_uri);
+            println!("\nUse 'sbo id list' to see your identities");
+            return Ok(());
+        }
+    };
+
+    // Remove from keyring
+    keyring.remove_identity(&alias, &identity_uri)?;
+
+    println!("✓ Removed identity from keyring");
+    println!("  URI:       {}", identity_uri);
+    println!("  Was on:    {} (key)", alias);
+    println!("\n  Note: On-chain identity unchanged");
+
+    Ok(())
+}
+
 /// Parse identity URI to extract chain and name
 /// e.g., "sbo+raw://avail:turing:506/sys/names/alice" -> ("sbo+raw://avail:turing:506/", "alice")
 fn parse_identity_uri(uri: &str) -> (String, String) {
