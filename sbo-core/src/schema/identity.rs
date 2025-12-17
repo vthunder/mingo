@@ -233,7 +233,7 @@ mod tests {
             "description": "Test identity",
             "avatar": "/alice/avatar.png",
             "links": {"website": "https://alice.example.com"},
-            "binding": "sbo://avail:mainnet:42/sys/names/alice"
+            "binding": "sbo+raw://avail:mainnet:42/sys/names/alice"
         }"#;
         let identity = parse_identity(json.as_bytes()).unwrap();
         assert_eq!(identity.display_name, Some("Alice".to_string()));
@@ -293,7 +293,7 @@ mod tests {
         let mut id = Identity::new("ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
 
         // Valid binding
-        id.binding = Some("sbo://avail:mainnet:42/sys/names/alice".to_string());
+        id.binding = Some("sbo+raw://avail:mainnet:42/sys/names/alice".to_string());
         assert!(validate_identity_fields(&id).is_ok());
 
         // Invalid - not SBO URI

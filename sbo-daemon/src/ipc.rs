@@ -30,7 +30,7 @@ pub enum Request {
     ObjectProof { repo_path: PathBuf, path: String, id: String },
     /// Submit an identity to /sys/names/<name>
     SubmitIdentity {
-        /// Chain URI (e.g., sbo://avail:turing:506/)
+        /// Chain URI (e.g., sbo+raw://avail:turing:506/)
         uri: String,
         /// Name to claim
         name: String,
@@ -46,12 +46,12 @@ pub enum Request {
     },
     /// Get a specific identity by URI
     GetIdentity {
-        /// Full URI (e.g., sbo://avail:turing:506/sys/names/alice) or just name
+        /// Full URI (e.g., sbo+raw://avail:turing:506/sys/names/alice) or just name
         uri: String,
     },
     /// Create a new repo with genesis (sys identity + root policy)
     RepoCreate {
-        /// SBO URI (e.g., sbo://avail:turing:506/)
+        /// SBO URI (e.g., sbo+raw://avail:turing:506/)
         uri: String,
         /// Local path to sync to
         path: PathBuf,

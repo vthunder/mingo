@@ -28,7 +28,7 @@ enum Commands {
     /// Object operations using SBO URIs
     ///
     /// Work with objects using fully-qualified SBO URIs like:
-    ///   sbo://avail:turing:506/alice/nfts/token1
+    ///   sbo+raw://avail:turing:506/alice/nfts/token1
     #[command(subcommand)]
     Uri(UriCommands),
 
@@ -62,20 +62,20 @@ enum UriCommands {
     /// Get an object by SBO URI
     ///
     /// Examples:
-    ///   sbo uri get sbo://avail:turing:506/alice/nfts/token1
-    ///   sbo uri get sbo://avail:turing:506/sys/names/alice
+    ///   sbo uri get sbo+raw://avail:turing:506/alice/nfts/token1
+    ///   sbo uri get sbo+raw://avail:turing:506/sys/names/alice
     Get {
-        /// SBO URI (e.g., sbo://avail:turing:506/path/to/object)
+        /// SBO URI (e.g., sbo+raw://avail:turing:506/path/to/object)
         uri: String,
     },
 
     /// Post an object to an SBO URI
     ///
     /// Examples:
-    ///   sbo uri post sbo://avail:turing:506/alice/nfts/token1 ./data.json
-    ///   sbo uri post sbo://avail:turing:506/alice/images/photo image.png --content-type image/png
+    ///   sbo uri post sbo+raw://avail:turing:506/alice/nfts/token1 ./data.json
+    ///   sbo uri post sbo+raw://avail:turing:506/alice/images/photo image.png --content-type image/png
     Post {
-        /// SBO URI (e.g., sbo://avail:turing:506/path/to/object)
+        /// SBO URI (e.g., sbo+raw://avail:turing:506/path/to/object)
         uri: String,
         /// File containing payload
         file: PathBuf,
@@ -87,18 +87,18 @@ enum UriCommands {
     /// List objects at an SBO URI path
     ///
     /// Examples:
-    ///   sbo uri list sbo://avail:turing:506/alice/nfts/
-    ///   sbo uri list sbo://avail:turing:506/sys/names/
+    ///   sbo uri list sbo+raw://avail:turing:506/alice/nfts/
+    ///   sbo uri list sbo+raw://avail:turing:506/sys/names/
     List {
-        /// SBO URI path (e.g., sbo://avail:turing:506/path/)
+        /// SBO URI path (e.g., sbo+raw://avail:turing:506/path/)
         uri: String,
     },
 
     /// Transfer an object to a new location or owner
     ///
     /// Examples:
-    ///   sbo uri transfer sbo://avail:turing:506/alice/nfts/token1 --new-path /bob/nfts/
-    ///   sbo uri transfer sbo://avail:turing:506/alice/nfts/token1 --new-owner <pubkey>
+    ///   sbo uri transfer sbo+raw://avail:turing:506/alice/nfts/token1 --new-path /bob/nfts/
+    ///   sbo uri transfer sbo+raw://avail:turing:506/alice/nfts/token1 --new-owner <pubkey>
     Transfer {
         /// SBO URI of the object to transfer
         uri: String,
@@ -188,10 +188,10 @@ enum IdCommands {
     /// then posts it to /sys/names/<name>/ with Content-Schema: identity.v1
     ///
     /// Examples:
-    ///   sbo id create sbo://avail:turing:506/ alice
-    ///   sbo id create sbo://avail:turing:506/ alice --display-name "Alice Smith"
+    ///   sbo id create sbo+raw://avail:turing:506/ alice
+    ///   sbo id create sbo+raw://avail:turing:506/ alice --display-name "Alice Smith"
     Create {
-        /// SBO URI of the chain/app (e.g., sbo://avail:turing:506/)
+        /// SBO URI of the chain/app (e.g., sbo+raw://avail:turing:506/)
         uri: String,
 
         /// Name to claim (will post to /sys/names/<name>/)
@@ -234,20 +234,20 @@ enum IdCommands {
     ///
     /// Shows identities and which local keys they're associated with
     List {
-        /// SBO URI to search (e.g., sbo://avail:turing:506/)
+        /// SBO URI to search (e.g., sbo+raw://avail:turing:506/)
         uri: Option<String>,
     },
 
     /// Show detailed identity information
     Show {
-        /// SBO URI of identity (e.g., sbo://avail:turing:506/sys/names/alice)
+        /// SBO URI of identity (e.g., sbo+raw://avail:turing:506/sys/names/alice)
         /// or just the name if URI context is set
         name: String,
     },
 
     /// Update an existing identity
     Update {
-        /// SBO URI of identity (e.g., sbo://avail:turing:506/sys/names/alice)
+        /// SBO URI of identity (e.g., sbo+raw://avail:turing:506/sys/names/alice)
         uri: String,
 
         /// Key alias to use for signing (must match identity's key)
@@ -277,10 +277,10 @@ enum IdCommands {
     /// You must have the matching private key already in your keyring.
     ///
     /// Examples:
-    ///   sbo id import sbo://avail:turing:506/ alice
+    ///   sbo id import sbo+raw://avail:turing:506/ alice
     ///   sbo id import ./my-repo alice --proof proof.sboq
     Import {
-        /// SBO URI or local repo path (e.g., sbo://avail:turing:506/ or ./my-repo)
+        /// SBO URI or local repo path (e.g., sbo+raw://avail:turing:506/ or ./my-repo)
         repo: String,
 
         /// Identity name to import
@@ -300,10 +300,10 @@ enum RepoCommands {
     /// The URI path must be "/" (root).
     ///
     /// Examples:
-    ///   sbo repo create sbo://avail:turing:506/ ./my-repo
-    ///   sbo repo create sbo://avail:turing:506/ ./my-repo --key default
+    ///   sbo repo create sbo+raw://avail:turing:506/ ./my-repo
+    ///   sbo repo create sbo+raw://avail:turing:506/ ./my-repo --key default
     Create {
-        /// SBO URI with root path (e.g., sbo://avail:turing:506/)
+        /// SBO URI with root path (e.g., sbo+raw://avail:turing:506/)
         uri: String,
         /// Local path to sync to
         path: PathBuf,
@@ -313,7 +313,7 @@ enum RepoCommands {
     },
     /// Add a repository to follow
     Add {
-        /// SBO URI (e.g., sbo://avail:turing:13/)
+        /// SBO URI (e.g., sbo+raw://avail:turing:506/)
         uri: String,
         /// Local path to sync to
         path: PathBuf,

@@ -581,7 +581,7 @@ mod tests {
         keyring.generate("test").unwrap();
 
         keyring
-            .add_identity("test", "sbo://avail:turing:506/sys/names/alice")
+            .add_identity("test", "sbo+raw://avail:turing:506/sys/names/alice")
             .unwrap();
 
         let keys = keyring.list();
@@ -589,11 +589,11 @@ mod tests {
         assert_eq!(entry.identities.len(), 1);
         assert_eq!(
             entry.identities[0],
-            "sbo://avail:turing:506/sys/names/alice"
+            "sbo+raw://avail:turing:506/sys/names/alice"
         );
 
         keyring
-            .remove_identity("test", "sbo://avail:turing:506/sys/names/alice")
+            .remove_identity("test", "sbo+raw://avail:turing:506/sys/names/alice")
             .unwrap();
         let keys = keyring.list();
         assert!(keys.get("test").unwrap().identities.is_empty());

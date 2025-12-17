@@ -679,7 +679,7 @@ pub async fn import(
 }
 
 /// Parse identity URI to extract chain and name
-/// e.g., "sbo://avail:turing:506/sys/names/alice" -> ("sbo://avail:turing:506/", "alice")
+/// e.g., "sbo+raw://avail:turing:506/sys/names/alice" -> ("sbo+raw://avail:turing:506/", "alice")
 fn parse_identity_uri(uri: &str) -> (String, String) {
     if let Some(pos) = uri.find("/sys/names/") {
         let chain = format!("{}/", &uri[..pos]);

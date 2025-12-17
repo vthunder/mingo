@@ -48,10 +48,12 @@ pub enum DaemonError {
 pub type Result<T> = std::result::Result<T, DaemonError>;
 
 /// Sanitize a URI into a filesystem-safe directory name
-/// e.g., "sbo://avail:turing:506/nft/" -> "avail_turing_506_nft"
+/// e.g., "sbo+raw://avail:turing:506/nft/" -> "avail_turing_506_nft"
 pub fn sanitize_uri_for_path(uri: &str) -> String {
-    // Remove sbo:// prefix
-    let s = uri.strip_prefix("sbo://").unwrap_or(uri);
+    // Remove sbo+raw:// or sbo:// prefix
+    let s = uri.strip_prefix("sbo+raw://")
+        .or_else(|| uri.strip_prefix("sbo://"))
+        .unwrap_or(uri);
 
     // Replace non-alphanumeric chars with underscores, collapse multiple underscores
     let sanitized: String = s

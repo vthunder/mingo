@@ -60,7 +60,7 @@ via an embedded light client and syncing object data from Avail RPC nodes.
 ├── repos.json               # Index of followed repos
 └── repos/
     └── <repo-hash>/         # Per-repo metadata
-        ├── config.json      # {"uri": "sbo://Avail:13/", "path": "/home/user/my-repo"}
+        ├── config.json      # {"uri": "sbo+raw://avail:mainnet:13/", "path": "/home/user/my-repo"}
         ├── head             # Last synced block number
         └── pending/         # Submissions awaiting confirmation
             └── <tx-hash>    # Pending submission metadata
@@ -125,12 +125,12 @@ Manages the set of followed repositories.
 
 **Repo URI format:**
 ```
-sbo://Avail:<app_id>/[path/]
+sbo+raw://avail:<network>:<app_id>/[path/]
 ```
 
 Examples:
-- `sbo://Avail:13/` - Full repo at app_id 13
-- `sbo://Avail:13/nft/` - Only the /nft/ subtree
+- `sbo+raw://avail:mainnet:13/` - Full repo at app_id 13
+- `sbo+raw://avail:mainnet:13/nft/` - Only the /nft/ subtree
 
 ### 4. Block Processor
 
@@ -211,7 +211,7 @@ sbo transfer <repo-path> <sbo-path> <id> --to <new-owner>
                                  # Submit TRANSFER
 
 # Examples
-sbo repo add sbo://Avail:13/ ./my-repo
+sbo repo add sbo+raw://avail:mainnet:13/ ./my-repo
 sbo post ./my-repo /nft/items/ myitem --file item.json
 ```
 

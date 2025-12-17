@@ -94,18 +94,22 @@ pub struct SboUri {
 }
 
 impl SboUri {
-    /// Parse an SBO URI like "sbo://avail:turing:18/" or "sbo://polkadot:abc123:42/nft/"
+    /// Parse an SBO URI like "sbo+raw://avail:turing:18/" or "sbo+raw://polkadot:abc123:42/nft/"
+    /// Also accepts legacy "sbo://" format for backwards compatibility
     pub fn parse(uri: &str) -> crate::Result<Self> {
         let uri = uri.trim();
 
-        if !uri.starts_with("sbo://") {
+        // Accept both sbo+raw:// (correct) and sbo:// (legacy) for backwards compatibility
+        let rest = if uri.starts_with("sbo+raw://") {
+            &uri[10..] // Remove "sbo+raw://"
+        } else if uri.starts_with("sbo://") {
+            &uri[6..] // Remove "sbo://" (legacy format)
+        } else {
             return Err(crate::DaemonError::Repo(format!(
-                "Invalid SBO URI: must start with 'sbo://': {}",
+                "Invalid SBO URI: must start with 'sbo+raw://' (or legacy 'sbo://'): {}",
                 uri
             )));
-        }
-
-        let rest = &uri[6..]; // Remove "sbo://"
+        };
 
         // Split authority from path
         let (authority, path) = if let Some(idx) = rest.find('/') {
@@ -145,8 +149,8 @@ impl SboUri {
     pub fn to_string(&self) -> String {
         let chain_str = self.chain.display_name();
         match &self.path_prefix {
-            Some(prefix) => format!("sbo://{}:{}{}", chain_str, self.app_id, prefix),
-            None => format!("sbo://{}:{}/", chain_str, self.app_id),
+            Some(prefix) => format!("sbo+raw://{}:{}{}", chain_str, self.app_id, prefix),
+            None => format!("sbo+raw://{}:{}/", chain_str, self.app_id),
         }
     }
 
@@ -154,8 +158,8 @@ impl SboUri {
     pub fn to_canonical_string(&self) -> String {
         let resolved = self.chain.resolve();
         match &self.path_prefix {
-            Some(prefix) => format!("sbo://{}:{}{}", resolved, self.app_id, prefix),
-            None => format!("sbo://{}:{}/", resolved, self.app_id),
+            Some(prefix) => format!("sbo+raw://{}:{}{}", resolved, self.app_id, prefix),
+            None => format!("sbo+raw://{}:{}/", resolved, self.app_id),
         }
     }
 }
@@ -408,7 +412,8 @@ mod tests {
 
     #[test]
     fn test_parse_sbo_uri_with_alias() {
-        let uri = SboUri::parse("sbo://avail:turing:13/").unwrap();
+        // Test with sbo+raw:// (correct format)
+        let uri = SboUri::parse("sbo+raw://avail:turing:13/").unwrap();
         assert_eq!(uri.chain.namespace, "avail");
         assert_eq!(uri.chain.reference, "turing");
         assert_eq!(uri.app_id, 13);
@@ -421,8 +426,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_legacy_sbo_uri() {
+        // Test that legacy sbo:// format is still accepted
+        let uri = SboUri::parse("sbo://avail:turing:13/").unwrap();
+        assert_eq!(uri.chain.namespace, "avail");
+        assert_eq!(uri.app_id, 13);
+        // But output should be sbo+raw://
+        assert_eq!(uri.to_string(), "sbo+raw://avail:turing:13/");
+    }
+
+    #[test]
     fn test_parse_sbo_uri_with_caip2() {
-        let uri = SboUri::parse("sbo://polkadot:d3d2f3a3495dc597434a99d7d449ebad:42/nft/").unwrap();
+        let uri = SboUri::parse("sbo+raw://polkadot:d3d2f3a3495dc597434a99d7d449ebad:42/nft/").unwrap();
         assert_eq!(uri.chain.namespace, "polkadot");
         assert_eq!(uri.chain.reference, "d3d2f3a3495dc597434a99d7d449ebad");
         assert_eq!(uri.app_id, 42);
@@ -431,25 +446,25 @@ mod tests {
 
     #[test]
     fn test_sbo_uri_roundtrip() {
-        // Alias should display as alias
-        let uri = SboUri::parse("sbo://avail:turing:13/").unwrap();
-        assert_eq!(uri.to_string(), "sbo://avail:turing:13/");
+        // Alias should display as alias with sbo+raw://
+        let uri = SboUri::parse("sbo+raw://avail:turing:13/").unwrap();
+        assert_eq!(uri.to_string(), "sbo+raw://avail:turing:13/");
 
         // Full CAIP-2 for known chain should display as alias
-        let uri = SboUri::parse("sbo://polkadot:d3d2f3a3495dc597434a99d7d449ebad:42/").unwrap();
-        assert_eq!(uri.to_string(), "sbo://avail:turing:42/");
+        let uri = SboUri::parse("sbo+raw://polkadot:d3d2f3a3495dc597434a99d7d449ebad:42/").unwrap();
+        assert_eq!(uri.to_string(), "sbo+raw://avail:turing:42/");
 
         // Unknown chain should display as full CAIP-2
-        let uri = SboUri::parse("sbo://eip155:1:99/").unwrap();
-        assert_eq!(uri.to_string(), "sbo://eip155:1:99/");
+        let uri = SboUri::parse("sbo+raw://eip155:1:99/").unwrap();
+        assert_eq!(uri.to_string(), "sbo+raw://eip155:1:99/");
     }
 
     #[test]
     fn test_canonical_string() {
-        let uri = SboUri::parse("sbo://avail:turing:13/nft/").unwrap();
+        let uri = SboUri::parse("sbo+raw://avail:turing:13/nft/").unwrap();
         assert_eq!(
             uri.to_canonical_string(),
-            "sbo://polkadot:d3d2f3a3495dc597434a99d7d449ebad:13/nft/"
+            "sbo+raw://polkadot:d3d2f3a3495dc597434a99d7d449ebad:13/nft/"
         );
     }
 

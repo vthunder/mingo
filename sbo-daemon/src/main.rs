@@ -759,8 +759,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             let state_read = state.read().await;
 
             // Parse URI to extract chain and name
-            // Supports: sbo://avail:turing:506/sys/names/alice or just "alice"
-            let (chain_uri, name) = if uri.starts_with("sbo://") {
+            // Supports: sbo+raw://avail:turing:506/sys/names/alice or just "alice"
+            let (chain_uri, name) = if uri.starts_with("sbo+raw://") || uri.starts_with("sbo://") {
                 // Full URI - extract chain and name
                 if let Some(names_pos) = uri.find("/sys/names/") {
                     let chain = &uri[..names_pos + 1]; // Include trailing /

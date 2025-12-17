@@ -67,7 +67,7 @@ cargo build --release
 ./target/release/sbo-daemon start
 
 # Add a repo to sync from Avail
-./target/release/sbo repo add sbo://avail:turing:506 ./my-repo
+./target/release/sbo repo add sbo+raw://avail:turing:506 ./my-repo
 
 # Check sync status
 ./target/release/sbo repo status
@@ -80,16 +80,16 @@ ls ./my-repo/
 
 ```bash
 # Post an object (using full SBO URI)
-./target/release/sbo uri post sbo://avail:turing:506/test/hello ./data.json
+./target/release/sbo uri post sbo+raw://avail:turing:506/test/hello ./data.json
 
 # Post with specific content type
-./target/release/sbo uri post sbo://avail:turing:506/profiles/alice ./profile.json --content-type application/json
+./target/release/sbo uri post sbo+raw://avail:turing:506/profiles/alice ./profile.json --content-type application/json
 
 # Get an object
-./target/release/sbo uri get sbo://avail:turing:506/test/hello
+./target/release/sbo uri get sbo+raw://avail:turing:506/test/hello
 
 # List objects at a path
-./target/release/sbo uri list sbo://avail:turing:506/profiles/
+./target/release/sbo uri list sbo+raw://avail:turing:506/profiles/
 ```
 
 ---
@@ -445,7 +445,7 @@ When an SBOP proof is received:
 
 ```
 2024-01-15 12:34:56 INFO ✓ Light mode: verified zkVM proof for blocks 100-110 (state: abcd... → ef01...)
-2024-01-15 12:34:56 INFO Light mode: stored proven state root ef01... at block 110 for sbo://avail:turing:506/
+2024-01-15 12:34:56 INFO Light mode: stored proven state root ef01... at block 110 for sbo+raw://avail:turing:506/
 ```
 
 ### Limitations
