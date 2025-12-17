@@ -76,14 +76,20 @@ cargo build --release
 ls ./my-repo/
 ```
 
-### Posting Objects
+### Object Operations
 
 ```bash
-# Post a simple object
-echo '{"name":"My First Object"}' | ./target/release/sbo post /test/hello
+# Post an object (using full SBO URI)
+./target/release/sbo uri post sbo://avail:turing:506/test/hello ./data.json
 
 # Post with specific content type
-./target/release/sbo post /profiles/alice --content-type application/json < profile.json
+./target/release/sbo uri post sbo://avail:turing:506/profiles/alice ./profile.json --content-type application/json
+
+# Get an object
+./target/release/sbo uri get sbo://avail:turing:506/test/hello
+
+# List objects at a path
+./target/release/sbo uri list sbo://avail:turing:506/profiles/
 ```
 
 ---
@@ -535,17 +541,20 @@ poll_interval_secs = 12
 
 | Command | Description |
 |---------|-------------|
-| `sbo key generate` | Generate a new signing key |
-| `sbo key list` | List available keys |
-| `sbo post <path>` | Post an object to the DA layer |
-| `sbo get <path>` | Get an object from local state |
-| `sbo proof <path>` | Generate inclusion proof |
-| `sbo verify <file>` | Verify a proof file |
+| `sbo uri get <uri>` | Get an object by SBO URI |
+| `sbo uri post <uri> <file>` | Post an object to the DA layer |
+| `sbo uri list <uri>` | List objects at a path |
+| `sbo uri transfer <uri>` | Transfer an object |
+| `sbo proof generate <path>` | Generate inclusion proof |
+| `sbo proof verify <file>` | Verify a proof file |
 | `sbo repo add <uri> <path>` | Add a repository to sync |
-| `sbo repo status` | Show sync status |
+| `sbo repo list` | List followed repositories |
+| `sbo repo remove <target>` | Remove a repository |
 | `sbo daemon start` | Start the daemon |
 | `sbo daemon stop` | Stop the daemon |
 | `sbo daemon status` | Check daemon status |
+| `sbo identity create` | Create an identity object |
+| `sbo identity show <name>` | Show identity information |
 
 ### Daemon IPC
 

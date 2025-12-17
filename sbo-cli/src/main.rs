@@ -25,52 +25,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Post an object
-    Post {
-        /// Path (e.g., /alice/nfts/)
-        #[arg(long)]
-        path: String,
-        /// Object ID
-        #[arg(long)]
-        id: String,
-        /// File containing payload
-        #[arg(long)]
-        file: PathBuf,
-        /// Content type
-        #[arg(long)]
-        content_type: Option<String>,
-    },
-
-    /// Transfer an object
-    Transfer {
-        /// Current path
-        path: String,
-        /// Current ID
-        id: String,
-        /// New owner
-        #[arg(long)]
-        new_owner: Option<String>,
-        /// New path
-        #[arg(long)]
-        new_path: Option<String>,
-        /// New ID
-        #[arg(long)]
-        new_id: Option<String>,
-    },
-
-    /// Query an object
-    Get {
-        /// Path
-        path: String,
-        /// Object ID
-        id: String,
-    },
-
-    /// List objects at a path
-    List {
-        /// Path to list
-        path: String,
-    },
+    /// Object operations using SBO URIs
+    ///
+    /// Work with objects using fully-qualified SBO URIs like:
+    ///   sbo://avail:turing:506/alice/nfts/token1
+    #[command(subcommand)]
+    Uri(UriCommands),
 
     /// DA layer test commands
     #[command(subcommand)]
@@ -91,6 +51,63 @@ enum Commands {
     /// Identity operations
     #[command(subcommand)]
     Identity(IdentityCommands),
+}
+
+#[derive(Subcommand)]
+enum UriCommands {
+    /// Get an object by SBO URI
+    ///
+    /// Examples:
+    ///   sbo uri get sbo://avail:turing:506/alice/nfts/token1
+    ///   sbo uri get sbo://avail:turing:506/sys/names/alice
+    Get {
+        /// SBO URI (e.g., sbo://avail:turing:506/path/to/object)
+        uri: String,
+    },
+
+    /// Post an object to an SBO URI
+    ///
+    /// Examples:
+    ///   sbo uri post sbo://avail:turing:506/alice/nfts/token1 ./data.json
+    ///   sbo uri post sbo://avail:turing:506/alice/images/photo image.png --content-type image/png
+    Post {
+        /// SBO URI (e.g., sbo://avail:turing:506/path/to/object)
+        uri: String,
+        /// File containing payload
+        file: PathBuf,
+        /// Content type (auto-detected if not specified)
+        #[arg(long)]
+        content_type: Option<String>,
+    },
+
+    /// List objects at an SBO URI path
+    ///
+    /// Examples:
+    ///   sbo uri list sbo://avail:turing:506/alice/nfts/
+    ///   sbo uri list sbo://avail:turing:506/sys/names/
+    List {
+        /// SBO URI path (e.g., sbo://avail:turing:506/path/)
+        uri: String,
+    },
+
+    /// Transfer an object to a new location or owner
+    ///
+    /// Examples:
+    ///   sbo uri transfer sbo://avail:turing:506/alice/nfts/token1 --new-path /bob/nfts/
+    ///   sbo uri transfer sbo://avail:turing:506/alice/nfts/token1 --new-owner <pubkey>
+    Transfer {
+        /// SBO URI of the object to transfer
+        uri: String,
+        /// New owner public key
+        #[arg(long)]
+        new_owner: Option<String>,
+        /// New path (within same chain/app)
+        #[arg(long)]
+        new_path: Option<String>,
+        /// New object ID
+        #[arg(long)]
+        new_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -277,21 +294,27 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Commands::Post { path, id, file, content_type } => {
-            println!("Posting object: {}:{}", path, id);
-            todo!("Implement post")
-        }
-        Commands::Transfer { path, id, new_owner, new_path, new_id } => {
-            println!("Transferring object: {}:{}", path, id);
-            todo!("Implement transfer")
-        }
-        Commands::Get { path, id } => {
-            println!("Getting object: {}:{}", path, id);
-            todo!("Implement get")
-        }
-        Commands::List { path } => {
-            println!("Listing objects at: {}", path);
-            todo!("Implement list")
+        Commands::Uri(uri_cmd) => {
+            match uri_cmd {
+                UriCommands::Get { uri } => {
+                    println!("Getting object: {}", uri);
+                    todo!("Implement uri get")
+                }
+                UriCommands::Post { uri, file, content_type } => {
+                    println!("Posting to {}: {:?}", uri, file);
+                    let _ = content_type; // TODO: use content_type
+                    todo!("Implement uri post")
+                }
+                UriCommands::List { uri } => {
+                    println!("Listing: {}", uri);
+                    todo!("Implement uri list")
+                }
+                UriCommands::Transfer { uri, new_owner, new_path, new_id } => {
+                    println!("Transferring: {}", uri);
+                    let _ = (new_owner, new_path, new_id); // TODO: use these
+                    todo!("Implement uri transfer")
+                }
+            }
         }
         Commands::Da(da_cmd) => {
             match da_cmd {
