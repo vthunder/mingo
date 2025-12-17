@@ -19,8 +19,6 @@ pub enum Request {
     RepoRemoveByUri { uri: String },
     /// List all repos
     RepoList,
-    /// Force sync
-    RepoSync { path: Option<PathBuf> },
     /// Get daemon status
     Status,
     /// Submit data via TurboDA

@@ -489,14 +489,6 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             Response::ok(repos)
         }
 
-        Request::RepoSync { path } => {
-            // TODO: Implement forced sync
-            Response::ok(serde_json::json!({
-                "status": "sync requested",
-                "path": path,
-            }))
-        }
-
         Request::Status => {
             let state = state.read().await;
 

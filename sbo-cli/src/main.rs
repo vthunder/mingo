@@ -25,20 +25,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a new SBO database
-    Init {
-        /// Avail app ID
-        #[arg(long)]
-        app_id: u32,
-    },
-
-    /// Sync blocks from the DA layer
-    Sync {
-        /// Keep following new blocks
-        #[arg(long)]
-        follow: bool,
-    },
-
     /// Claim an identity name
     Claim {
         /// Name to claim
@@ -196,11 +182,6 @@ enum RepoCommands {
     },
     /// List followed repositories
     List,
-    /// Force sync a repository
-    Sync {
-        /// Local path (or all if not specified)
-        path: Option<PathBuf>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -305,14 +286,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Commands::Init { app_id } => {
-            println!("Initializing SBO database with app_id: {}", app_id);
-            todo!("Implement init")
-        }
-        Commands::Sync { follow } => {
-            println!("Syncing blocks (follow: {})", follow);
-            todo!("Implement sync")
-        }
         Commands::Claim { name } => {
             println!("Claiming identity: {}", name);
             todo!("Implement claim")
@@ -419,20 +392,6 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             }
-                        }
-                        Ok(Response::Error { message }) => {
-                            eprintln!("Error: {}", message);
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to connect to daemon: {}", e);
-                        }
-                    }
-                }
-                RepoCommands::Sync { path } => {
-                    let path = path.map(|p| canonicalize_path(&p)).transpose()?;
-                    match client.request(Request::RepoSync { path }).await {
-                        Ok(Response::Ok { data }) => {
-                            println!("Sync requested: {:?}", data);
                         }
                         Ok(Response::Error { message }) => {
                             eprintln!("Error: {}", message);
