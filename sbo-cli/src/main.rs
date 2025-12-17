@@ -32,10 +32,6 @@ enum Commands {
     #[command(subcommand)]
     Uri(UriCommands),
 
-    /// DA layer test commands
-    #[command(subcommand)]
-    Da(DaCommands),
-
     /// Repository management
     #[command(subcommand)]
     Repo(RepoCommands),
@@ -51,6 +47,10 @@ enum Commands {
     /// Identity operations
     #[command(subcommand)]
     Identity(IdentityCommands),
+
+    /// Debugging and low-level tools
+    #[command(subcommand)]
+    Debug(DebugCommands),
 }
 
 #[derive(Subcommand)]
@@ -207,6 +207,13 @@ enum DaemonCommands {
 }
 
 #[derive(Subcommand)]
+enum DebugCommands {
+    /// DA layer commands (stream blocks, submit test data, scan)
+    #[command(subcommand)]
+    Da(DaCommands),
+}
+
+#[derive(Subcommand)]
 enum DaCommands {
     /// Stream raw blocks from the DA layer
     Stream {
@@ -316,22 +323,26 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Da(da_cmd) => {
-            match da_cmd {
-                DaCommands::Stream { from, limit, raw } => {
-                    commands::da::stream(from, limit, raw).await?;
-                }
-                DaCommands::Submit { preset, file, count, turbo, verbose } => {
-                    commands::da::submit(preset, file, count, turbo, &verbose).await?;
-                }
-                DaCommands::Ping => {
-                    commands::da::ping().await?;
-                }
-                DaCommands::Scan { block, raw, app_id } => {
-                    commands::da::scan(block, raw, app_id).await?;
-                }
-                DaCommands::Status { submission_id } => {
-                    commands::da::turbo_status(&submission_id).await?;
+        Commands::Debug(debug_cmd) => {
+            match debug_cmd {
+                DebugCommands::Da(da_cmd) => {
+                    match da_cmd {
+                        DaCommands::Stream { from, limit, raw } => {
+                            commands::da::stream(from, limit, raw).await?;
+                        }
+                        DaCommands::Submit { preset, file, count, turbo, verbose } => {
+                            commands::da::submit(preset, file, count, turbo, &verbose).await?;
+                        }
+                        DaCommands::Ping => {
+                            commands::da::ping().await?;
+                        }
+                        DaCommands::Scan { block, raw, app_id } => {
+                            commands::da::scan(block, raw, app_id).await?;
+                        }
+                        DaCommands::Status { submission_id } => {
+                            commands::da::turbo_status(&submission_id).await?;
+                        }
+                    }
                 }
             }
         }
