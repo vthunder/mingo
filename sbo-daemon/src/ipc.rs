@@ -49,6 +49,15 @@ pub enum Request {
         /// Full URI (e.g., sbo://avail:turing:506/sys/names/alice) or just name
         uri: String,
     },
+    /// Create a new repo with genesis (sys identity + root policy)
+    RepoCreate {
+        /// SBO URI (e.g., sbo://avail:turing:506/)
+        uri: String,
+        /// Local path to sync to
+        path: PathBuf,
+        /// Genesis payload (sys identity + root policy, wire format)
+        genesis_data: Vec<u8>,
+    },
     /// Shutdown daemon
     Shutdown,
 }

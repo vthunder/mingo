@@ -806,6 +806,67 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             }
         }
 
+        Request::RepoCreate { uri, path, genesis_data } => {
+            // Parse and validate URI
+            let parsed_uri = match SboUri::parse(&uri) {
+                Ok(u) => u,
+                Err(e) => return Response::error(format!("Invalid URI: {}", e)),
+            };
+
+            // URI path must be "/" for genesis (no path prefix or empty)
+            if parsed_uri.path_prefix.is_some() && parsed_uri.path_prefix.as_deref() != Some("/") {
+                return Response::error("URI path must be '/' for repo creation");
+            }
+
+            let state_read = state.read().await;
+
+            // Check if repo already exists
+            if state_read.repos.list().any(|r| r.uri.to_string() == parsed_uri.to_string()) {
+                return Response::error(format!("Repo already exists for URI: {}", uri));
+            }
+
+            // Get current block height before submission
+            let current_block = match state_read.lc.status().await {
+                Ok(status) => status.latest_block,
+                Err(e) => {
+                    return Response::error(format!("Cannot get chain head: {}", e));
+                }
+            };
+
+            // Submit genesis via TurboDA
+            match state_read.turbo.submit_raw(&genesis_data).await {
+                Ok(result) => {
+                    tracing::info!(
+                        "Genesis submitted for {}: submission_id={}",
+                        uri, result.submission_id
+                    );
+
+                    // Drop read lock before taking write lock
+                    drop(state_read);
+
+                    // Add repo starting from current block
+                    let mut state_write = state.write().await;
+                    match state_write.repos.add(parsed_uri.clone(), path.clone(), Some(current_block)) {
+                        Ok(repo) => {
+                            Response::ok(serde_json::json!({
+                                "uri": repo.uri.to_string(),
+                                "path": repo.path,
+                                "from_block": current_block,
+                                "submission_id": result.submission_id,
+                            }))
+                        }
+                        Err(e) => {
+                            Response::error(format!(
+                                "Genesis submitted (id={}) but failed to add repo: {}",
+                                result.submission_id, e
+                            ))
+                        }
+                    }
+                }
+                Err(e) => Response::error(format!("Failed to submit genesis: {}", e)),
+            }
+        }
+
         Request::Shutdown => {
             tracing::info!("Shutdown requested via IPC");
             // TODO: Graceful shutdown

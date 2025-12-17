@@ -294,6 +294,23 @@ enum IdCommands {
 
 #[derive(Subcommand)]
 enum RepoCommands {
+    /// Create a new repository with genesis (sys identity + root policy)
+    ///
+    /// This submits a genesis payload to initialize a new SBO namespace on the chain.
+    /// The URI path must be "/" (root).
+    ///
+    /// Examples:
+    ///   sbo repo create sbo://avail:turing:506/ ./my-repo
+    ///   sbo repo create sbo://avail:turing:506/ ./my-repo --key default
+    Create {
+        /// SBO URI with root path (e.g., sbo://avail:turing:506/)
+        uri: String,
+        /// Local path to sync to
+        path: PathBuf,
+        /// Key alias to use for signing genesis (default: "default")
+        #[arg(long)]
+        key: Option<String>,
+    },
     /// Add a repository to follow
     Add {
         /// SBO URI (e.g., sbo://avail:turing:13/)
@@ -472,6 +489,68 @@ async fn main() -> anyhow::Result<()> {
             let client = IpcClient::new(config.daemon.socket_path);
 
             match repo_cmd {
+                RepoCommands::Create { uri, path, key } => {
+                    use sbo_core::keyring::Keyring;
+
+                    // Open keyring and get signing key
+                    let keyring = match Keyring::open() {
+                        Ok(k) => k,
+                        Err(e) => {
+                            eprintln!("Failed to open keyring: {}", e);
+                            eprintln!("Generate a key first with: sbo key generate");
+                            std::process::exit(1);
+                        }
+                    };
+
+                    let alias = match keyring.resolve_alias(key.as_deref()) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+
+                    let signing_key = match keyring.get_signing_key(&alias) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            eprintln!("Failed to get signing key: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+
+                    // Generate genesis payload
+                    let genesis_data = sbo_core::presets::genesis(&signing_key);
+
+                    let path = canonicalize_path(&path)?;
+
+                    println!("Creating new repository at {}", uri);
+                    println!("  Key: {} ({})", alias, signing_key.public_key().to_string());
+                    println!("  Path: {}", path.display());
+
+                    match client.request(Request::RepoCreate {
+                        uri: uri.clone(),
+                        path: path.clone(),
+                        genesis_data,
+                    }).await {
+                        Ok(Response::Ok { data }) => {
+                            println!("\n✓ Repository created");
+                            println!("  URI:           {}", data["uri"].as_str().unwrap_or("?"));
+                            println!("  Path:          {}", path.display());
+                            println!("  From Block:    {}", data["from_block"].as_u64().unwrap_or(0));
+                            println!("  Submission ID: {}", data["submission_id"].as_str().unwrap_or("?"));
+                            println!("\nThe daemon will sync this repo automatically.");
+                        }
+                        Ok(Response::Error { message }) => {
+                            eprintln!("Error: {}", message);
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to connect to daemon: {}", e);
+                            eprintln!("Is the daemon running? Try: sbo daemon start");
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 RepoCommands::Add { uri, path, from_block } => {
                     let path = canonicalize_path(&path)?;
                     match client.request(Request::RepoAdd { uri, path: path.clone(), from_block }).await {
