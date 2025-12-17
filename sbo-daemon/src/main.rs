@@ -129,6 +129,12 @@ async fn main() -> anyhow::Result<()> {
             init_config(&config_path, &config)?;
         }
         Commands::Start { foreground, verbose, prover, light } => {
+            // Auto-create sample config if it doesn't exist
+            if !config_path.exists() {
+                std::fs::create_dir_all(Config::sbo_dir())?;
+                Config::save_sample(&config_path)?;
+                tracing::info!("Created sample config at {}", config_path.display());
+            }
             if !foreground {
                 tracing::warn!("Daemonizing not yet implemented, running in foreground");
             }
@@ -162,19 +168,25 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_config(path: &PathBuf, config: &Config) -> anyhow::Result<()> {
+fn init_config(path: &PathBuf, _config: &Config) -> anyhow::Result<()> {
     if path.exists() {
         println!("Config already exists at {}", path.display());
+        println!("Delete it first if you want to regenerate: rm {}", path.display());
         return Ok(());
     }
 
-    config.save(path)?;
-    println!("Created config at {}", path.display());
-    println!("\nEdit the config to set your TurboDA API key and other settings.");
-
-    // Create directories
+    // Create directories first
     std::fs::create_dir_all(Config::sbo_dir())?;
-    println!("Created {}", Config::sbo_dir().display());
+
+    // Save a well-documented sample config
+    Config::save_sample(path)?;
+    println!("Created config at {}", path.display());
+    println!();
+    println!("Next steps:");
+    println!("  1. Edit {} to set your TurboDA API key", path.display());
+    println!("  2. Start the daemon: sbo daemon start");
+    println!();
+    println!("Get a TurboDA API key at: https://turbo.availproject.org");
 
     Ok(())
 }
@@ -930,9 +942,9 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             }
         }
 
-        Request::RepoCreate { uri, path, genesis_data } => {
-            // Parse and validate URI
-            let parsed_uri = match SboUri::parse(&uri) {
+        Request::RepoCreate { display_uri, resolved_uri, path, genesis_data } => {
+            // Parse and validate the resolved URI (always sbo+raw://)
+            let parsed_uri = match SboUri::parse(&resolved_uri) {
                 Ok(u) => u,
                 Err(e) => return Response::error(format!("Invalid URI: {}", e)),
             };
@@ -946,7 +958,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
             // Check if repo already exists
             if state_read.repos.list().any(|r| r.uri.to_string() == parsed_uri.to_string()) {
-                return Response::error(format!("Repo already exists for URI: {}", uri));
+                return Response::error(format!("Repo already exists for URI: {}", resolved_uri));
             }
 
             // Get current block height before submission
@@ -962,7 +974,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 Ok(result) => {
                     tracing::info!(
                         "Genesis submitted for {}: submission_id={}",
-                        uri, result.submission_id
+                        display_uri, result.submission_id
                     );
 
                     // Drop read lock before taking write lock
@@ -970,10 +982,11 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
                     // Add repo starting from current block
                     let mut state_write = state.write().await;
-                    match state_write.repos.add(uri.clone(), parsed_uri.clone(), path.clone(), Some(current_block)) {
+                    match state_write.repos.add(display_uri.clone(), parsed_uri.clone(), path.clone(), Some(current_block)) {
                         Ok(repo) => {
                             Response::ok(serde_json::json!({
-                                "uri": repo.uri.to_string(),
+                                "display_uri": repo.display_uri,
+                                "resolved_uri": repo.uri.to_string(),
                                 "path": repo.path,
                                 "from_block": current_block,
                                 "submission_id": result.submission_id,

@@ -314,11 +314,14 @@ enum RepoCommands {
     /// This submits a genesis payload to initialize a new SBO namespace on the chain.
     /// The URI path must be "/" (root).
     ///
+    /// Supports DNS-based URIs (sbo://) which are resolved via DNS TXT records.
+    ///
     /// Examples:
+    ///   sbo repo create sbo://myapp.com/ ./my-repo
     ///   sbo repo create sbo+raw://avail:turing:506/ ./my-repo
     ///   sbo repo create sbo+raw://avail:turing:506/ ./my-repo --key default
     Create {
-        /// SBO URI with root path (e.g., sbo+raw://avail:turing:506/)
+        /// SBO URI with root path (e.g., sbo://myapp.com/ or sbo+raw://avail:turing:506/)
         uri: String,
         /// Local path to sync to
         path: PathBuf,
@@ -541,22 +544,43 @@ async fn main() -> anyhow::Result<()> {
                         }
                     };
 
+                    // Resolve sbo:// URIs via DNS
+                    let (display_uri, resolved_uri) = if sbo_core::dns::is_dns_uri(&uri) {
+                        print!("Resolving {}...", uri);
+                        std::io::Write::flush(&mut std::io::stdout())?;
+
+                        match sbo_core::dns::resolve_uri(&uri).await {
+                            Ok(resolved) => {
+                                println!(" -> {}", resolved);
+                                (uri.clone(), resolved)
+                            }
+                            Err(e) => {
+                                println!();
+                                eprintln!("Error: Failed to resolve DNS for {}: {}", uri, e);
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        (uri.clone(), uri.clone())
+                    };
+
                     // Generate genesis payload
                     let genesis_data = sbo_core::presets::genesis(&signing_key);
 
                     let path = canonicalize_path(&path)?;
 
-                    println!("Creating new repository at {}", uri);
+                    println!("Creating new repository at {}", display_uri);
                     println!("  Key: {} ({})", alias, signing_key.public_key().to_string());
                     println!("  Path: {}", path.display());
 
                     match client.request(Request::RepoCreate {
-                        uri: uri.clone(),
+                        display_uri: display_uri.clone(),
+                        resolved_uri: resolved_uri.clone(),
                         path: path.clone(),
                         genesis_data,
                     }).await {
                         Ok(Response::Ok { data }) => {
-                            let chain_uri = data["uri"].as_str().unwrap_or(&uri);
+                            let chain_uri = data["resolved_uri"].as_str().unwrap_or(&resolved_uri);
                             let sys_identity_uri = format!("{}/sys/names/sys", chain_uri.trim_end_matches('/'));
 
                             // Add sys identity to keyring
@@ -566,7 +590,10 @@ async fn main() -> anyhow::Result<()> {
                             }
 
                             println!("\n✓ Repository created");
-                            println!("  URI:           {}", chain_uri);
+                            println!("  URI:           {}", data["display_uri"].as_str().unwrap_or(&display_uri));
+                            if display_uri != resolved_uri {
+                                println!("  Chain:         {}", chain_uri);
+                            }
                             println!("  Path:          {}", path.display());
                             println!("  From Block:    {}", data["from_block"].as_u64().unwrap_or(0));
                             println!("  Submission ID: {}", data["submission_id"].as_str().unwrap_or("?"));

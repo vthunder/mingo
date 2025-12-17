@@ -58,8 +58,10 @@ pub enum Request {
     },
     /// Create a new repo with genesis (sys identity + root policy)
     RepoCreate {
-        /// SBO URI (e.g., sbo+raw://avail:turing:506/)
-        uri: String,
+        /// Display URI (what user provided - could be sbo:// or sbo+raw://)
+        display_uri: String,
+        /// Resolved URI (always sbo+raw://)
+        resolved_uri: String,
         /// Local path to sync to
         path: PathBuf,
         /// Genesis payload (sys identity + root policy, wire format)

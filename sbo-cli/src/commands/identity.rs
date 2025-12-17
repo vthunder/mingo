@@ -186,19 +186,42 @@ pub async fn list(uri_filter: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    // Try to connect to daemon to check verification status
+    // Try to connect to daemon to check verification status and get display URIs
     let client = config.map(|c| IpcClient::new(c.daemon.socket_path));
+
+    // Build a map of resolved_uri -> display_uri from repos
+    let mut display_uri_map: HashMap<String, String> = HashMap::new();
+    if let Some(ref client) = client {
+        if let Ok(Response::Ok { data }) = client.request(Request::RepoList).await {
+            if let Some(repos) = data["repos"].as_array() {
+                for repo in repos {
+                    if let (Some(display), Some(resolved)) = (
+                        repo["display_uri"].as_str(),
+                        repo["resolved_uri"].as_str(),
+                    ) {
+                        display_uri_map.insert(resolved.to_string(), display.to_string());
+                    }
+                }
+            }
+        }
+    }
 
     // Print header
     println!(
         "{:<40} {:<12} {:<15} {:<12} {}",
-        "CHAIN", "NAME", "DISPLAY", "LOCAL KEY", "STATUS"
+        "REPO", "NAME", "DISPLAY", "LOCAL KEY", "STATUS"
     );
     println!("{}", "-".repeat(95));
 
     for (identity_uri, key_alias, _public_key) in &identities {
         // Parse URI to extract chain and name
-        let (chain, name) = parse_identity_uri(identity_uri);
+        let (resolved_chain, name) = parse_identity_uri(identity_uri);
+
+        // Look up display URI from repo map
+        let display_chain = display_uri_map
+            .get(&resolved_chain)
+            .cloned()
+            .unwrap_or_else(|| resolved_chain.clone());
 
         // Check verification status via daemon
         let (status, display_name) = if let Some(ref client) = client {
@@ -225,7 +248,7 @@ pub async fn list(uri_filter: Option<&str>) -> Result<()> {
 
         println!(
             "{:<40} {:<12} {:<15} {:<12} {}",
-            truncate(&chain, 38),
+            truncate(&display_chain, 38),
             truncate(&name, 10),
             truncate(&display_name, 13),
             truncate(key_alias, 10),
