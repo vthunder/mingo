@@ -609,6 +609,203 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             }
         }
 
+        Request::SubmitIdentity { uri, name, data, wait } => {
+            use sbo_core::message::{Path, Id};
+
+            // Get state for repo lookup and config
+            let state_read = state.read().await;
+            let light_mode = state_read.config.light.enabled;
+
+            // Find repo matching the URI
+            let repo = state_read.repos.list().find(|r| uri.starts_with(&r.uri.to_string()));
+
+            let (repo_path, identity_uri) = match repo {
+                Some(r) => (r.path.clone(), format!("{}/sys/names/{}", uri.trim_end_matches('/'), name)),
+                None => return Response::error(format!("No repo configured for URI: {}. Add with: sbo repo add {} <path>", uri, uri)),
+            };
+
+            // Submit via TurboDA
+            match state_read.turbo.submit_raw(&data).await {
+                Ok(result) => {
+                    // Drop read lock before polling
+                    drop(state_read);
+
+                    if wait && !light_mode {
+                        // Poll for verification in full mode
+                        let state_path = repo_path.join("state");
+                        if let Ok(state_db) = sbo_core::state::StateDb::open(&state_path) {
+                            // Poll for up to 30 seconds
+                            let start = std::time::Instant::now();
+                            let timeout = std::time::Duration::from_secs(30);
+
+                            let path = match Path::parse("/sys/names/") {
+                                Ok(p) => p,
+                                Err(e) => return Response::error(format!("Invalid path: {}", e)),
+                            };
+                            let id = match Id::new(&name) {
+                                Ok(i) => i,
+                                Err(e) => return Response::error(format!("Invalid id: {}", e)),
+                            };
+
+                            loop {
+                                // Check if object exists
+                                if let Ok(Some(_)) = state_db.get_first_object_at_path_id(&path, &id) {
+                                    return Response::ok(serde_json::json!({
+                                        "status": "verified",
+                                        "uri": identity_uri,
+                                        "submission_id": result.submission_id,
+                                    }));
+                                }
+
+                                if start.elapsed() > timeout {
+                                    return Response::ok(serde_json::json!({
+                                        "status": "pending",
+                                        "uri": identity_uri,
+                                        "submission_id": result.submission_id,
+                                        "message": "Submitted but verification timed out. Check with 'sbo id show'",
+                                    }));
+                                }
+
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            }
+                        }
+                    }
+
+                    // No wait or light mode - return immediately
+                    Response::ok(serde_json::json!({
+                        "status": "unverified",
+                        "uri": identity_uri,
+                        "submission_id": result.submission_id,
+                    }))
+                }
+                Err(e) => Response::error(format!("Submission failed: {}", e)),
+            }
+        }
+
+        Request::ListIdentities { uri } => {
+            let state_read = state.read().await;
+            let mut identities = Vec::new();
+
+            for repo in state_read.repos.list() {
+                // Filter by URI if provided
+                if let Some(ref filter_uri) = uri {
+                    if !repo.uri.to_string().starts_with(filter_uri) {
+                        continue;
+                    }
+                }
+
+                // Scan /sys/names/ directory
+                // Structure: /sys/names/<name>/<object_id> (name is a directory)
+                let names_path = repo.path.join("sys").join("names");
+                if names_path.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&names_path) {
+                        for entry in entries.flatten() {
+                            // Each entry is a directory named after the identity (e.g., "alice")
+                            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                let name = entry.file_name().to_string_lossy().to_string();
+
+                                // Look for identity file inside the directory
+                                // Common patterns: "identity", or just the first file
+                                let name_dir = entry.path();
+                                if let Ok(files) = std::fs::read_dir(&name_dir) {
+                                    for file_entry in files.flatten() {
+                                        if file_entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                                            // Try to parse as identity.v1
+                                            if let Ok(content) = std::fs::read(file_entry.path()) {
+                                                // Parse wire format to extract payload
+                                                if let Ok(msg) = sbo_core::wire::parse(&content) {
+                                                    if let Some(payload) = &msg.payload {
+                                                        if let Ok(identity) = sbo_core::schema::parse_identity(payload) {
+                                                            identities.push(serde_json::json!({
+                                                                "uri": format!("{}/sys/names/{}", repo.uri.to_string().trim_end_matches('/'), name),
+                                                                "chain": repo.uri.to_string(),
+                                                                "name": name,
+                                                                "display_name": identity.display_name,
+                                                                "signing_key": identity.signing_key,
+                                                                "status": "verified",
+                                                            }));
+                                                            break; // Found identity for this name
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Response::ok(serde_json::json!({ "identities": identities }))
+        }
+
+        Request::GetIdentity { uri } => {
+            let state_read = state.read().await;
+
+            // Parse URI to extract chain and name
+            // Supports: sbo://avail:turing:506/sys/names/alice or just "alice"
+            let (chain_uri, name) = if uri.starts_with("sbo://") {
+                // Full URI - extract chain and name
+                if let Some(names_pos) = uri.find("/sys/names/") {
+                    let chain = &uri[..names_pos + 1]; // Include trailing /
+                    let name = &uri[names_pos + 11..]; // Skip "/sys/names/"
+                    (Some(chain.to_string()), name.to_string())
+                } else {
+                    return Response::error("Invalid identity URI: must contain /sys/names/");
+                }
+            } else {
+                // Just a name - search all repos
+                (None, uri)
+            };
+
+            let mut found_identities = Vec::new();
+
+            for repo in state_read.repos.list() {
+                // Filter by chain if provided
+                if let Some(ref chain) = chain_uri {
+                    if !repo.uri.to_string().starts_with(chain.trim_end_matches('/')) {
+                        continue;
+                    }
+                }
+
+                // Try to read the identity file
+                let identity_path = repo.path.join("sys").join("names").join(&name);
+                if identity_path.exists() {
+                    if let Ok(content) = std::fs::read(&identity_path) {
+                        if let Ok(msg) = sbo_core::wire::parse(&content) {
+                            if let Some(payload) = msg.payload {
+                                if let Ok(identity) = sbo_core::schema::parse_identity(&payload) {
+                                    found_identities.push(serde_json::json!({
+                                        "uri": format!("{}/sys/names/{}", repo.uri.to_string().trim_end_matches('/'), name),
+                                        "chain": repo.uri.to_string(),
+                                        "name": name,
+                                        "signing_key": identity.signing_key,
+                                        "display_name": identity.display_name,
+                                        "description": identity.description,
+                                        "avatar": identity.avatar,
+                                        "links": identity.links,
+                                        "binding": identity.binding,
+                                        "status": "verified",
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if found_identities.is_empty() {
+                Response::error(format!("Identity '{}' not found", name))
+            } else if found_identities.len() == 1 {
+                Response::ok(found_identities.into_iter().next().unwrap())
+            } else {
+                // Multiple identities with same name across chains
+                Response::ok(serde_json::json!({ "identities": found_identities }))
+            }
+        }
+
         Request::Shutdown => {
             tracing::info!("Shutdown requested via IPC");
             // TODO: Graceful shutdown

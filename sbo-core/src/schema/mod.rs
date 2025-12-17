@@ -10,7 +10,7 @@ mod identity;
 use crate::message::Message;
 use thiserror::Error;
 
-pub use identity::{Identity, validate_identity};
+pub use identity::{Identity, validate_identity, parse_identity};
 
 /// Schema validation errors
 #[derive(Debug, Error)]

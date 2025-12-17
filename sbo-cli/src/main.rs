@@ -224,6 +224,10 @@ enum IdCommands {
         /// Output the SBO message to stdout instead of submitting
         #[arg(long)]
         dry_run: bool,
+
+        /// Don't wait for on-chain verification (return immediately after submission)
+        #[arg(long)]
+        no_wait: bool,
     },
 
     /// List identities on chain
@@ -907,23 +911,36 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Id(id_cmd) => {
             match id_cmd {
-                IdCommands::Create { uri, name, key, display_name, description, avatar, website, binding, dry_run } => {
-                    println!("Creating identity '{}' at {}", name, uri);
-                    let _ = (key, display_name, description, avatar, website, binding, dry_run);
-                    todo!("Implement id create")
+                IdCommands::Create { uri, name, key, display_name, description, avatar, website, binding, dry_run, no_wait } => {
+                    commands::identity::create(
+                        &uri,
+                        &name,
+                        key.as_deref(),
+                        display_name.as_deref(),
+                        description.as_deref(),
+                        avatar.as_deref(),
+                        website.as_deref(),
+                        binding.as_deref(),
+                        dry_run,
+                        no_wait,
+                    ).await?;
                 }
                 IdCommands::List { uri } => {
-                    println!("Listing identities at: {:?}", uri);
-                    todo!("Implement id list")
+                    commands::identity::list(uri.as_deref()).await?;
                 }
                 IdCommands::Show { name } => {
-                    println!("Showing identity: {}", name);
-                    todo!("Implement id show")
+                    commands::identity::show(&name).await?;
                 }
                 IdCommands::Update { uri, key, display_name, description, avatar, website } => {
-                    println!("Updating identity at: {}", uri);
-                    let _ = (key, display_name, description, avatar, website);
-                    todo!("Implement id update")
+                    commands::identity::update(
+                        &uri,
+                        key.as_deref(),
+                        display_name.as_deref(),
+                        description.as_deref(),
+                        avatar.as_deref(),
+                        website.as_deref(),
+                        false, // no_wait not supported in update command yet
+                    ).await?;
                 }
             }
         }

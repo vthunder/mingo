@@ -28,6 +28,27 @@ pub enum Request {
     /// Get a merkle proof for an object (SBOQ format)
     /// Creator is auto-detected from the stored object
     ObjectProof { repo_path: PathBuf, path: String, id: String },
+    /// Submit an identity to /sys/names/<name>
+    SubmitIdentity {
+        /// Chain URI (e.g., sbo://avail:turing:506/)
+        uri: String,
+        /// Name to claim
+        name: String,
+        /// Signed wire-format message
+        data: Vec<u8>,
+        /// Wait for on-chain verification
+        wait: bool,
+    },
+    /// List identities from synced repos
+    ListIdentities {
+        /// Optional chain URI filter
+        uri: Option<String>,
+    },
+    /// Get a specific identity by URI
+    GetIdentity {
+        /// Full URI (e.g., sbo://avail:turing:506/sys/names/alice) or just name
+        uri: String,
+    },
     /// Shutdown daemon
     Shutdown,
 }
