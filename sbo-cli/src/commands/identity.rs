@@ -516,6 +516,168 @@ pub async fn update(
     Ok(())
 }
 
+/// Import an identity from a synced repo into the keyring
+pub async fn import(
+    repo: &str,
+    name: &str,
+    proof_file: Option<&std::path::Path>,
+) -> Result<()> {
+    let mut keyring = Keyring::open()?;
+
+    // Build identity URI
+    // Handle both SBO URI (sbo://...) and local path (./my-repo)
+    let (identity_uri, chain_uri) = if repo.starts_with("sbo://") {
+        let chain = repo.trim_end_matches('/');
+        (format!("{}/sys/names/{}", chain, name), format!("{}/", chain))
+    } else {
+        // Local path - need to find the chain URI from daemon
+        let config = Config::load(&Config::config_path())?;
+        let client = IpcClient::new(config.daemon.socket_path.clone());
+
+        // Query repos to find which chain this path belongs to
+        match client.request(Request::RepoList).await {
+            Ok(Response::Ok { data }) => {
+                let repos = data.as_array().ok_or_else(|| anyhow::anyhow!("Invalid repo list"))?;
+                let abs_path = std::fs::canonicalize(repo)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(repo));
+                let abs_path_str = abs_path.to_string_lossy();
+
+                let mut found_uri = None;
+                for r in repos {
+                    if let (Some(path), Some(uri)) = (r["path"].as_str(), r["uri"].as_str()) {
+                        if abs_path_str == path || abs_path_str.starts_with(&format!("{}/", path)) {
+                            found_uri = Some(uri.to_string());
+                            break;
+                        }
+                    }
+                }
+
+                match found_uri {
+                    Some(uri) => {
+                        let chain = uri.trim_end_matches('/');
+                        (format!("{}/sys/names/{}", chain, name), format!("{}/", chain))
+                    }
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "Path '{}' is not a known repo. Add it with: sbo repo add <uri> {}",
+                            repo, repo
+                        ));
+                    }
+                }
+            }
+            Ok(Response::Error { message }) => {
+                return Err(anyhow::anyhow!("Failed to list repos: {}", message));
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to connect to daemon: {}", e));
+            }
+        }
+    };
+
+    println!("Importing identity '{}' from {}", name, chain_uri);
+
+    // Get identity data - either from proof or from daemon
+    let signing_key = if let Some(proof_path) = proof_file {
+        // Verify proof and extract identity
+        println!("  Verifying proof from {}...", proof_path.display());
+
+        let proof_bytes = std::fs::read(proof_path)?;
+        let sboq = sbo_core::proof::parse_sboq(&proof_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse proof: {}", e))?;
+
+        // Verify the trie proof
+        let trie_valid = sbo_crypto::verify_trie_proof(&sboq.trie_proof)
+            .map_err(|e| anyhow::anyhow!("Proof verification failed: {}", e))?;
+
+        if !trie_valid {
+            return Err(anyhow::anyhow!("Invalid proof: trie verification failed"));
+        }
+
+        // Check this is an existence proof (not non-existence)
+        if sboq.object_hash.is_none() {
+            return Err(anyhow::anyhow!("Invalid proof: this is a non-existence proof"));
+        }
+
+        // Extract object from proof
+        let obj_bytes = sboq.object
+            .ok_or_else(|| anyhow::anyhow!("Proof does not contain embedded object"))?;
+
+        // Parse wire format
+        let msg = sbo_core::wire::parse(&obj_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to parse object: {}", e))?;
+
+        // Extract identity from payload
+        let payload = msg.payload
+            .ok_or_else(|| anyhow::anyhow!("Object has no payload"))?;
+
+        let identity = sbo_core::schema::parse_identity(&payload)
+            .map_err(|e| anyhow::anyhow!("Failed to parse identity: {}", e))?;
+
+        println!("  Proof valid ✓");
+        identity.signing_key
+    } else {
+        // No proof - try daemon (only works in full mode with synced repo)
+        let config = Config::load(&Config::config_path())?;
+        let client = IpcClient::new(config.daemon.socket_path);
+
+        match client.request(Request::GetIdentity { uri: identity_uri.clone() }).await {
+            Ok(Response::Ok { data }) => {
+                data["signing_key"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Identity missing signing_key"))?
+                    .to_string()
+            }
+            Ok(Response::Error { message }) => {
+                return Err(anyhow::anyhow!(
+                    "Identity not found in synced repos: {}\n\n\
+                    In light mode, you must provide a --proof file.\n\
+                    In full mode, ensure the repo is synced.",
+                    message
+                ));
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to connect to daemon: {}", e));
+            }
+        }
+    };
+
+    // Find matching key in keyring
+    let matching_alias = keyring
+        .list()
+        .iter()
+        .find(|(_, entry)| entry.public_key == signing_key)
+        .map(|(alias, _)| alias.clone());
+
+    let alias = match matching_alias {
+        Some(a) => a,
+        None => {
+            eprintln!("Error: No local key matches identity signing key.");
+            eprintln!("  Identity key: {}", signing_key);
+            eprintln!("\nYou must import the private key first:");
+            eprintln!("  sbo key import <key-file-or-hex> --name <alias>");
+            std::process::exit(1);
+        }
+    };
+
+    // Check if already imported
+    let entry = keyring.list().get(&alias).unwrap();
+    if entry.identities.contains(&identity_uri) {
+        println!("\n○ Identity already in keyring");
+        println!("  URI:       {}", identity_uri);
+        println!("  Local Key: {}", alias);
+        return Ok(());
+    }
+
+    // Add identity to keyring
+    keyring.add_identity(&alias, &identity_uri)?;
+
+    println!("\n✓ Identity imported");
+    println!("  URI:       {}", identity_uri);
+    println!("  Local Key: {}", alias);
+
+    Ok(())
+}
+
 /// Parse identity URI to extract chain and name
 /// e.g., "sbo://avail:turing:506/sys/names/alice" -> ("sbo://avail:turing:506/", "alice")
 fn parse_identity_uri(uri: &str) -> (String, String) {

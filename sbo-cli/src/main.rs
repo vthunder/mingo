@@ -270,6 +270,26 @@ enum IdCommands {
         #[arg(long)]
         website: Option<String>,
     },
+
+    /// Import an identity from a synced repo into your keyring
+    ///
+    /// Associates an on-chain identity with your local key.
+    /// You must have the matching private key already in your keyring.
+    ///
+    /// Examples:
+    ///   sbo id import sbo://avail:turing:506/ alice
+    ///   sbo id import ./my-repo alice --proof proof.sboq
+    Import {
+        /// SBO URI or local repo path (e.g., sbo://avail:turing:506/ or ./my-repo)
+        repo: String,
+
+        /// Identity name to import
+        name: String,
+
+        /// SBOQ proof file (required in light mode, optional in full mode)
+        #[arg(long)]
+        proof: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -940,6 +960,13 @@ async fn main() -> anyhow::Result<()> {
                         avatar.as_deref(),
                         website.as_deref(),
                         false, // no_wait not supported in update command yet
+                    ).await?;
+                }
+                IdCommands::Import { repo, name, proof } => {
+                    commands::identity::import(
+                        &repo,
+                        &name,
+                        proof.as_deref(),
                     ).await?;
                 }
             }
