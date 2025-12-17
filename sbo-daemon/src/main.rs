@@ -494,14 +494,15 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 .list()
                 .map(|r| {
                     serde_json::json!({
-                        "id": r.id,
-                        "uri": r.uri.to_string(),
-                        "path": r.path,
+                        "display_uri": r.display_uri,
+                        "resolved_uri": r.uri.to_string(),
+                        "path": r.path.to_string_lossy(),
                         "head": r.head,
+                        "dns_checked_at": r.dns_checked_at,
                     })
                 })
                 .collect();
-            Response::ok(repos)
+            Response::ok(serde_json::json!({ "repos": repos }))
         }
 
         Request::Status => {

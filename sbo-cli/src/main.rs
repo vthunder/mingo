@@ -647,20 +647,47 @@ async fn main() -> anyhow::Result<()> {
                 RepoCommands::List => {
                     match client.request(Request::RepoList).await {
                         Ok(Response::Ok { data }) => {
-                            if let Some(repos) = data.as_array() {
-                                if repos.is_empty() {
-                                    println!("No repositories. Add one with: sbo repo add <uri> <path>");
-                                } else {
-                                    println!("{:<40} {:<10} {}", "URI", "HEAD", "PATH");
-                                    println!("{}", "-".repeat(70));
-                                    for repo in repos {
-                                        println!(
-                                            "{:<40} {:<10} {}",
-                                            repo["uri"].as_str().unwrap_or("?"),
-                                            repo["head"].as_u64().unwrap_or(0),
-                                            repo["path"].as_str().unwrap_or("?")
-                                        );
+                            let repos = data["repos"].as_array().unwrap();
+                            if repos.is_empty() {
+                                println!("No repositories configured.");
+                                println!("Add one with: sbo repo add <uri> <path>");
+                            } else {
+                                println!("{:<40} {:<30} {:>10}", "URI", "PATH", "HEAD");
+                                println!("{}", "-".repeat(82));
+
+                                let mut mismatches = Vec::new();
+
+                                for repo in repos {
+                                    let display_uri = repo["display_uri"].as_str().unwrap_or("?");
+                                    let resolved_uri = repo["resolved_uri"].as_str().unwrap_or("?");
+                                    let path = repo["path"].as_str().unwrap_or("?");
+                                    let head = repo["head"].as_u64().unwrap_or(0);
+
+                                    // Truncate path for display
+                                    let path_display = if path.len() > 28 {
+                                        format!("...{}", &path[path.len()-25..])
+                                    } else {
+                                        path.to_string()
+                                    };
+
+                                    println!("{:<40} {:<30} {:>10}", display_uri, path_display, head);
+
+                                    // Check DNS for sbo:// URIs
+                                    if sbo_core::dns::is_dns_uri(display_uri) {
+                                        if let Ok(current) = sbo_core::dns::resolve_uri(display_uri).await {
+                                            if current != resolved_uri {
+                                                mismatches.push((display_uri.to_string(), resolved_uri.to_string(), current, path.to_string()));
+                                            }
+                                        }
                                     }
+                                }
+
+                                // Show warnings for mismatches
+                                for (display, old, new, path) in mismatches {
+                                    println!();
+                                    println!("Warning: DNS mismatch: {} now resolves to {}", display, new);
+                                    println!("  (currently tracking {})", old);
+                                    println!("  Run 'sbo repo relink {}' to update", path);
                                 }
                             }
                         }
