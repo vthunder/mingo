@@ -179,6 +179,39 @@ fn init_config(path: &PathBuf, config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Check DNS for all sbo:// repos and log warnings for mismatches
+async fn check_dns_on_startup(repos: &RepoManager) {
+    for repo in repos.list() {
+        if !sbo_core::dns::is_dns_uri(&repo.display_uri) {
+            continue;
+        }
+
+        match sbo_core::dns::resolve_uri(&repo.display_uri).await {
+            Ok(current_resolved) => {
+                let stored_resolved = repo.uri.to_string();
+                if current_resolved == stored_resolved {
+                    tracing::info!("DNS check: {} → {} ✓", repo.display_uri, stored_resolved);
+                } else {
+                    tracing::warn!(
+                        "DNS mismatch: {} resolves to {} but repo is tracking {}. Run 'sbo repo relink {}' to update",
+                        repo.display_uri,
+                        current_resolved,
+                        stored_resolved,
+                        repo.path.display()
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "DNS check failed for {}: {} (continuing with cached resolution)",
+                    repo.display_uri,
+                    e
+                );
+            }
+        }
+    }
+}
+
 async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()> {
     tracing::info!("Starting SBO daemon");
 
@@ -199,6 +232,12 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
         if let Err(e) = state.lc.start().await {
             tracing::warn!("Light client not available: {}. Sync will be limited.", e);
         }
+    }
+
+    // Check DNS for sbo:// repos
+    {
+        let state = state.read().await;
+        check_dns_on_startup(&state.repos).await;
     }
 
     // Start IPC server
