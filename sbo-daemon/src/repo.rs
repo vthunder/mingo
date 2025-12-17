@@ -379,6 +379,11 @@ impl RepoManager {
         self.repos.values().find(|r| r.path == path)
     }
 
+    /// Find repo by path (alternative name for consistency with plan)
+    pub fn find_by_path(&self, path: &Path) -> Option<&Repo> {
+        self.get_by_path(path)
+    }
+
     /// Get repo by path (mutable)
     pub fn get_by_path_mut(&mut self, path: &Path) -> Option<&mut Repo> {
         self.repos.values_mut().find(|r| r.path == path)
@@ -423,6 +428,26 @@ impl RepoManager {
         ids.sort();
         ids.dedup();
         ids
+    }
+
+    /// Update a repo's resolved URI (for DNS relink)
+    pub fn update_uri(&mut self, id: &str, display_uri: String, new_uri: SboUri) -> crate::Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let repo = self.repos.get_mut(id)
+            .ok_or_else(|| crate::DaemonError::Repo(format!("Repo not found: {}", id)))?;
+
+        repo.display_uri = display_uri;
+        repo.uri = new_uri;
+        repo.head = 0; // Reset to re-sync
+        repo.dns_checked_at = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
+
+        self.save()
     }
 }
 

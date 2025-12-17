@@ -24,6 +24,8 @@ pub enum Request {
     RepoRemoveByUri { uri: String },
     /// List all repos
     RepoList,
+    /// Re-resolve DNS and update chain reference for a repo
+    RepoRelink { path: PathBuf },
     /// Get daemon status
     Status,
     /// Submit data via TurboDA

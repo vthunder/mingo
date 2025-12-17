@@ -505,6 +505,47 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             Response::ok(serde_json::json!({ "repos": repos }))
         }
 
+        Request::RepoRelink { path } => {
+            let mut state = state.write().await;
+
+            // Find repo by path
+            let repo = match state.repos.find_by_path(&path) {
+                Some(r) => r.clone(),
+                None => return Response::error(format!("No repo at path: {}", path.display())),
+            };
+
+            // Check if it's a DNS-based URI
+            if !sbo_core::dns::is_dns_uri(&repo.display_uri) {
+                return Response::error("Repo is not using a DNS-based URI (sbo://)");
+            }
+
+            // Re-resolve DNS
+            let new_resolved = match sbo_core::dns::resolve_uri(&repo.display_uri).await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("DNS resolution failed: {}", e)),
+            };
+
+            // Parse new URI
+            let new_uri = match SboUri::parse(&new_resolved) {
+                Ok(u) => u,
+                Err(e) => return Response::error(format!("Invalid resolved URI: {}", e)),
+            };
+
+            let old_resolved = repo.uri.to_string();
+
+            // Update repo
+            if let Err(e) = state.repos.update_uri(&repo.id, repo.display_uri.clone(), new_uri) {
+                return Response::error(format!("Failed to update repo: {}", e));
+            }
+
+            Response::ok(serde_json::json!({
+                "display_uri": repo.display_uri,
+                "old_resolved": old_resolved,
+                "new_resolved": new_resolved,
+                "message": "Repo relinked. Will re-sync from new chain."
+            }))
+        }
+
         Request::Status => {
             let state = state.read().await;
 

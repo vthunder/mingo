@@ -343,6 +343,14 @@ enum RepoCommands {
     },
     /// List followed repositories
     List,
+    /// Re-resolve DNS and update chain reference for a repo
+    ///
+    /// Use when DNS has changed and you want to follow the new chain.
+    /// Warning: This will re-sync from the new chain's firstBlock.
+    Relink {
+        /// Local path of the repo to relink
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -690,6 +698,27 @@ async fn main() -> anyhow::Result<()> {
                                     println!("  Run 'sbo repo relink {}' to update", path);
                                 }
                             }
+                        }
+                        Ok(Response::Error { message }) => {
+                            eprintln!("Error: {}", message);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to connect to daemon: {}", e);
+                        }
+                    }
+                }
+
+                RepoCommands::Relink { path } => {
+                    let path = canonicalize_path(&path)?;
+
+                    match client.request(Request::RepoRelink { path: path.clone() }).await {
+                        Ok(Response::Ok { data }) => {
+                            println!("Repo relinked");
+                            println!("  URI:       {}", data["display_uri"].as_str().unwrap_or("?"));
+                            println!("  Old chain: {}", data["old_resolved"].as_str().unwrap_or("?"));
+                            println!("  New chain: {}", data["new_resolved"].as_str().unwrap_or("?"));
+                            println!();
+                            println!("  Note: Data will be re-synced from new chain.");
                         }
                         Ok(Response::Error { message }) => {
                             eprintln!("Error: {}", message);
