@@ -55,6 +55,10 @@ enum Commands {
     /// Debugging and low-level tools
     #[command(subcommand)]
     Debug(DebugCommands),
+
+    /// Auth flow (approve/reject sign requests from apps)
+    #[command(subcommand)]
+    Auth(AuthCommands),
 }
 
 #[derive(Subcommand)]
@@ -391,6 +395,59 @@ enum DaemonCommands {
     Stop,
     /// Show daemon status
     Status,
+}
+
+#[derive(Subcommand)]
+enum AuthCommands {
+    /// List pending sign requests from apps
+    ///
+    /// Shows sign requests waiting for your approval.
+    /// Apps request signatures when you try to authenticate with them.
+    ///
+    /// Example:
+    ///   sbo auth pending
+    Pending,
+
+    /// Show details of a sign request
+    ///
+    /// Example:
+    ///   sbo auth show abc123
+    Show {
+        /// Request ID
+        request_id: String,
+    },
+
+    /// Approve a sign request
+    ///
+    /// Signs the challenge with your identity and returns it to the requesting app.
+    ///
+    /// Examples:
+    ///   sbo auth approve abc123                   # Use requested email or default
+    ///   sbo auth approve abc123 --as alice@example.com  # Specify identity
+    Approve {
+        /// Request ID to approve
+        request_id: String,
+
+        /// Email identity to sign with (defaults to requested email or single identity)
+        #[arg(long = "as")]
+        email: Option<String>,
+    },
+
+    /// Reject a sign request
+    ///
+    /// Tells the app that you declined to authenticate.
+    ///
+    /// Example:
+    ///   sbo auth reject abc123
+    ///   sbo auth reject abc123 --reason "Don't trust this app"
+    Reject {
+        /// Request ID to reject
+        request_id: String,
+
+        /// Reason for rejection (optional)
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1232,6 +1289,23 @@ async fn main() -> anyhow::Result<()> {
                 }
                 IdCommands::Resolve { email } => {
                     commands::identity::resolve(&email).await?;
+                }
+            }
+        }
+
+        Commands::Auth(auth_cmd) => {
+            match auth_cmd {
+                AuthCommands::Pending => {
+                    commands::auth::pending().await?;
+                }
+                AuthCommands::Show { request_id } => {
+                    commands::auth::show(&request_id).await?;
+                }
+                AuthCommands::Approve { request_id, email } => {
+                    commands::auth::approve(&request_id, email.as_deref()).await?;
+                }
+                AuthCommands::Reject { request_id, reason } => {
+                    commands::auth::reject(&request_id, reason.as_deref()).await?;
                 }
             }
         }

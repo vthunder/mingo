@@ -180,7 +180,7 @@ pub async fn list(uri_filter: Option<&str>) -> Result<()> {
         }
     }
 
-    if identities.is_empty() {
+    if identities.is_empty() && keyring.list_emails().is_empty() {
         println!("No identities found in keyring.");
         println!("\nCreate one with: sbo id create <chain-uri> <name>");
         return Ok(());
@@ -206,54 +206,68 @@ pub async fn list(uri_filter: Option<&str>) -> Result<()> {
         }
     }
 
-    // Print header
-    println!(
-        "{:<40} {:<12} {:<15} {:<12} {}",
-        "REPO", "NAME", "DISPLAY", "LOCAL KEY", "STATUS"
-    );
-    println!("{}", "-".repeat(95));
-
-    for (identity_uri, key_alias, _public_key) in &identities {
-        // Parse URI to extract chain and name
-        let (resolved_chain, name) = parse_identity_uri(identity_uri);
-
-        // Look up display URI from repo map
-        let display_chain = display_uri_map
-            .get(&resolved_chain)
-            .cloned()
-            .unwrap_or_else(|| resolved_chain.clone());
-
-        // Check verification status via daemon
-        let (status, display_name) = if let Some(ref client) = client {
-            match client.request(Request::GetIdentity { uri: identity_uri.clone() }).await {
-                Ok(Response::Ok { data }) => {
-                    // Found on chain - verified
-                    let display = data["display_name"].as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "-".to_string());
-                    ("verified", display)
-                }
-                Ok(Response::Error { .. }) => {
-                    // Not found on chain - unverified
-                    ("unverified", "-".to_string())
-                }
-                Err(_) => {
-                    // Can't connect to daemon
-                    ("unknown", "-".to_string())
-                }
-            }
-        } else {
-            ("unknown", "-".to_string())
-        };
-
+    // Table 1: Identities
+    if !identities.is_empty() {
+        println!("Identities:");
         println!(
-            "{:<40} {:<12} {:<15} {:<12} {}",
-            truncate(&display_chain, 38),
-            truncate(&name, 10),
-            truncate(&display_name, 13),
-            truncate(key_alias, 10),
-            status
+            "  {:<30} {:<12} {:<12} {}",
+            "REPO", "NAME", "LOCAL KEY", "STATUS"
         );
+        println!("  {}", "-".repeat(70));
+
+        for (identity_uri, key_alias, _public_key) in &identities {
+            // Parse URI to extract chain and name
+            let (resolved_chain, name) = parse_identity_uri(identity_uri);
+
+            // Look up display URI from repo map
+            let display_chain = display_uri_map
+                .get(&resolved_chain)
+                .cloned()
+                .unwrap_or_else(|| resolved_chain.clone());
+
+            // Check verification status via daemon
+            let status = if let Some(ref client) = client {
+                match client.request(Request::GetIdentity { uri: identity_uri.clone() }).await {
+                    Ok(Response::Ok { .. }) => "verified",
+                    Ok(Response::Error { .. }) => "unverified",
+                    Err(_) => "unknown",
+                }
+            } else {
+                "unknown"
+            };
+
+            println!(
+                "  {:<30} {:<12} {:<12} {}",
+                truncate(&display_chain, 28),
+                truncate(&name, 10),
+                truncate(key_alias, 10),
+                status
+            );
+        }
+    }
+
+    // Table 2: Email associations
+    let emails = keyring.list_emails();
+    if !emails.is_empty() {
+        if !identities.is_empty() {
+            println!();
+        }
+        println!("Email Associations:");
+        println!("  {:<35} {:<45} {}", "EMAIL", "SBO URI", "STATUS");
+        println!("  {}", "-".repeat(95));
+
+        for (email, sbo_uri) in emails {
+            let status = if let Some(ref client) = client {
+                match client.request(Request::GetIdentity { uri: sbo_uri.clone() }).await {
+                    Ok(Response::Ok { .. }) => "verified",
+                    Ok(Response::Error { .. }) => "unverified",
+                    Err(_) => "unknown",
+                }
+            } else {
+                "unknown"
+            };
+            println!("  {:<35} {:<45} {}", email, truncate(sbo_uri, 43), status);
+        }
     }
 
     Ok(())
@@ -779,10 +793,9 @@ pub async fn import_email(email: &str) -> Result<()> {
     print!("  DNS: _sbo-id.{}...", domain);
     std::io::Write::flush(&mut std::io::stdout())?;
 
-    let sbo_id = match sbo_core::dns::resolve_identity_host(domain).await {
+    match sbo_core::dns::resolve_identity_host(domain).await {
         Ok(record) => {
             println!(" host={}", record.host);
-            record
         }
         Err(sbo_core::dns::DnsError::NoRecord) => {
             println!();

@@ -2,6 +2,7 @@
 //!
 //! Manages local SBO repository replicas with data availability verification.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -10,7 +11,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use sbo_daemon::config::Config;
-use sbo_daemon::ipc::{IpcServer, Request, Response};
+use sbo_daemon::ipc::{self, IpcServer, Request, Response, SignRequestStatus, SignRequest as IpcSignRequest, SignedAssertion};
 use sbo_daemon::lc::LcManager;
 use sbo_daemon::prover::Prover;
 use sbo_daemon::repo::{RepoManager, SboUri};
@@ -85,6 +86,8 @@ struct DaemonState {
     lc: LcManager,
     rpc: RpcClient,
     turbo: TurboDaClient,
+    /// Pending sign requests from apps (keyed by request_id)
+    sign_requests: HashMap<String, IpcSignRequest>,
 }
 
 impl DaemonState {
@@ -105,6 +108,7 @@ impl DaemonState {
             lc,
             rpc,
             turbo,
+            sign_requests: HashMap::new(),
         })
     }
 }
@@ -1013,6 +1017,183 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             tracing::info!("Shutdown requested via IPC");
             // TODO: Graceful shutdown
             Response::ok(serde_json::json!({"status": "shutting down"}))
+        }
+
+        // ====================================================================
+        // Auth / Sign Request Flow
+        // ====================================================================
+
+        Request::SubmitSignRequest {
+            request_id,
+            app_name,
+            app_origin,
+            email,
+            challenge,
+            purpose,
+        } => {
+            let mut state_write = state.write().await;
+
+            // Check for duplicate request_id
+            if state_write.sign_requests.contains_key(&request_id) {
+                return Response::error(format!("Request ID '{}' already exists", request_id));
+            }
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let request = IpcSignRequest {
+                request_id: request_id.clone(),
+                app_name,
+                app_origin,
+                email,
+                challenge,
+                purpose,
+                status: SignRequestStatus::Pending,
+                created_at: now,
+                signed_assertion: None,
+                rejection_reason: None,
+            };
+
+            state_write.sign_requests.insert(request_id.clone(), request);
+
+            tracing::info!("New sign request queued: {}", request_id);
+
+            Response::ok(serde_json::json!({
+                "status": "pending",
+                "request_id": request_id,
+            }))
+        }
+
+        Request::ListSignRequests => {
+            let state_read = state.read().await;
+
+            let requests: Vec<_> = state_read
+                .sign_requests
+                .values()
+                .filter(|r| r.status == SignRequestStatus::Pending)
+                .map(|r| serde_json::json!({
+                    "request_id": r.request_id,
+                    "app_name": r.app_name,
+                    "app_origin": r.app_origin,
+                    "email": r.email,
+                    "challenge": r.challenge,
+                    "purpose": r.purpose,
+                    "created_at": r.created_at,
+                }))
+                .collect();
+
+            Response::ok(serde_json::json!({ "requests": requests }))
+        }
+
+        Request::GetSignRequest { request_id } => {
+            let state_read = state.read().await;
+
+            match state_read.sign_requests.get(&request_id) {
+                Some(request) => Response::ok(serde_json::json!({
+                    "request_id": request.request_id,
+                    "app_name": request.app_name,
+                    "app_origin": request.app_origin,
+                    "email": request.email,
+                    "challenge": request.challenge,
+                    "purpose": request.purpose,
+                    "status": format!("{:?}", request.status),
+                    "created_at": request.created_at,
+                })),
+                None => Response::error(format!("Sign request '{}' not found", request_id)),
+            }
+        }
+
+        Request::ApproveSignRequest {
+            request_id,
+            signed_assertion,
+        } => {
+            let mut state_write = state.write().await;
+
+            match state_write.sign_requests.get_mut(&request_id) {
+                Some(request) => {
+                    if request.status != SignRequestStatus::Pending {
+                        return Response::error(format!(
+                            "Request '{}' is not pending (status: {:?})",
+                            request_id, request.status
+                        ));
+                    }
+
+                    request.status = SignRequestStatus::Approved;
+                    request.signed_assertion = Some(signed_assertion);
+
+                    tracing::info!("Sign request approved: {}", request_id);
+
+                    Response::ok(serde_json::json!({
+                        "status": "approved",
+                        "request_id": request_id,
+                    }))
+                }
+                None => Response::error(format!("Sign request '{}' not found", request_id)),
+            }
+        }
+
+        Request::RejectSignRequest { request_id, reason } => {
+            let mut state_write = state.write().await;
+
+            match state_write.sign_requests.get_mut(&request_id) {
+                Some(request) => {
+                    if request.status != SignRequestStatus::Pending {
+                        return Response::error(format!(
+                            "Request '{}' is not pending (status: {:?})",
+                            request_id, request.status
+                        ));
+                    }
+
+                    request.status = SignRequestStatus::Rejected;
+                    request.rejection_reason = reason;
+
+                    tracing::info!("Sign request rejected: {}", request_id);
+
+                    Response::ok(serde_json::json!({
+                        "status": "rejected",
+                        "request_id": request_id,
+                    }))
+                }
+                None => Response::error(format!("Sign request '{}' not found", request_id)),
+            }
+        }
+
+        Request::GetSignRequestResult { request_id } => {
+            let state_read = state.read().await;
+
+            match state_read.sign_requests.get(&request_id) {
+                Some(request) => {
+                    let mut response = serde_json::json!({
+                        "request_id": request.request_id,
+                        "status": format!("{:?}", request.status).to_lowercase(),
+                    });
+
+                    match request.status {
+                        SignRequestStatus::Approved => {
+                            if let Some(ref assertion) = request.signed_assertion {
+                                response["assertion"] = serde_json::json!({
+                                    "identity_uri": assertion.identity_uri,
+                                    "public_key": assertion.public_key,
+                                    "challenge": assertion.challenge,
+                                    "timestamp": assertion.timestamp,
+                                    "signature": assertion.signature,
+                                });
+                            }
+                        }
+                        SignRequestStatus::Rejected => {
+                            if let Some(ref reason) = request.rejection_reason {
+                                response["reason"] = serde_json::json!(reason);
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    Response::ok(response)
+                }
+                None => Response::error(format!("Sign request '{}' not found", request_id)),
+            }
         }
     }
 }
