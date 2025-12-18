@@ -1,0 +1,25 @@
+SBOQ-Version: 0.2
+Path: /sys/names/
+Id: danmills
+Creator: sys
+Block: 2713459
+State-Root: d439309b70c2909edaa00787bdcde14e674a417999274e573ded820a08522a96
+Object-Hash: ce0929c636c955aac37de3cbeda433fdb5312f707587f54318c1e2121cf3e9a2
+Proof-Format: trie
+Proof-Length: 4
+Object-Length: 553
+
+[{"segment":"sys","siblings":{}},{"segment":"names","siblings":{"policies":"sha256:d2b944b5f11aaac6412cb17fc0e739d41617d38c273b16a7cd61c87ba7a73657"}},{"segment":"sys","siblings":{"e_91177839c6d136e0":"sha256:e7df140d9ddddc51c6e46be836a3765fc0961bd6d93ac5156d50bb0419ab8ae0"}},{"segment":"danmills","siblings":{}}]
+SBO-Version: 0.5
+Action: post
+Path: /sys/names/
+ID: danmills
+Type: object
+Content-Type: application/json
+Content-Length: 89
+Content-Hash: sha256:65e22b01a484f9b5a8c9373d91b68e5164ebcf24e3d4f30fa2755bdbd5147a40
+Content-Schema: identity.v1
+Public-Key: ed25519:91177839c6d136e024452a7738a4e5ae20973e964972f5fb3ba4f9dcf2e4af0c
+Signature: 36ccfe5f7fc28004a3822064c7ee68dee75cd09ba6b461010c12c6e2aa6d2ce96cecbc144219d8f7438b78c9d0636a12b86bc9a9d38bca7c1cf39bc1c7f45a08
+
+{"public_key":"ed25519:91177839c6d136e024452a7738a4e5ae20973e964972f5fb3ba4f9dcf2e4af0c"}

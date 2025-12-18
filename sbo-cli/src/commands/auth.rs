@@ -287,3 +287,130 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}…", &s[..max_len - 1])
     }
 }
+
+// ============================================================================
+// Test/Demo Commands (simulate an app)
+// ============================================================================
+
+/// Simulate an app requesting authentication
+pub async fn test_request(
+    app_name: &str,
+    email: Option<&str>,
+    origin: Option<&str>,
+) -> Result<()> {
+    let config = Config::load(&Config::config_path())?;
+    let client = IpcClient::new(config.daemon.socket_path);
+
+    // Generate a random request ID and challenge using timestamp + pid
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let rand_val = now.as_nanos() as u64 ^ std::process::id() as u64;
+    let request_id = format!("test-{:08x}", (rand_val & 0xFFFFFFFF) as u32);
+    let challenge = format!("challenge-{:016x}", rand_val);
+
+    println!("Simulating app authentication request...");
+    println!("  App:       {}", app_name);
+    if let Some(e) = email {
+        println!("  Email:     {} (directed)", e);
+    } else {
+        println!("  Email:     (undirected - user chooses)");
+    }
+    if let Some(o) = origin {
+        println!("  Origin:    {}", o);
+    }
+    println!("  Challenge: {}", challenge);
+    println!();
+
+    match client.request(Request::SubmitSignRequest {
+        request_id: request_id.clone(),
+        app_name: app_name.to_string(),
+        app_origin: origin.map(|s| s.to_string()),
+        email: email.map(|s| s.to_string()),
+        challenge: challenge.clone(),
+        purpose: Some("Test authentication".to_string()),
+    }).await {
+        Ok(Response::Ok { .. }) => {
+            println!("✓ Request submitted to daemon");
+            println!();
+            println!("Request ID: {}", request_id);
+            println!();
+            println!("Now approve it with:");
+            println!("  sbo auth pending");
+            println!("  sbo auth approve {}", request_id);
+            println!();
+            println!("Then check the result with:");
+            println!("  sbo auth test-poll {}", request_id);
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("Error: {}", message);
+        }
+        Err(e) => {
+            eprintln!("Cannot connect to daemon: {}", e);
+            eprintln!("Is the daemon running? Try: sbo daemon start");
+        }
+    }
+
+    Ok(())
+}
+
+/// Poll for a sign request result (simulating an app checking for response)
+pub async fn test_poll(request_id: &str) -> Result<()> {
+    let config = Config::load(&Config::config_path())?;
+    let client = IpcClient::new(config.daemon.socket_path);
+
+    println!("Polling for result of request {}...", request_id);
+    println!();
+
+    match client.request(Request::GetSignRequestResult {
+        request_id: request_id.to_string(),
+    }).await {
+        Ok(Response::Ok { data }) => {
+            let status = data["status"].as_str().unwrap_or("unknown");
+
+            match status {
+                "pending" => {
+                    println!("Status: PENDING");
+                    println!();
+                    println!("User has not yet approved or rejected this request.");
+                    println!("Check with: sbo auth pending");
+                }
+                "approved" => {
+                    println!("Status: APPROVED ✓");
+                    println!();
+                    if let Some(assertion) = data.get("assertion") {
+                        println!("Signed Assertion:");
+                        println!("  Identity:  {}", assertion["identity_uri"].as_str().unwrap_or("-"));
+                        println!("  PublicKey: {}", assertion["public_key"].as_str().unwrap_or("-"));
+                        println!("  Challenge: {}", assertion["challenge"].as_str().unwrap_or("-"));
+                        println!("  Timestamp: {}", assertion["timestamp"].as_u64().unwrap_or(0));
+                        println!("  Signature: {}...",
+                            assertion["signature"].as_str()
+                                .map(|s| &s[..std::cmp::min(32, s.len())])
+                                .unwrap_or("-"));
+                        println!();
+                        println!("App can now verify this signature against the on-chain identity.");
+                    }
+                }
+                "rejected" => {
+                    println!("Status: REJECTED ✗");
+                    if let Some(reason) = data["reason"].as_str() {
+                        println!("  Reason: {}", reason);
+                    }
+                }
+                _ => {
+                    println!("Status: {}", status);
+                    println!("{}", serde_json::to_string_pretty(&data)?);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("Error: {}", message);
+        }
+        Err(e) => {
+            eprintln!("Cannot connect to daemon: {}", e);
+        }
+    }
+
+    Ok(())
+}
