@@ -1,0 +1,20 @@
+[package]
+name = "sbo-auth-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Demo app showing SBO identity authentication flow"
+
+[[bin]]
+name = "auth-demo"
+path = "src/main.rs"
+
+[dependencies]
+sbo-daemon = { path = "../sbo-daemon" }
+sbo-core = { path = "../sbo-core" }
+tokio = { workspace = true, features = ["full"] }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+hex = "0.4"
+ed25519-dalek = { workspace = true }

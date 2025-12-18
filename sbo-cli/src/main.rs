@@ -449,40 +449,6 @@ enum AuthCommands {
         reason: Option<String>,
     },
 
-    /// [TEST] Simulate an app requesting authentication
-    ///
-    /// This command simulates what an app would do when requesting
-    /// the user to authenticate. Use it to test the auth flow.
-    ///
-    /// Examples:
-    ///   sbo auth test-request "My App"
-    ///   sbo auth test-request "My App" --email alice@example.com
-    ///   sbo auth test-request "My App" --origin https://myapp.com
-    #[command(name = "test-request")]
-    TestRequest {
-        /// App name to display
-        app_name: String,
-
-        /// Email to request (directed auth) - omit for undirected
-        #[arg(long)]
-        email: Option<String>,
-
-        /// App origin URL
-        #[arg(long)]
-        origin: Option<String>,
-    },
-
-    /// [TEST] Poll for sign request result (simulates app checking)
-    ///
-    /// After approving a request, use this to see what the app would receive.
-    ///
-    /// Example:
-    ///   sbo auth test-poll test-abc12345
-    #[command(name = "test-poll")]
-    TestPoll {
-        /// Request ID to poll
-        request_id: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1341,12 +1307,6 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AuthCommands::Reject { request_id, reason } => {
                     commands::auth::reject(&request_id, reason.as_deref()).await?;
-                }
-                AuthCommands::TestRequest { app_name, email, origin } => {
-                    commands::auth::test_request(&app_name, email.as_deref(), origin.as_deref()).await?;
-                }
-                AuthCommands::TestPoll { request_id } => {
-                    commands::auth::test_poll(&request_id).await?;
                 }
             }
         }

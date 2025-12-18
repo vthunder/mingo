@@ -12,13 +12,15 @@ use tokio::net::{UnixListener, UnixStream};
 pub struct SignedAssertion {
     /// The SBO identity URI (e.g., sbo://sandmill.org/sys/names/danmills)
     pub identity_uri: String,
+    /// The email address claimed by this assertion (if directed auth)
+    pub email: Option<String>,
     /// The public key that signed this assertion
     pub public_key: String,
     /// The original challenge that was signed
     pub challenge: String,
     /// Timestamp when the assertion was created (Unix epoch seconds)
     pub timestamp: u64,
-    /// The signature over: identity_uri + challenge + timestamp
+    /// The signature over: identity_uri + email + challenge + timestamp
     pub signature: String,
 }
 

@@ -1175,6 +1175,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                             if let Some(ref assertion) = request.signed_assertion {
                                 response["assertion"] = serde_json::json!({
                                     "identity_uri": assertion.identity_uri,
+                                    "email": assertion.email,
                                     "public_key": assertion.public_key,
                                     "challenge": assertion.challenge,
                                     "timestamp": assertion.timestamp,

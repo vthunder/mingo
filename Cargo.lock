@@ -5742,6 +5742,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sbo-auth-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "sbo-core",
+ "sbo-daemon",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "sbo-avail"
 version = "0.1.0"
 dependencies = [
