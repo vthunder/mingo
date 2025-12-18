@@ -351,8 +351,8 @@ dev_mode = false       # true = fake proofs for testing
 
 | Type | Size | Speed | Use Case |
 |------|------|-------|----------|
-| `composite` | ~400KB | Fast | Development |
-| `succinct` | ~100KB | 7-8x slower | Production |
+| `composite` | ~400KB | ~50s (grows linearly with # edits in batch) | Development |
+| `succinct` | ~300KB | slightly slower | Development, production |
 | `groth16` | ~300B | Slowest | On-chain verification |
 
 ---
@@ -364,8 +364,9 @@ All configuration lives in `~/.sbo/`:
 ```
 ~/.sbo/
 ├── config.toml       # Daemon configuration
-├── keys/             # Signing keys (encrypted)
-│   └── metadata.json # Key aliases and identities
+├── keys/             # Signing keys (unencrypted, but only user-readable)
+│   ├── keyring.json  # Key aliases and identities
+│   └──
 ├── daemon.sock       # IPC socket
 └── repos.json        # Repository index
 ```
