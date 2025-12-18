@@ -1,482 +1,469 @@
 # SBO Reference Implementation
 
-This is the reference implementation of SBO (Sovereign Blockchain Objects). It includes:
+## What is SBO?
 
-- **sbo-cli** (`sbo`) - Command-line tool for posting and querying objects
-- **sbo-daemon** - Background service that syncs from DA layers
-- **sbo-core** - Core library with validation and state management
-- **sbo-crypto** - Cryptographic primitives (signatures, hashing, trie proofs)
-- **sbo-avail** - Avail DA layer integration
+SBO (Sovereign Blockchain Objects) is a protocol for storing and retrieving data on blockchain data availability (DA) layers. Data is organized into repositories with filesystem-like paths, signed by identities, and anchored to DA layers like Avail. The result is sovereign, portable data that can be synced, verified, and proven without trusting any centralized server.
 
----
+This reference implementation provides everything needed to run SBO nodes, create identities, authenticate users, and generate cryptographic proofs.
 
-## Architecture
+## What You Can Do
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Your App                            │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                    ┌─────────▼─────────┐
-                    │    SBO Daemon     │  ← Validates & syncs
-                    │  (runs locally)   │
-                    └─────────┬─────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              │               │               │
-              ▼               ▼               ▼
-        ┌──────────┐   ┌──────────┐   ┌──────────┐
-        │  Avail   │   │ Ethereum │   │ Celestia │
-        │   DA     │   │  (L1)    │   │   DA     │
-        └──────────┘   └──────────┘   └──────────┘
-```
+- **Sync repositories** - Follow SBO repos and sync data from DA layers to your local filesystem
+- **Create identities** - Claim names on-chain with your signing key (`/sys/names/alice`)
+- **Authenticate users** - Let users prove they control an email-linked SBO identity
+- **Generate proofs** - Create portable cryptographic proofs that data exists (or doesn't)
+- **Run different node types** - Full node, light client, or proof generator
 
-**How it works:**
+## Components
 
-1. **Post**: Sign a message and submit it to a DA layer
-2. **Sync**: The daemon watches the chain and downloads new messages
-3. **Validate**: Each message is verified (signature, ownership, policy)
-4. **Store**: Valid messages are written to local filesystem + state DB
-5. **Use**: Your app reads data like normal files
+### Binaries
 
----
+| Binary | Description |
+|--------|-------------|
+| `sbo` | CLI for all user operations (keys, identities, repos, proofs) |
+| `sbo-daemon` | Background service that syncs from DA layers and manages state |
+| `auth-demo` | Standalone demo showing email-based authentication flow |
+
+### Libraries
+
+| Crate | Description |
+|-------|-------------|
+| `sbo-core` | Core library (wire format, validation, state, keyring, DNS) |
+| `sbo-crypto` | Cryptographic primitives (ed25519, sha256, sparse trie) |
+| `sbo-types` | Shared type definitions |
+| `sbo-avail` | Avail DA layer integration |
+| `sbo-daemon` | Daemon library (sync engine, IPC, prover) |
+| `sbo-zkvm` | RISC Zero guest program for ZK validity proofs |
 
 ## Quick Start
 
 ### Prerequisites
 
 ```bash
-# Rust toolchain
+# Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-### Building
+### Build
 
 ```bash
 cd reference_impl
 cargo build --release
 ```
 
-### Basic Usage
+### Basic Setup
 
 ```bash
-# Create a signing key
+# 1. Generate a signing key
 ./target/release/sbo key generate
 
-# Start the daemon
-./target/release/sbo-daemon start
+# 2. Start the daemon
+./target/release/sbo-daemon start --foreground
 
-# Add a repo to sync from Avail
-./target/release/sbo repo add sbo+raw://avail:turing:506 ./my-repo
-
-# Check sync status
-./target/release/sbo repo status
-
-# View your synced data
-ls ./my-repo/
+# 3. (In another terminal) Check status
+./target/release/sbo daemon status
 ```
 
-### Object Operations
+---
+
+## Demos
+
+### Demo 1: Sync and Query Data
+
+Sync an existing SBO repository to your local filesystem:
 
 ```bash
-# Post an object (using full SBO URI)
-./target/release/sbo uri post sbo+raw://avail:turing:506/test/hello ./data.json
+# Add a repo using DNS-based URI
+./target/release/sbo repo add sbo://sandmill.org/ ./sandmill-data
 
-# Post with specific content type
-./target/release/sbo uri post sbo+raw://avail:turing:506/profiles/alice ./profile.json --content-type application/json
+# Or using raw chain coordinates
+./target/release/sbo repo add sbo+raw://avail:turing:506/ ./my-repo
 
+# List repos
+./target/release/sbo repo list
+
+# Browse synced data
+ls ./sandmill-data/
+ls ./sandmill-data/sys/names/
+```
+
+Query objects directly:
+
+```bash
 # Get an object
-./target/release/sbo uri get sbo+raw://avail:turing:506/test/hello
+./target/release/sbo uri get sbo://sandmill.org/sys/names/alice
 
 # List objects at a path
-./target/release/sbo uri list sbo+raw://avail:turing:506/profiles/
+./target/release/sbo uri list sbo://sandmill.org/sys/names/
 ```
+
+### Demo 2: Create an Identity
+
+Create an on-chain identity linked to your signing key:
+
+```bash
+# Ensure you have a key
+./target/release/sbo key list
+
+# Create a new repo (if you're starting fresh)
+./target/release/sbo repo create sbo+raw://avail:turing:YOUR_APP_ID/ ./my-repo
+
+# Create an identity
+./target/release/sbo id create sbo://your-domain.com/ alice \
+  --display-name "Alice Smith" \
+  --website "https://alice.example.com"
+
+# List your identities
+./target/release/sbo id list
+
+# Show details
+./target/release/sbo id show alice
+```
+
+### Demo 3: Email-Based Authentication
+
+This demo shows how an app can authenticate users via their email-linked SBO identity.
+
+**Prerequisites:**
+1. DNS TXT record: `_sbo-id.yourdomain.com` → `v=sbo-id1 host=yourdomain.com`
+2. HTTPS endpoint: `/.well-known/sbo-identity/{domain}/{user}` returning `{"version":1,"sbo_uri":"..."}`
+3. An SBO identity created on-chain
+
+**Step 1: Import your email identity**
+
+```bash
+# Resolve an email to see its SBO identity
+./target/release/sbo id resolve alice@example.com
+
+# Import the identity (links email to your local key)
+./target/release/sbo id import alice@example.com
+
+# Verify it's imported
+./target/release/sbo id list
+```
+
+**Step 2: Run the auth demo (simulates an app)**
+
+```bash
+# In terminal 1: Start the demo app
+./target/release/auth-demo --email alice@example.com --app-name "My App"
+```
+
+**Step 3: Approve the request (as the user)**
+
+```bash
+# In terminal 2: See pending requests
+./target/release/sbo auth pending
+
+# Approve the request
+./target/release/sbo auth approve demo-xxxxxxxx
+```
+
+The demo app will show all verification steps:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 4: Verify Assertion                                       │
+└─────────────────────────────────────────────────────────────────┘
+
+  [1/5] Challenge matches what we sent... ✓ PASS
+  [2/5] Timestamp is recent (< 5 min)... ✓ PASS
+  [3/5] Email matches request... ✓ PASS (alice@example.com)
+  [4/5] Signature is valid... ✓ PASS
+  [5/5] Public key matches on-chain identity... ✓ PASS
+
+┌─────────────────────────────────────────────────────────────────┐
+│ AUTHENTICATION SUCCESSFUL                                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Demo 4: Generate and Verify Proofs
+
+Create a portable cryptographic proof that an object exists:
+
+```bash
+# Generate a proof for an identity
+./target/release/sbo proof generate sbo://sandmill.org/sys/names/alice
+
+# Save to file
+./target/release/sbo proof generate ./my-repo/sys/names/alice > proof.sboq
+
+# Verify a proof
+./target/release/sbo proof verify proof.sboq
+```
+
+Proofs are self-contained and can be verified without access to the full chain state.
 
 ---
 
-## Working with Proofs
+## URI Formats
 
-SBO provides cryptographic proofs that an object exists (or doesn't exist) at a specific state root. These proofs are portable and can be verified without access to the full chain state.
+SBO supports two URI formats:
 
-### Generating Proofs
-
-```bash
-# Request a proof for an object
-./target/release/sbo proof /test/hello
-
-# Save proof to file
-./target/release/sbo proof /test/hello > proof.sboq
-```
-
-### Proof Format (SBOQ)
-
-Proofs use the SBOQ (SBO Query) format - a self-contained proof with embedded object:
+### DNS-Based URIs (Recommended)
 
 ```
-SBOQ-Version: 0.2
-Path: /test/
-Id: hello
-Creator: alice
-Block: 12345
-State-Root: abc123def456...
-Object-Hash: 789xyz...
-Proof-Format: trie
-Proof-Length: 156
-Object-Length: 42
-
-[{"segment":"test","siblings":{"other":"sha256:..."}},{"segment":"alice","siblings":{}},{"segment":"hello","siblings":{}}]
-{"name":"My First Object"}
+sbo://domain.com/path/to/object
 ```
 
-### Verifying Proofs
-
-```bash
-# Verify a proof file
-./target/release/sbo verify proof.sboq
-
-# Output shows verification result:
-#   Trie proof: valid
-#   Object hash: valid
-#   State root: abc123... (block 12345)
+Resolved via DNS TXT record at `_sbo.domain.com`:
+```
+_sbo.domain.com TXT "sbo=v1 chain=avail:turing appId=506"
 ```
 
-### Proof Verification Details
+Benefits:
+- Human-readable
+- Can migrate to different chains
+- Supports checkpoints and bootstrap nodes
 
-The verification process:
+### Raw URIs
 
-1. **Object hash check**: `sha256(embedded_object) == Object-Hash`
-2. **Trie proof check**: Reconstruct path from leaf to root
-   - For each step, combine siblings + current segment hash
-   - Final hash must equal `State-Root`
-3. **State root trust**: Verify state root against known checkpoints or chain state
-
-### Non-Existence Proofs
-
-Proofs can also demonstrate that an object does NOT exist:
-
-```bash
-./target/release/sbo proof /test/nonexistent
-# Object-Hash: null (indicates non-existence)
+```
+sbo+raw://chain:network:appId/path/to/object
 ```
 
-The proof shows the trie structure at the divergence point, proving the path isn't present.
+Direct chain reference without DNS lookup. Use when:
+- DNS isn't set up yet
+- You need deterministic resolution
+- Testing locally
 
 ---
 
-## Daemon Commands
+## Daemon Modes
+
+The daemon supports three modes of operation:
+
+| Mode | Flag | Description | Use Case |
+|------|------|-------------|----------|
+| **Full** | (default) | Executes all blocks, computes state | Standard operation |
+| **Light** | `--light` | Verifies ZK proofs, trusts proven state | Resource-constrained environments |
+| **Prover** | `--prover` | Generates ZK proofs for state transitions | Serving light clients |
+
+### Full Mode (Default)
 
 ```bash
-# Start daemon in foreground
 ./target/release/sbo-daemon start
-
-# Check daemon status
-./target/release/sbo daemon status
-
-# Stop daemon
-./target/release/sbo daemon stop
-
-# View sync progress
-./target/release/sbo repo status
 ```
 
-### Daemon Modes
+Processes every block, validates all messages, computes state roots. This is the standard mode for most users.
+
+### Light Mode
 
 ```bash
-# Full node (default) - executes and validates all blocks
-./target/release/sbo-daemon start
-
-# Light mode - verifies zkVM proofs instead of executing blocks (see "Light Mode" section)
 ./target/release/sbo-daemon start --light
+```
 
-# Prover mode - generates ZK proofs for state transitions (see "ZK Validity Proofs" section)
+Instead of executing blocks, light mode:
+1. Waits for ZK validity proofs (SBOP messages)
+2. Cryptographically verifies the proofs
+3. Trusts the proven state roots
+
+Benefits:
+- Much lower CPU usage
+- Faster sync (skip execution)
+- Same security guarantees (ZK proofs are trustless)
+
+Limitations:
+- Depends on prover nodes submitting proofs
+- Only stores state roots, not individual objects
+
+### Prover Mode
+
+```bash
 ./target/release/sbo-daemon start --prover
 ```
 
-Note: `--light` and `--prover` are mutually exclusive.
+Runs as a full node plus generates ZK proofs:
+1. Processes blocks normally
+2. Batches state changes
+3. Generates RISC Zero zkVM proofs
+4. Submits proofs to DA layer
+
+See [ZK Validity Proofs](#zk-validity-proofs) for setup details.
 
 ---
 
-## State Commitment
+## Architecture
 
-SBO uses a sparse path-segment trie for state commitment. Each object's position in the tree mirrors its path structure.
-
-### Path Segments
-
-An object at path `/sys/names/` with ID `alice` created by `user123` becomes trie segments:
 ```
-["sys", "names", "user123", "alice"]
+┌─────────────────────────────────────────────────────────────────┐
+│                         Your App                                │
+│                    (or auth-demo, sbo CLI)                      │
+└─────────────────────────────────────────────────────────────────┘
+                              │ IPC (Unix socket)
+                    ┌─────────▼─────────┐
+                    │    SBO Daemon     │
+                    │   Full / Light    │
+                    │     / Prover      │
+                    └─────────┬─────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              │               │               │
+              ▼               ▼               ▼
+        ┌──────────┐   ┌──────────┐   ┌──────────┐
+        │  Avail   │   │ Celestia │   │  Other   │
+        │   DA     │   │   DA     │   │   DA     │
+        └──────────┘   └──────────┘   └──────────┘
 ```
 
-### State Root
-
-The state root is the hash of the trie's root node. It commits to all objects in the database at a given block height.
-
-```bash
-# View current state root
-./target/release/sbo state root
-
-# View state root at specific block
-./target/release/sbo state root --block 12345
-```
+**Data flow:**
+1. **Post**: Sign a message → submit to DA layer via TurboDA
+2. **Sync**: Daemon watches chain → downloads new messages
+3. **Validate**: Verify signature, ownership, policy rules
+4. **Store**: Write to local filesystem + RocksDB state
+5. **Prove**: (Prover mode) Generate ZK proof of state transition
+6. **Query**: Apps read local files or request proofs
 
 ---
 
 ## ZK Validity Proofs
 
-The daemon can generate ZK validity proofs for state transitions using RISC Zero zkVM. This enables trustless verification of batch state updates without re-executing all transactions.
+ZK proofs enable trustless verification of state transitions without re-executing all transactions.
 
 ### Building with zkVM Support
 
-#### Prerequisites
-
 ```bash
-# 1. Install RISC Zero toolchain
+# Install RISC Zero toolchain
 curl -L https://risczero.com/install | bash
 rzup install
 
-# 2. Install CMake (required for native code compilation)
-# macOS:
-brew install cmake
-# Linux:
-apt install cmake
+# Install CMake
+brew install cmake  # macOS
+apt install cmake   # Linux
+
+# Build with zkVM
+cargo build --release
 ```
 
-#### macOS-Specific Notes
-
-On Apple Silicon (M1/M2/M3), you may encounter build issues:
-
-```bash
-# If you see errors about missing SDK or compiler:
-xcode-select --install
-
-# If builds fail with Metal/GPU errors, the prover will fall back to CPU
-# This is normal - GPU acceleration is optional
-
-# If you see linker errors, ensure Xcode CLT is properly installed:
-sudo xcode-select --reset
-```
-
-#### Building the Daemon with zkVM
-
-```bash
-# Build with zkVM support (release mode recommended)
-cargo build --release --features zkvm
-
-# This builds:
-# - The RISC-V guest program (runs inside zkVM)
-# - The host prover (generates proofs)
-# - All verification code
-```
-
-Build times: First build compiles the RISC-V toolchain and may take 5-10 minutes. Subsequent builds are faster.
-
-### Running in Prover Mode
-
-#### Quick Start
-
-```bash
-# 1. Configure prover settings in ~/.sbo/config.toml
-cat >> ~/.sbo/config.toml << 'EOF'
-[prover]
-enabled = true
-batch_size = 10
-receipt_kind = "composite"
-dev_mode = false
-EOF
-
-# 2. Start daemon with prover flag
-./target/release/sbo-daemon start --prover
-```
-
-#### Prover Configuration
+### Prover Configuration
 
 Add to `~/.sbo/config.toml`:
 
 ```toml
 [prover]
-# Enable proof generation
 enabled = true
-
-# Number of blocks to wait after state change before proving
-# Lower = more frequent proofs, higher = batches more changes
-batch_size = 10
-
-# Proof compression level (see "Proof Types" below)
-receipt_kind = "composite"
-
-# Dev mode uses fake proofs (no zkVM required)
-dev_mode = false
+batch_size = 10        # Blocks to batch before proving
+receipt_kind = "composite"  # composite, succinct, or groth16
+dev_mode = false       # true = fake proofs for testing
 ```
 
 ### Proof Types
 
-| Type | Size | Time | Use Case |
-|------|------|------|----------|
-| `composite` | ~400KB | Fast (~30s) | Development, testing |
-| `succinct` | ~100KB | 7-8x slower | Production, smaller payloads |
-| `groth16` | ~300 bytes | Slowest (needs Docker) | On-chain verification |
+| Type | Size | Speed | Use Case |
+|------|------|-------|----------|
+| `composite` | ~400KB | Fast | Development |
+| `succinct` | ~100KB | 7-8x slower | Production |
+| `groth16` | ~300B | Slowest | On-chain verification |
 
-**Recommendations:**
-- Start with `composite` during development
-- Use `succinct` for production if proof size matters
-- Use `groth16` only if you need Ethereum on-chain verification
+---
 
-### Dev Mode (Testing Without zkVM)
+## Configuration
 
-For development without the full zkVM toolchain:
+All configuration lives in `~/.sbo/`:
+
+```
+~/.sbo/
+├── config.toml       # Daemon configuration
+├── keys/             # Signing keys (encrypted)
+│   └── metadata.json # Key aliases and identities
+├── daemon.sock       # IPC socket
+└── repos.json        # Repository index
+```
+
+### Example config.toml
 
 ```toml
+[daemon]
+socket_path = "~/.sbo/daemon.sock"
+repos_dir = "~/.sbo/repos"
+
+[rpc]
+url = "wss://turing-rpc.avail.so/ws"
+
+[light_client]
+url = "http://127.0.0.1:7007"
+
+[turbo_da]
+url = "https://turing-turbo-da.sandmill.dev"
+token = "your-api-token"
+
 [prover]
-enabled = true
-dev_mode = true  # Generates fake proofs (hash-based, not verifiable)
-```
-
-Dev mode proofs:
-- Don't require RISC Zero toolchain
-- Are NOT cryptographically verifiable
-- Useful for testing the proof submission flow
-
-### How Proving Works
-
-1. **Sync**: Daemon processes blocks and tracks state changes
-2. **Batch**: After `batch_size` blocks with changes, prover activates
-3. **Prove**: zkVM executes state transition and generates proof
-4. **Submit**: SBOP message (proof + metadata) sent to TurboDA
-5. **Verify**: Other nodes can verify the proof against their state
-
-The prover only generates proofs for blocks with actual state changes and only when the daemon is at the chain head (not while catching up).
-
-### Proof Submission
-
-Proofs are automatically submitted to TurboDA (Avail) when generated:
-
-```
-2024-01-15 12:34:56 INFO Generated composite proof for blocks 100-110 (428532 bytes)
-2024-01-15 12:34:57 INFO Submitted proof to Avail: 0x1234...
+enabled = false
+batch_size = 10
+receipt_kind = "composite"
+dev_mode = false
 ```
 
 ---
 
-## Light Mode
+## CLI Reference
 
-Light mode allows running a daemon that verifies zkVM proofs instead of executing every state transition. This enables trustless verification with much lower resource requirements.
-
-### When to Use Light Mode
-
-- **Resource-constrained environments**: Light mode doesn't need to execute all blocks
-- **Bootstrapping new nodes**: Quickly sync to chain head by verifying proofs
-- **Read-only applications**: Only need to trust proven state, not execute writes
-- **Embedded/mobile clients**: Lower CPU and storage requirements
-
-### How Light Mode Works
-
-```
-Full Node:                          Light Node:
-┌──────────────┐                    ┌──────────────┐
-│ Process all  │                    │ Skip block   │
-│ blocks       │                    │ execution    │
-│ (O(N) work)  │                    │              │
-└──────┬───────┘                    └──────┬───────┘
-       │                                   │
-       ▼                                   ▼
-┌──────────────┐                    ┌──────────────┐
-│ Compute      │                    │ Verify zkVM  │
-│ state root   │                    │ proof        │
-└──────┬───────┘                    └──────┬───────┘
-       │                                   │
-       ▼                                   ▼
-┌──────────────┐                    ┌──────────────┐
-│ Store state  │                    │ Store proven │
-│ in DB        │                    │ state root   │
-└──────────────┘                    └──────────────┘
-```
-
-1. **Full node**: Executes every block, computes state roots from scratch
-2. **Light node**: Waits for SBOP proofs, cryptographically verifies them, trusts proven state roots
-
-### Running in Light Mode
+### Key Management
 
 ```bash
-# Start daemon in light mode
-./target/release/sbo-daemon start --light
-
-# Light mode is mutually exclusive with prover mode
-# This will error:
-./target/release/sbo-daemon start --light --prover  # ❌ Cannot combine
+sbo key generate [--name <alias>]     # Generate new key
+sbo key list                          # List keys
+sbo key import <source> [--name ...]  # Import from file/hex
+sbo key export [name]                 # Export for backup
+sbo key default [name]                # Get/set default key
+sbo key delete <name>                 # Delete a key
 ```
 
-### Building with Light Mode Support
-
-Light mode requires the `zkvm` feature for production proof verification:
+### Identity Management
 
 ```bash
-# Build with zkVM support (required for real proof verification)
-cargo build --release --features zkvm
-
-# Without zkvm feature, light mode can only validate proof formats
-# but cannot cryptographically verify them
+sbo id create <uri> <name> [options]  # Create on-chain identity
+sbo id list [uri]                     # List identities
+sbo id show <name>                    # Show identity details
+sbo id update <uri> [options]         # Update identity
+sbo id import <email-or-repo> [name]  # Import identity to keyring
+sbo id remove <chain> <name>          # Remove from keyring
+sbo id resolve <email>                # Resolve email to SBO URI
 ```
 
-### Light Mode Configuration
-
-Light mode can also be enabled via config file:
-
-```toml
-# ~/.sbo/config.toml
-[light]
-enabled = true
-```
-
-When enabled in config, you can start normally:
+### Repository Management
 
 ```bash
-./target/release/sbo-daemon start
-# Light mode enabled automatically from config
+sbo repo create <uri> <path>          # Create new repo with genesis
+sbo repo add <uri> <path>             # Add existing repo to sync
+sbo repo list                         # List repos
+sbo repo remove <path-or-uri>         # Remove repo
+sbo repo relink <path>                # Re-resolve DNS for repo
 ```
 
-### What Light Mode Verifies
+### Object Operations
 
-When an SBOP proof is received:
-
-1. **Receipt verification**: Cryptographically verify the zkVM receipt
-2. **Block range check**: Ensure proof covers expected block range
-3. **State root extraction**: Extract `prev_state_root` and `new_state_root` from proof journal
-4. **Root storage**: Store the proven state roots for later queries
-
-```
-2024-01-15 12:34:56 INFO ✓ Light mode: verified zkVM proof for blocks 100-110 (state: abcd... → ef01...)
-2024-01-15 12:34:56 INFO Light mode: stored proven state root ef01... at block 110 for sbo+raw://avail:turing:506/
-```
-
-### Limitations
-
-- **No object storage**: Light mode doesn't store individual objects, only state roots
-- **No state queries**: Cannot answer queries about specific object contents
-- **Proof-dependent**: Relies on prover nodes submitting proofs
-- **Dev mode proofs**: Cannot extract state roots from dev mode proofs (hash-based, not cryptographic)
-
-### Troubleshooting
-
-**Build fails with "risc0 toolchain not found":**
 ```bash
-rzup install
-# Ensure ~/.risc0/bin is in PATH
-export PATH="$HOME/.risc0/bin:$PATH"
+sbo uri get <uri>                     # Get object
+sbo uri post <uri> <file> [options]   # Post object
+sbo uri list <uri>                    # List objects at path
+sbo uri transfer <uri> [options]      # Transfer object
 ```
 
-**Proof generation is very slow:**
-- First proof is slower (JIT compilation)
-- Ensure release mode: `cargo build --release --features zkvm`
-- Check CPU usage - proofs are CPU-intensive
+### Proofs
 
-**Proofs too large for submission:**
-- Switch from `composite` to `succinct`
-- Note: `succinct` takes longer to generate
-
-**"zkVM feature not enabled" error:**
 ```bash
-# Rebuild with zkvm feature
-cargo build --release --features zkvm
+sbo proof generate <path-or-uri>      # Generate inclusion proof
+sbo proof verify <file>               # Verify proof file
+```
+
+### Authentication
+
+```bash
+sbo auth pending                      # List pending sign requests
+sbo auth show <request-id>            # Show request details
+sbo auth approve <id> [--as <email>]  # Approve and sign
+sbo auth reject <id> [--reason ...]   # Reject request
+```
+
+### Daemon
+
+```bash
+sbo daemon status                     # Check daemon status
+sbo daemon stop                       # Stop daemon
+sbo-daemon start [--foreground]       # Start daemon
+sbo-daemon start --light              # Start in light mode
+sbo-daemon start --prover             # Start in prover mode
 ```
 
 ---
@@ -486,11 +473,14 @@ cargo build --release --features zkvm
 ### Running Tests
 
 ```bash
-# Run all tests
+# All tests
 cargo test
 
-# Run tests without zkvm (faster)
-cargo test -p sbo-crypto -p sbo-core -p sbo-daemon
+# Fast tests (skip zkvm)
+cargo test -p sbo-core -p sbo-crypto -p sbo-daemon
+
+# With zkVM (slower)
+cargo test --features zkvm
 ```
 
 ### Project Structure
@@ -498,78 +488,64 @@ cargo test -p sbo-crypto -p sbo-core -p sbo-daemon
 ```
 reference_impl/
 ├── sbo-cli/          # CLI binary
-├── sbo-daemon/       # Daemon binary
-├── sbo-core/         # Core library (parsing, validation, state)
-├── sbo-crypto/       # Crypto primitives (ed25519, bls, trie)
+├── sbo-daemon/       # Daemon binary and library
+├── sbo-auth-demo/    # Authentication demo app
+├── sbo-core/         # Core library
+├── sbo-crypto/       # Cryptographic primitives
+├── sbo-types/        # Shared types
 ├── sbo-avail/        # Avail DA client
-└── sbo-zkvm/         # RISC Zero guest program for ZK proofs
+└── sbo-zkvm/         # RISC Zero zkVM guest
+    └── methods/      # Guest program source
 ```
 
 ---
 
-## Configuration
+## Troubleshooting
 
-Configuration is stored in `~/.sbo/`:
+### Daemon won't start
 
-```
-~/.sbo/
-├── config.toml       # Daemon configuration
-├── keys/             # Signing keys
-├── state.db/         # RocksDB state database
-└── repos/            # Synced repositories
-```
+```bash
+# Check if already running
+ps aux | grep sbo-daemon
 
-### Example config.toml
+# Remove stale socket
+rm ~/.sbo/daemon.sock
 
-```toml
-[daemon]
-listen = "~/.sbo/daemon.sock"
-
-[avail]
-rpc_url = "wss://turing-rpc.avail.so/ws"
-light_client_url = "http://localhost:7007"
-
-[sync]
-poll_interval_secs = 12
+# Start in foreground to see errors
+./target/release/sbo-daemon start --foreground
 ```
 
----
+### Build fails with zkVM errors
 
-## API Reference
+```bash
+# Install/update RISC Zero
+rzup install
 
-### CLI Commands
+# Ensure PATH includes risc0
+export PATH="$HOME/.risc0/bin:$PATH"
 
-| Command | Description |
-|---------|-------------|
-| `sbo uri get <uri>` | Get an object by SBO URI |
-| `sbo uri post <uri> <file>` | Post an object to the DA layer |
-| `sbo uri list <uri>` | List objects at a path |
-| `sbo uri transfer <uri>` | Transfer an object |
-| `sbo key generate` | Generate a new signing key |
-| `sbo key list` | List keys in keyring |
-| `sbo key import <source>` | Import a key from file/hex |
-| `sbo key export [name]` | Export a key for backup |
-| `sbo key default [name]` | Get/set default key |
-| `sbo id create <uri> <name>` | Create an identity on chain |
-| `sbo id list [uri]` | List identities |
-| `sbo id show <name>` | Show identity details |
-| `sbo id update <uri>` | Update an identity |
-| `sbo proof generate <path>` | Generate inclusion proof |
-| `sbo proof verify <file>` | Verify a proof file |
-| `sbo repo add <uri> <path>` | Add a repository to sync |
-| `sbo repo list` | List followed repositories |
-| `sbo repo remove <target>` | Remove a repository |
-| `sbo daemon start` | Start the daemon |
-| `sbo daemon stop` | Stop the daemon |
-| `sbo daemon status` | Check daemon status |
-| `sbo debug da ...` | DA layer debugging commands |
+# On macOS, ensure Xcode tools
+xcode-select --install
+```
 
-### Daemon IPC
+### Light mode not verifying proofs
 
-The daemon exposes a Unix socket at `~/.sbo/daemon.sock` for IPC. Messages use JSON-RPC format.
+Light mode requires real ZK proofs (not dev mode). Ensure:
+1. A prover node is running and submitting proofs
+2. Daemon built with zkVM: `cargo build --release`
+
+### DNS resolution failing
+
+```bash
+# Test DNS lookup
+dig TXT _sbo.yourdomain.com
+
+# Expected format:
+# _sbo.yourdomain.com. TXT "sbo=v1 chain=avail:turing appId=506"
+```
 
 ---
 
 ## License
 
-[MIT](../LICENSE)
+MIT - see [LICENSE](../LICENSE)
