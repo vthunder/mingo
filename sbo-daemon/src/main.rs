@@ -724,11 +724,13 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             let state_read = state.read().await;
             let light_mode = state_read.config.light.enabled;
 
-            // Find repo matching the URI
-            let repo = state_read.repos.list().find(|r| uri.starts_with(&r.uri.to_string()));
+            // Find repo matching the URI (check both display_uri and resolved uri)
+            let repo = state_read.repos.list().find(|r| {
+                uri.starts_with(&r.uri.to_string()) || uri.starts_with(&r.display_uri)
+            });
 
             let (repo_path, identity_uri) = match repo {
-                Some(r) => (r.path.clone(), format!("{}/sys/names/{}", uri.trim_end_matches('/'), name)),
+                Some(r) => (r.path.clone(), format!("{}/sys/names/{}", r.uri.to_string().trim_end_matches('/'), name)),
                 None => return Response::error(format!("No repo configured for URI: {}. Add with: sbo repo add {} <path>", uri, uri)),
             };
 
@@ -795,9 +797,10 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             let mut identities = Vec::new();
 
             for repo in state_read.repos.list() {
-                // Filter by URI if provided
+                // Filter by URI if provided (check both display_uri and resolved uri)
                 if let Some(ref filter_uri) = uri {
-                    if !repo.uri.to_string().starts_with(filter_uri) {
+                    let resolved = repo.uri.to_string();
+                    if !resolved.starts_with(filter_uri) && !repo.display_uri.starts_with(filter_uri) {
                         continue;
                     }
                 }
@@ -885,9 +888,11 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             let mut found_identities = Vec::new();
 
             for repo in state_read.repos.list() {
-                // Filter by chain if provided
+                // Filter by chain if provided (check both display_uri and resolved uri)
                 if let Some(ref chain) = chain_uri {
-                    if !repo.uri.to_string().starts_with(chain.trim_end_matches('/')) {
+                    let chain_trimmed = chain.trim_end_matches('/');
+                    let resolved = repo.uri.to_string();
+                    if !resolved.starts_with(chain_trimmed) && !repo.display_uri.starts_with(chain_trimmed) {
                         continue;
                     }
                 }

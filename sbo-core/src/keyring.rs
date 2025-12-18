@@ -56,6 +56,9 @@ pub struct KeyringMetadata {
     pub default: Option<String>,
     /// Map of alias -> key entry
     pub keys: HashMap<String, KeyEntry>,
+    /// Map of email -> SBO URI for identity discovery
+    #[serde(default)]
+    pub emails: HashMap<String, String>,
 }
 
 impl Default for KeyringMetadata {
@@ -64,6 +67,7 @@ impl Default for KeyringMetadata {
             version: 1,
             default: None,
             keys: HashMap::new(),
+            emails: HashMap::new(),
         }
     }
 }
@@ -483,6 +487,40 @@ impl Keyring {
         Ok(())
     }
 
+    /// Associate an email address with an SBO URI
+    pub fn add_email(&mut self, email: &str, sbo_uri: &str) -> Result<(), KeyringError> {
+        self.metadata.emails.insert(email.to_lowercase(), sbo_uri.to_string());
+        self.save()?;
+        Ok(())
+    }
+
+    /// Remove an email association
+    pub fn remove_email(&mut self, email: &str) -> Result<(), KeyringError> {
+        self.metadata.emails.remove(&email.to_lowercase());
+        self.save()?;
+        Ok(())
+    }
+
+    /// Look up SBO URI by email address
+    pub fn get_email(&self, email: &str) -> Option<&str> {
+        self.metadata.emails.get(&email.to_lowercase()).map(|s| s.as_str())
+    }
+
+    /// List all email -> SBO URI associations
+    pub fn list_emails(&self) -> &HashMap<String, String> {
+        &self.metadata.emails
+    }
+
+    /// Find the key alias that controls an identity URI
+    pub fn find_key_for_identity(&self, identity_uri: &str) -> Option<&str> {
+        for (alias, entry) in &self.metadata.keys {
+            if entry.identities.iter().any(|uri| uri == identity_uri) {
+                return Some(alias);
+            }
+        }
+        None
+    }
+
     /// Get or resolve the key alias (use default if None provided)
     /// Returns a String since the input lifetime may differ from self
     pub fn resolve_alias(&self, alias: Option<&str>) -> Result<String, KeyringError> {
@@ -633,5 +671,53 @@ mod tests {
 
         keyring.generate("test").unwrap();
         assert!(keyring.generate("test").is_err());
+    }
+
+    #[test]
+    fn test_emails() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut keyring = Keyring::open_at(temp_dir.path().to_path_buf()).unwrap();
+
+        // Add email association
+        keyring
+            .add_email("alice@example.com", "sbo://example.com/sys/names/alice")
+            .unwrap();
+
+        // Lookup works (case insensitive)
+        assert_eq!(
+            keyring.get_email("alice@example.com"),
+            Some("sbo://example.com/sys/names/alice")
+        );
+        assert_eq!(
+            keyring.get_email("ALICE@Example.COM"),
+            Some("sbo://example.com/sys/names/alice")
+        );
+
+        // List returns emails
+        assert_eq!(keyring.list_emails().len(), 1);
+
+        // Remove email
+        keyring.remove_email("alice@example.com").unwrap();
+        assert_eq!(keyring.get_email("alice@example.com"), None);
+    }
+
+    #[test]
+    fn test_find_key_for_identity() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut keyring = Keyring::open_at(temp_dir.path().to_path_buf()).unwrap();
+
+        keyring.generate("mykey").unwrap();
+        keyring
+            .add_identity("mykey", "sbo://example.com/sys/names/alice")
+            .unwrap();
+
+        assert_eq!(
+            keyring.find_key_for_identity("sbo://example.com/sys/names/alice"),
+            Some("mykey")
+        );
+        assert_eq!(
+            keyring.find_key_for_identity("sbo://other.com/sys/names/bob"),
+            None
+        );
     }
 }

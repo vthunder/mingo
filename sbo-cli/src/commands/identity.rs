@@ -758,3 +758,203 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}…", &s[..max_len - 1])
     }
 }
+
+/// Import an identity discovered via email address
+pub async fn import_email(email: &str) -> Result<()> {
+    use sbo_daemon::config::Config;
+    use sbo_daemon::ipc::{IpcClient, Request, Response};
+
+    // Validate email format
+    let (user, domain) = match sbo_core::dns::parse_email(email) {
+        Some(parts) => parts,
+        None => {
+            eprintln!("Error: Invalid email address: {}", email);
+            return Ok(());
+        }
+    };
+
+    println!("Discovering identity for {}...", email);
+
+    // Look up identity host via DNS
+    print!("  DNS: _sbo-id.{}...", domain);
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    let sbo_id = match sbo_core::dns::resolve_identity_host(domain).await {
+        Ok(record) => {
+            println!(" host={}", record.host);
+            record
+        }
+        Err(sbo_core::dns::DnsError::NoRecord) => {
+            println!();
+            eprintln!("Error: Domain {} does not support SBO identity discovery", domain);
+            return Ok(());
+        }
+        Err(e) => {
+            println!();
+            eprintln!("Error: DNS lookup failed: {}", e);
+            return Ok(());
+        }
+    };
+
+    // Fetch .well-known endpoint
+    print!("  HTTP: /.well-known/sbo-identity/{}/{}...", domain, user);
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    let sbo_uri = match sbo_core::dns::resolve_email(email).await {
+        Ok(uri) => {
+            println!(" ok");
+            uri
+        }
+        Err(sbo_core::dns::DnsError::NoRecord) => {
+            println!();
+            eprintln!("Error: User {} not found at {}", user, domain);
+            return Ok(());
+        }
+        Err(e) => {
+            println!();
+            eprintln!("Error: {}", e);
+            return Ok(());
+        }
+    };
+
+    println!("  SBO URI: {}", sbo_uri);
+
+    // Fetch identity from daemon to get public key
+    let config = Config::load(&Config::config_path()).ok();
+    let client = config.map(|c| IpcClient::new(c.daemon.socket_path));
+
+    let identity_public_key = if let Some(ref client) = client {
+        match client.request(Request::GetIdentity { uri: sbo_uri.clone() }).await {
+            Ok(Response::Ok { data }) => {
+                data["public_key"].as_str().map(|s| s.to_string())
+            }
+            Ok(Response::Error { message }) => {
+                eprintln!("Error: {}", message);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Error: Cannot connect to daemon: {}", e);
+                return Ok(());
+            }
+        }
+    } else {
+        eprintln!("Error: Cannot connect to daemon");
+        return Ok(());
+    };
+
+    let identity_public_key = match identity_public_key {
+        Some(k) => k,
+        None => {
+            eprintln!("Error: Identity does not have a public key");
+            return Ok(());
+        }
+    };
+
+    println!("  Public key: {}", identity_public_key);
+
+    // Find matching local key
+    let mut keyring = Keyring::open()?;
+    let mut matching_alias = None;
+
+    for (alias, entry) in keyring.list() {
+        if entry.public_key == identity_public_key {
+            matching_alias = Some(alias.clone());
+            break;
+        }
+    }
+
+    let alias = match matching_alias {
+        Some(a) => a,
+        None => {
+            eprintln!("Error: No local key matches this identity's public key");
+            eprintln!("       You need to import the private key first: sbo key import <alias> <file>");
+            return Ok(());
+        }
+    };
+
+    // Check if already imported
+    let entry = keyring.list().get(&alias).unwrap();
+    let already_imported = entry.identities.contains(&sbo_uri);
+
+    if !already_imported {
+        // Add identity to keyring
+        keyring.add_identity(&alias, &sbo_uri)?;
+    }
+
+    // Store email → SBO URI mapping (always, even if identity was already imported)
+    keyring.add_email(email, &sbo_uri)?;
+
+    if already_imported {
+        println!("\n✓ Identity already imported (email association added)");
+    } else {
+        println!("\n✓ Identity imported");
+    }
+    println!("  URI:       {}", sbo_uri);
+    println!("  Email:     {}", email);
+    println!("  Local key: {}", alias);
+
+    Ok(())
+}
+
+/// Resolve an email address to its SBO identity URI
+pub async fn resolve(email: &str) -> Result<()> {
+    // Validate email format
+    let (user, domain) = match sbo_core::dns::parse_email(email) {
+        Some(parts) => parts,
+        None => {
+            eprintln!("Error: Invalid email address: {}", email);
+            return Ok(());
+        }
+    };
+
+    print!("Looking up _sbo-id.{}...", domain);
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    // Look up identity host via DNS
+    let sbo_id = match sbo_core::dns::resolve_identity_host(domain).await {
+        Ok(record) => {
+            println!(" host={}", record.host);
+            record
+        }
+        Err(sbo_core::dns::DnsError::NoRecord) => {
+            println!();
+            eprintln!("Error: Domain {} does not support SBO identity discovery", domain);
+            eprintln!("       (no _sbo-id.{} TXT record found)", domain);
+            return Ok(());
+        }
+        Err(e) => {
+            println!();
+            eprintln!("Error: DNS lookup failed: {}", e);
+            return Ok(());
+        }
+    };
+
+    // Fetch .well-known endpoint
+    let url = format!(
+        "https://{}/.well-known/sbo-identity/{}/{}",
+        sbo_id.host, domain, user
+    );
+
+    print!("Fetching {}...", url);
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    match sbo_core::dns::resolve_email(email).await {
+        Ok(sbo_uri) => {
+            println!(" ok");
+            println!();
+            println!("{}", sbo_uri);
+        }
+        Err(sbo_core::dns::DnsError::NoRecord) => {
+            println!();
+            eprintln!("Error: User {} not found at {}", user, domain);
+            return Ok(());
+        }
+        Err(e) => {
+            println!();
+            eprintln!("Error: {}", e);
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}

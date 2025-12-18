@@ -118,12 +118,15 @@ enum UriCommands {
 enum ProofCommands {
     /// Generate a trie proof for an object (SBOQ format)
     ///
+    /// Accepts either an SBO URI or a filesystem path.
+    ///
     /// Examples:
+    ///   sbo proof generate sbo://myapp.com/sys/names/alice
     ///   sbo proof generate ./my-repo/sys/names/alice
     ///   sbo proof generate /home/user/repos/nft-collection/tokens/123
     Generate {
-        /// Full path to object: <repo-mount>/<sbo-path>/<object-id>
-        /// e.g., ./my-repo/sys/names/alice
+        /// SBO URI or filesystem path to object
+        /// e.g., sbo://myapp.com/sys/names/alice or ./my-repo/sys/names/alice
         object_path: String,
     },
     /// Verify a trie proof (SBOQ message)
@@ -271,20 +274,26 @@ enum IdCommands {
         website: Option<String>,
     },
 
-    /// Import an identity from a synced repo into your keyring
+    /// Import an identity into your keyring
     ///
     /// Associates an on-chain identity with your local key.
     /// You must have the matching private key already in your keyring.
     ///
+    /// Accepts either:
+    ///   - An email address (discovers via DNS + .well-known)
+    ///   - A repo path/URI + identity name
+    ///
     /// Examples:
+    ///   sbo id import alice@example.com
     ///   sbo id import sbo+raw://avail:turing:506/ alice
     ///   sbo id import ./my-repo alice --proof proof.sboq
     Import {
-        /// SBO URI or local repo path (e.g., sbo+raw://avail:turing:506/ or ./my-repo)
-        repo: String,
+        /// Email address, SBO URI, or local repo path
+        /// If this contains '@', it's treated as an email for discovery
+        repo_or_email: String,
 
-        /// Identity name to import
-        name: String,
+        /// Identity name (required for repo/URI, ignored for email)
+        name: Option<String>,
 
         /// SBOQ proof file (required in light mode, optional in full mode)
         #[arg(long)]
@@ -304,6 +313,20 @@ enum IdCommands {
 
         /// Identity name to remove
         name: String,
+    },
+
+    /// Resolve an email address to its SBO identity URI
+    ///
+    /// Performs identity discovery via DNS and .well-known endpoint:
+    /// 1. Queries _sbo-id.{domain} for discovery host
+    /// 2. Fetches https://{host}/.well-known/sbo-identity/{domain}/{user}
+    /// 3. Returns the SBO URI from the response
+    ///
+    /// Examples:
+    ///   sbo id resolve alice@example.com
+    Resolve {
+        /// Email address to resolve (e.g., alice@example.com)
+        email: String,
     },
 }
 
@@ -825,13 +848,24 @@ async fn main() -> anyhow::Result<()> {
 
             match proof_cmd {
                 ProofCommands::Generate { object_path } => {
-                    // Parse the unified path like ./my-repo/sys/names/alice
-                    // Find which repo contains this path and extract the SBO path + id
-                    let (repo_path, sbo_path, id) = match parse_object_path(&object_path, &client).await {
-                        Ok(parsed) => parsed,
-                        Err(e) => {
-                            eprintln!("Error: {}", e);
-                            return Ok(());
+                    // Parse as either:
+                    // 1. SBO URI like sbo://sandmill.org/sys/names/alice
+                    // 2. Filesystem path like ./my-repo/sys/names/alice
+                    let (repo_path, sbo_path, id) = if object_path.starts_with("sbo://") || object_path.starts_with("sbo+raw://") {
+                        match parse_sbo_uri_path(&object_path, &client).await {
+                            Ok(parsed) => parsed,
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                return Ok(());
+                            }
+                        }
+                    } else {
+                        match parse_object_path(&object_path, &client).await {
+                            Ok(parsed) => parsed,
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                return Ok(());
+                            }
                         }
                     };
 
@@ -1178,15 +1212,26 @@ async fn main() -> anyhow::Result<()> {
                         false, // no_wait not supported in update command yet
                     ).await?;
                 }
-                IdCommands::Import { repo, name, proof } => {
-                    commands::identity::import(
-                        &repo,
-                        &name,
-                        proof.as_deref(),
-                    ).await?;
+                IdCommands::Import { repo_or_email, name, proof } => {
+                    // Detect if this is an email address
+                    if repo_or_email.contains('@') {
+                        commands::identity::import_email(&repo_or_email).await?;
+                    } else {
+                        let name = name.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("Missing identity name. Usage: sbo id import <repo> <name>")
+                        })?;
+                        commands::identity::import(
+                            &repo_or_email,
+                            name,
+                            proof.as_deref(),
+                        ).await?;
+                    }
                 }
                 IdCommands::Remove { chain, name } => {
                     commands::identity::remove(&chain, &name)?;
+                }
+                IdCommands::Resolve { email } => {
+                    commands::identity::resolve(&email).await?;
                 }
             }
         }
@@ -1310,6 +1355,95 @@ async fn parse_object_path(
     let parts: Vec<&str> = remainder.split('/').filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {
         return Err(anyhow::anyhow!("Missing SBO path and object ID"));
+    }
+    if parts.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "Need at least a path and object ID. Got: /{}",
+            parts.join("/")
+        ));
+    }
+
+    // Last component is the object ID
+    let id = parts[parts.len() - 1].to_string();
+    // Everything before is the path (with trailing slash)
+    let sbo_path = format!("/{}/", parts[..parts.len() - 1].join("/"));
+
+    Ok((repo_path, sbo_path, id))
+}
+
+/// Parse an SBO URI like sbo://sandmill.org/sys/names/alice
+/// Returns (repo_path, sbo_path, object_id)
+async fn parse_sbo_uri_path(
+    uri: &str,
+    client: &IpcClient,
+) -> anyhow::Result<(PathBuf, String, String)> {
+    // Query daemon for list of repos
+    let repos = match client.request(Request::RepoList).await {
+        Ok(Response::Ok { data }) => {
+            data["repos"].as_array()
+                .map(|arr| arr.iter()
+                    .filter_map(|r| {
+                        let path = r["path"].as_str()?.to_string();
+                        let display_uri = r["display_uri"].as_str()?.to_string();
+                        let resolved_uri = r["resolved_uri"].as_str()?.to_string();
+                        Some((PathBuf::from(path), display_uri, resolved_uri))
+                    })
+                    .collect::<Vec<_>>())
+                .unwrap_or_default()
+        }
+        Ok(Response::Error { message }) => {
+            return Err(anyhow::anyhow!("Failed to list repos: {}", message));
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to connect to daemon: {}", e));
+        }
+    };
+
+    if repos.is_empty() {
+        return Err(anyhow::anyhow!("No repos found. Add a repo first with: sbo repo add <uri> <path>"));
+    }
+
+    // Find the repo that matches this URI (check both display_uri and resolved_uri)
+    let mut matched_repo: Option<(PathBuf, String)> = None;
+
+    for (path, display_uri, resolved_uri) in &repos {
+        // Check if URI starts with either display or resolved URI
+        let display_base = display_uri.trim_end_matches('/');
+        let resolved_base = resolved_uri.trim_end_matches('/');
+
+        if uri.starts_with(display_base) {
+            let remainder = &uri[display_base.len()..];
+            matched_repo = Some((path.clone(), remainder.to_string()));
+            break;
+        } else if uri.starts_with(resolved_base) {
+            let remainder = &uri[resolved_base.len()..];
+            matched_repo = Some((path.clone(), remainder.to_string()));
+            break;
+        }
+    }
+
+    let (repo_path, remainder) = match matched_repo {
+        Some(m) => m,
+        None => {
+            return Err(anyhow::anyhow!(
+                "No repo found for URI: {}\nKnown repos:\n{}",
+                uri,
+                repos.iter().map(|(_, d, _)| format!("  {}", d)).collect::<Vec<_>>().join("\n")
+            ));
+        }
+    };
+
+    // Parse the remainder as /sbo/path/object_id
+    // e.g., /sys/names/alice -> path=/sys/names/, id=alice
+    let remainder = remainder.trim_start_matches('/');
+    if remainder.is_empty() {
+        return Err(anyhow::anyhow!("Missing path and object ID in URI"));
+    }
+
+    // Split into path components
+    let parts: Vec<&str> = remainder.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return Err(anyhow::anyhow!("Missing path and object ID in URI"));
     }
     if parts.len() < 2 {
         return Err(anyhow::anyhow!(

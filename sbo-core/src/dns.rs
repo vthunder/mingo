@@ -1,10 +1,12 @@
-//! DNS resolution for sbo:// URIs
+//! DNS resolution for sbo:// URIs and email identity discovery
 //!
-//! Resolves sbo://domain.com/ URIs via DNS TXT records at _sbo.domain.com
+//! - Resolves sbo://domain.com/ URIs via DNS TXT records at _sbo.domain.com
+//! - Discovers SBO identities for email addresses via _sbo-id.domain.com + .well-known
 
 use std::fmt;
 use hickory_resolver::TokioAsyncResolver;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use serde::Deserialize;
 
 /// Parsed SBO DNS record
 #[derive(Debug, Clone, PartialEq)]
@@ -194,6 +196,158 @@ pub fn is_dns_uri(uri: &str) -> bool {
     uri.trim().starts_with("sbo://")
 }
 
+// ============================================================================
+// Email Identity Discovery
+// ============================================================================
+
+/// Parsed _sbo-id DNS record for identity discovery
+#[derive(Debug, Clone, PartialEq)]
+pub struct SboIdRecord {
+    /// Host serving the identity discovery endpoint
+    pub host: String,
+}
+
+/// Identity discovery response from .well-known endpoint
+#[derive(Debug, Clone, Deserialize)]
+pub struct IdentityDiscoveryResponse {
+    /// Protocol version
+    pub version: u32,
+    /// SBO URI for the identity
+    pub sbo_uri: String,
+}
+
+/// Parse a _sbo-id DNS TXT record
+///
+/// Format: "v=sbo-id1 host=example.com"
+pub fn parse_sbo_id_record(txt: &str) -> Result<SboIdRecord, DnsError> {
+    let mut version: Option<&str> = None;
+    let mut host: Option<&str> = None;
+
+    for part in txt.split_whitespace() {
+        if let Some((key, value)) = part.split_once('=') {
+            match key {
+                "v" => version = Some(value),
+                "host" => host = Some(value),
+                _ => {} // Ignore unknown fields
+            }
+        }
+    }
+
+    // Validate version
+    match version {
+        Some("sbo-id1") => {}
+        Some(v) => return Err(DnsError::UnsupportedVersion(v.to_string())),
+        None => return Err(DnsError::MalformedRecord("missing v= version".to_string())),
+    }
+
+    // Validate required fields
+    let host = host
+        .ok_or_else(|| DnsError::MalformedRecord("missing host".to_string()))?
+        .to_string();
+
+    Ok(SboIdRecord { host })
+}
+
+/// Resolve identity discovery host for a domain via DNS
+///
+/// Queries _sbo-id.{domain} for TXT records
+pub async fn resolve_identity_host(domain: &str) -> Result<SboIdRecord, DnsError> {
+    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+
+    let lookup_name = format!("_sbo-id.{}", domain);
+
+    let response = resolver
+        .txt_lookup(&lookup_name)
+        .await
+        .map_err(|e| {
+            use hickory_resolver::error::ResolveErrorKind;
+            match e.kind() {
+                ResolveErrorKind::NoRecordsFound { .. } => DnsError::NoRecord,
+                _ => DnsError::LookupFailed(e.to_string()),
+            }
+        })?;
+
+    // Try each TXT record until we find a valid one
+    let mut last_error = DnsError::NoRecord;
+    for record in response.iter() {
+        let txt: String = record.iter()
+            .map(|data| String::from_utf8_lossy(data))
+            .collect();
+
+        match parse_sbo_id_record(&txt) {
+            Ok(sbo_id_record) => return Ok(sbo_id_record),
+            Err(e) => last_error = e,
+        }
+    }
+
+    Err(last_error)
+}
+
+/// Discover the SBO URI for an email address
+///
+/// 1. Parses email into user@domain
+/// 2. Queries DNS for _sbo-id.{domain} to get discovery host
+/// 3. Fetches https://{host}/.well-known/sbo-identity/{domain}/{user}
+/// 4. Returns the sbo_uri from the response
+pub async fn resolve_email(email: &str) -> Result<String, DnsError> {
+    // Parse email
+    let (user, domain) = email
+        .split_once('@')
+        .ok_or_else(|| DnsError::MalformedRecord(format!("invalid email: {}", email)))?;
+
+    if user.is_empty() || domain.is_empty() {
+        return Err(DnsError::MalformedRecord(format!("invalid email: {}", email)));
+    }
+
+    // Look up identity host via DNS
+    let sbo_id = resolve_identity_host(domain).await?;
+
+    // Fetch .well-known endpoint
+    let url = format!(
+        "https://{}/.well-known/sbo-identity/{}/{}",
+        sbo_id.host, domain, user
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| DnsError::LookupFailed(format!("HTTP request failed: {}", e)))?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(DnsError::NoRecord);
+    }
+
+    if !response.status().is_success() {
+        return Err(DnsError::LookupFailed(format!(
+            "HTTP {} from {}",
+            response.status(),
+            url
+        )));
+    }
+
+    let discovery: IdentityDiscoveryResponse = response
+        .json()
+        .await
+        .map_err(|e| DnsError::MalformedRecord(format!("invalid JSON response: {}", e)))?;
+
+    if discovery.version != 1 {
+        return Err(DnsError::UnsupportedVersion(format!("v{}", discovery.version)));
+    }
+
+    Ok(discovery.sbo_uri)
+}
+
+/// Parse an email address into (user, domain)
+pub fn parse_email(email: &str) -> Option<(&str, &str)> {
+    let (user, domain) = email.split_once('@')?;
+    if user.is_empty() || domain.is_empty() {
+        return None;
+    }
+    Some((user, domain))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +425,45 @@ mod tests {
         assert!(is_dns_uri("sbo://myapp.com/path/to/thing"));
         assert!(!is_dns_uri("sbo+raw://avail:mainnet:13/"));
         assert!(!is_dns_uri("https://example.com"));
+    }
+
+    // Identity discovery tests
+
+    #[test]
+    fn test_parse_sbo_id_record() {
+        let txt = "v=sbo-id1 host=id.example.com";
+        let record = parse_sbo_id_record(txt).unwrap();
+        assert_eq!(record.host, "id.example.com");
+    }
+
+    #[test]
+    fn test_parse_sbo_id_record_missing_version() {
+        let txt = "host=id.example.com";
+        let err = parse_sbo_id_record(txt).unwrap_err();
+        assert!(matches!(err, DnsError::MalformedRecord(_)));
+    }
+
+    #[test]
+    fn test_parse_sbo_id_record_wrong_version() {
+        let txt = "v=sbo-id2 host=id.example.com";
+        let err = parse_sbo_id_record(txt).unwrap_err();
+        assert!(matches!(err, DnsError::UnsupportedVersion(_)));
+    }
+
+    #[test]
+    fn test_parse_sbo_id_record_missing_host() {
+        let txt = "v=sbo-id1";
+        let err = parse_sbo_id_record(txt).unwrap_err();
+        assert!(matches!(err, DnsError::MalformedRecord(_)));
+    }
+
+    #[test]
+    fn test_parse_email() {
+        assert_eq!(parse_email("alice@example.com"), Some(("alice", "example.com")));
+        assert_eq!(parse_email("user@sub.domain.org"), Some(("user", "sub.domain.org")));
+        assert_eq!(parse_email("invalid"), None);
+        assert_eq!(parse_email("@domain.com"), None);
+        assert_eq!(parse_email("user@"), None);
+        assert_eq!(parse_email(""), None);
     }
 }
