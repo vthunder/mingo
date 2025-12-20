@@ -8,6 +8,9 @@ use sbo_core::proof::{SbopMessage, serialize_sbop};
 use sbo_core::StateTransitionWitness;
 use sha2::{Sha256, Digest};
 
+#[cfg(feature = "zkvm")]
+use sbo_zkvm::types::{HeaderData, RowData};
+
 /// Receipt kinds for proof generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiptKind {
@@ -52,6 +55,15 @@ pub struct BlockBatch {
     pub block_data: Vec<u8>,
     /// Witness for state transition (creates, updates, deletes with proofs)
     pub state_witness: StateTransitionWitness,
+    /// DA verification header data (optional, for zkVM proving)
+    #[cfg(feature = "zkvm")]
+    pub header_data: Option<HeaderData>,
+    /// DA verification row data (optional, for zkVM proving)
+    #[cfg(feature = "zkvm")]
+    pub row_data: Vec<RowData>,
+    /// Hash of raw cells for binding
+    #[cfg(feature = "zkvm")]
+    pub raw_cells_hash: [u8; 32],
 }
 
 /// Proof generation result
@@ -87,15 +99,19 @@ impl Prover {
         }
     }
 
-    /// Add a processed block to the pending batch.
+    /// Add a processed block to the pending batch (with DA data).
     /// Only blocks with state changes are queued for proving.
-    pub fn add_block(
+    #[cfg(feature = "zkvm")]
+    pub fn add_block_with_da(
         &mut self,
         block_number: u64,
         pre_state_root: [u8; 32],
         post_state_root: [u8; 32],
         block_data: Vec<u8>,
         state_witness: StateTransitionWitness,
+        header_data: Option<HeaderData>,
+        row_data: Vec<RowData>,
+        raw_cells_hash: [u8; 32],
     ) {
         // Only add if state actually changed
         if pre_state_root == post_state_root {
@@ -114,6 +130,44 @@ impl Prover {
             post_state_root,
             block_data,
             state_witness,
+            header_data,
+            row_data,
+            raw_cells_hash,
+        };
+        self.pending_blocks.push(batch);
+    }
+
+    /// Add a processed block to the pending batch (without DA data).
+    pub fn add_block(
+        &mut self,
+        block_number: u64,
+        pre_state_root: [u8; 32],
+        post_state_root: [u8; 32],
+        block_data: Vec<u8>,
+        state_witness: StateTransitionWitness,
+    ) {
+        // Only add if state actually changed
+        if pre_state_root == post_state_root {
+            return;
+        }
+
+        if self.state_change_block.is_none() {
+            self.state_change_block = Some(block_number);
+        }
+
+        let batch = BlockBatch {
+            from_block: block_number,
+            to_block: block_number,
+            pre_state_root,
+            post_state_root,
+            block_data,
+            state_witness,
+            #[cfg(feature = "zkvm")]
+            header_data: None,
+            #[cfg(feature = "zkvm")]
+            row_data: Vec::new(),
+            #[cfg(feature = "zkvm")]
+            raw_cells_hash: [0u8; 32],
         };
         self.pending_blocks.push(batch);
     }
@@ -189,6 +243,7 @@ impl Prover {
             #[cfg(feature = "zkvm")]
             {
                 match self.generate_zkvm_receipt(
+                    &blocks,
                     from_block,
                     to_block,
                     &pre_state_root,
@@ -252,6 +307,7 @@ impl Prover {
     #[cfg(feature = "zkvm")]
     fn generate_zkvm_receipt(
         &mut self,
+        blocks: &[BlockBatch],
         from_block: u64,
         to_block: u64,
         pre_state_root: &[u8; 32],
@@ -278,6 +334,11 @@ impl Prover {
         // Build parent hash (for now, just use pre_state_root as parent)
         let parent_hash = *pre_state_root;
 
+        // Get DA data from first block (all blocks in batch should have same header_data for same block range)
+        let header_data = blocks.first().and_then(|b| b.header_data.clone());
+        let row_data = blocks.first().map(|b| b.row_data.clone()).unwrap_or_default();
+        let raw_cells_hash = blocks.first().map(|b| b.raw_cells_hash).unwrap_or([0u8; 32]);
+
         let input = BlockProofInput {
             prev_state_root: *pre_state_root,
             block_number: from_block,
@@ -288,9 +349,9 @@ impl Prover {
             prev_receipt_bytes: None,
             is_first_proof,  // Bootstrap mode for first proof
             state_witness: state_witness.clone(),
-            header_data: None,
-            row_data: Vec::new(),
-            raw_cells_hash: [0u8; 32],
+            header_data,  // Use DA data from block
+            row_data,     // Use DA data from block
+            raw_cells_hash,  // Use DA data from block
         };
 
         // Generate proof
