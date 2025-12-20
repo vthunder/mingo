@@ -1,2 +1,5 @@
-/target
+target/
 my-repo/
+
+# Scratch/temp data files
+sbo-crypto/src/*.txt
