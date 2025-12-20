@@ -320,3 +320,161 @@ impl Default for BlockProofInput {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_lookup_serialization() {
+        let lookup = AppLookup {
+            size: 100,
+            index: vec![
+                AppLookupEntry { app_id: 506, start: 0 },
+                AppLookupEntry { app_id: 507, start: 50 },
+            ],
+        };
+
+        // Test serialization roundtrip
+        let bytes = postcard::to_allocvec(&lookup).unwrap();
+        let decoded: AppLookup = postcard::from_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.size, 100);
+        assert_eq!(decoded.index.len(), 2);
+        assert_eq!(decoded.index[0].app_id, 506);
+        assert_eq!(decoded.index[1].start, 50);
+    }
+
+    #[test]
+    fn test_header_data_serialization() {
+        let header = HeaderData {
+            block_number: 12345,
+            header_hash: [1u8; 32],
+            parent_hash: [2u8; 32],
+            state_root: [3u8; 32],
+            extrinsics_root: [4u8; 32],
+            data_root: [5u8; 32],
+            row_commitments: vec![0u8; 48], // One 48-byte commitment
+            rows: 1,
+            cols: 64,
+            app_lookup: AppLookup {
+                size: 64,
+                index: vec![AppLookupEntry { app_id: 506, start: 0 }],
+            },
+            app_id: 506,
+        };
+
+        let bytes = postcard::to_allocvec(&header).unwrap();
+        let decoded: HeaderData = postcard::from_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.block_number, 12345);
+        assert_eq!(decoded.rows, 1);
+        assert_eq!(decoded.cols, 64);
+        assert_eq!(decoded.row_commitments.len(), 48);
+    }
+
+    #[test]
+    fn test_row_data_serialization() {
+        let row = RowData {
+            row: 0,
+            cells: vec![[42u8; 32]; 64], // 64 cells of 32 bytes each
+        };
+
+        let bytes = postcard::to_allocvec(&row).unwrap();
+        let decoded: RowData = postcard::from_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.row, 0);
+        assert_eq!(decoded.cells.len(), 64);
+        assert_eq!(decoded.cells[0], [42u8; 32]);
+    }
+
+    #[test]
+    fn test_block_proof_input_with_da() {
+        use sbo_crypto::trie::StateTransitionWitness;
+
+        let header_data = HeaderData {
+            block_number: 100,
+            header_hash: [1u8; 32],
+            parent_hash: [2u8; 32],
+            state_root: [3u8; 32],
+            extrinsics_root: [4u8; 32],
+            data_root: [5u8; 32],
+            row_commitments: vec![0u8; 48],
+            rows: 1,
+            cols: 64,
+            app_lookup: AppLookup {
+                size: 64,
+                index: vec![AppLookupEntry { app_id: 506, start: 0 }],
+            },
+            app_id: 506,
+        };
+
+        let row_data = vec![RowData {
+            row: 0,
+            cells: vec![[0u8; 32]; 64],
+        }];
+
+        let input = BlockProofInput {
+            prev_state_root: [0u8; 32],
+            block_number: 100,
+            block_hash: [1u8; 32],
+            parent_hash: [2u8; 32],
+            actions_data: vec![1, 2, 3, 4],
+            prev_journal: None,
+            prev_receipt_bytes: None,
+            is_first_proof: true,
+            state_witness: StateTransitionWitness::default(),
+            header_data: Some(header_data),
+            row_data,
+            raw_cells_hash: [0u8; 32],
+        };
+
+        // Verify serialization works
+        let bytes = postcard::to_allocvec(&input).unwrap();
+        let decoded: BlockProofInput = postcard::from_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.block_number, 100);
+        assert!(decoded.header_data.is_some());
+        assert_eq!(decoded.row_data.len(), 1);
+    }
+
+    #[test]
+    fn test_app_chunk_range_calculation() {
+        // Test the logic for finding app's chunk range
+        let lookup = AppLookup {
+            size: 100,
+            index: vec![
+                AppLookupEntry { app_id: 500, start: 0 },
+                AppLookupEntry { app_id: 506, start: 30 },
+                AppLookupEntry { app_id: 510, start: 80 },
+            ],
+        };
+
+        // Find app 506's range
+        let app_id = 506u32;
+        let mut app_start = None;
+        let mut app_end = lookup.size;
+
+        for (i, entry) in lookup.index.iter().enumerate() {
+            if entry.app_id == app_id {
+                app_start = Some(entry.start);
+                if i + 1 < lookup.index.len() {
+                    app_end = lookup.index[i + 1].start;
+                }
+                break;
+            }
+        }
+
+        assert_eq!(app_start, Some(30));
+        assert_eq!(app_end, 80);
+
+        // Calculate rows needed (assuming 64 cols)
+        let cols = 64u32;
+        let start = app_start.unwrap();
+        let start_row = start / cols;
+        let end_row = (app_end - 1) / cols;
+
+        assert_eq!(start_row, 0); // 30 / 64 = 0
+        assert_eq!(end_row, 1);   // 79 / 64 = 1
+    }
+}
