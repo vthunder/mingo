@@ -10,6 +10,9 @@ use avail_rust::Client;
 use avail_rust::ext::avail_rust_core::rpc::kate;
 use flate2::read::GzDecoder;
 
+#[cfg(feature = "zkvm")]
+use sbo_zkvm::types::{HeaderData, RowData, AppLookup, AppLookupEntry};
+
 /// Transaction data from a block
 #[derive(Debug, Clone)]
 pub struct BlockData {
@@ -23,6 +26,18 @@ pub struct AppTransaction {
     pub app_id: u32,
     pub index: u32,
     pub data: Vec<u8>,
+}
+
+/// Data needed for zkVM DA verification
+#[cfg(feature = "zkvm")]
+#[derive(Debug, Clone)]
+pub struct DaVerificationData {
+    /// Header verification data
+    pub header_data: HeaderData,
+    /// Row data for rows containing app data
+    pub row_data: Vec<RowData>,
+    /// Hash of raw cells (for binding)
+    pub raw_cells_hash: [u8; 32],
 }
 
 /// RPC client for fetching block data
@@ -385,6 +400,145 @@ impl RpcClient {
             .map_err(|e| crate::DaemonError::Rpc(format!("Failed to get latest block: {}", e)))?;
 
         Ok(block.number as u64)
+    }
+
+    /// Fetch DA verification data for zkVM proving
+    ///
+    /// Returns header data, row data, and raw cells hash needed for
+    /// the zkVM guest to verify data availability.
+    #[cfg(feature = "zkvm")]
+    pub async fn fetch_da_verification_data(
+        &mut self,
+        block_number: u64,
+        app_id: u32,
+    ) -> crate::Result<Option<DaVerificationData>> {
+        let client = self.get_client().await?.clone();
+        let block = client.block(block_number as u32);
+
+        // Get block header
+        let header = block.header()
+            .await
+            .map_err(|e| crate::DaemonError::Rpc(format!("Failed to get header: {}", e)))?;
+
+        let block_hash = header.hash();
+
+        // Extract data from header extension (V3 and V4 supported)
+        let (app_lookup_size, app_lookup_index, cols, rows, row_commitments) = match &header.extension {
+            avail_rust::ext::avail_rust_core::header::HeaderExtension::V3(ext) => {
+                // Serialize row commitments
+                let commitments: Vec<u8> = ext.commitment.commitment.iter()
+                    .flat_map(|c| c.0.to_vec())
+                    .collect();
+                (ext.app_lookup.size, &ext.app_lookup.index,
+                 ext.commitment.cols as u32, ext.commitment.rows as u32, commitments)
+            }
+            avail_rust::ext::avail_rust_core::header::HeaderExtension::V4(ext) => {
+                let commitments: Vec<u8> = ext.commitment.commitment.iter()
+                    .flat_map(|c| c.0.to_vec())
+                    .collect();
+                (ext.app_lookup.size, &ext.app_lookup.index,
+                 ext.commitment.cols as u32, ext.commitment.rows as u32, commitments)
+            }
+        };
+
+        // Find our app's chunk range
+        let mut app_start = None;
+        let mut app_end = app_lookup_size;
+
+        for (i, item) in app_lookup_index.iter().enumerate() {
+            if item.app_id == app_id {
+                app_start = Some(item.start);
+                // End is next entry's start or total size
+                if i + 1 < app_lookup_index.len() {
+                    app_end = app_lookup_index[i + 1].start;
+                }
+                break;
+            }
+        }
+
+        let Some(start_chunk) = app_start else {
+            // App not found in this block
+            return Ok(None);
+        };
+
+        // Calculate which rows we need
+        let start_row = start_chunk / cols;
+        let end_row = (app_end.saturating_sub(1)) / cols;
+        let rows_needed: Vec<u32> = (start_row..=end_row).collect();
+
+        if rows_needed.is_empty() {
+            return Ok(None);
+        }
+
+        // Fetch rows via Kate RPC
+        let mut all_rows: Vec<(u32, kate::GRow)> = Vec::new();
+        for chunk in rows_needed.chunks(64) {
+            let fetched = kate::query_rows(
+                &client.rpc_client,
+                chunk.to_vec(),
+                Some(block_hash),
+            )
+            .await
+            .map_err(|e| crate::DaemonError::Rpc(format!("kate_queryRows failed: {}", e)))?;
+
+            for (i, row) in fetched.into_iter().enumerate() {
+                all_rows.push((chunk[i], row));
+            }
+        }
+
+        // Convert to RowData format and compute raw cells hash
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        let mut row_data = Vec::new();
+
+        for (row_idx, row) in all_rows {
+            let cells: Vec<[u8; 32]> = row.iter()
+                .map(|scalar| {
+                    let bytes: [u8; 32] = scalar.to_big_endian();
+                    hasher.update(&bytes);
+                    bytes
+                })
+                .collect();
+
+            row_data.push(RowData {
+                row: row_idx,
+                cells,
+            });
+        }
+
+        let raw_cells_hash: [u8; 32] = hasher.finalize().into();
+
+        // Build app_lookup for our type
+        let app_lookup = AppLookup {
+            size: app_lookup_size,
+            index: app_lookup_index.iter()
+                .map(|item| AppLookupEntry {
+                    app_id: item.app_id,
+                    start: item.start,
+                })
+                .collect(),
+        };
+
+        // Build header data
+        let header_data = HeaderData {
+            block_number,
+            header_hash: block_hash.0,
+            parent_hash: header.parent_hash.0,
+            state_root: header.state_root.0,
+            extrinsics_root: header.extrinsics_root.0,
+            data_root: header.extrinsics_root.0, // Will be updated when we find data_root
+            row_commitments,
+            rows,
+            cols,
+            app_lookup,
+            app_id,
+        };
+
+        Ok(Some(DaVerificationData {
+            header_data,
+            row_data,
+            raw_cells_hash,
+        }))
     }
 }
 
