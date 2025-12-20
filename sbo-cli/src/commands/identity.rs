@@ -1,8 +1,11 @@
 //! Identity command implementations (identity.v1 schema)
+//!
+//! Identities are JWT-based per the SBO Identity Specification.
+//! The identity JWT contains: iss ("self"), sub (name), public_key, iat
+//! Profile data (display_name, bio, etc.) is stored separately as profile.v1.
 
 use anyhow::Result;
 use sbo_core::keyring::Keyring;
-use sbo_core::schema::Identity;
 use sbo_daemon::config::Config;
 use sbo_daemon::ipc::{IpcClient, Request, Response};
 use std::collections::HashMap;
@@ -16,7 +19,7 @@ pub async fn create(
     description: Option<&str>,
     avatar: Option<&str>,
     website: Option<&str>,
-    binding: Option<&str>,
+    _binding: Option<&str>,
     dry_run: bool,
     no_wait: bool,
 ) -> Result<()> {
@@ -26,55 +29,29 @@ pub async fn create(
     let signing_key = keyring.get_signing_key(&alias)?;
     let public_key = signing_key.public_key();
 
-    // Build identity payload
-    let mut identity = Identity::new(public_key.to_string());
+    // Check if profile fields were provided
+    let has_profile = display_name.is_some()
+        || description.is_some()
+        || avatar.is_some()
+        || website.is_some();
 
-    if let Some(dn) = display_name {
-        identity.display_name = Some(dn.to_string());
-    }
-    if let Some(desc) = description {
-        identity.description = Some(desc.to_string());
-    }
-    if let Some(av) = avatar {
-        identity.avatar = Some(av.to_string());
-    }
-    if let Some(ws) = website {
-        let mut links = HashMap::new();
-        links.insert("website".to_string(), ws.to_string());
-        identity.links = Some(links);
-    }
-    if let Some(bind) = binding {
-        identity.binding = Some(bind.to_string());
-    }
-
-    let payload = identity.to_json()?;
-
-    // Build SBO message
-    use sbo_core::crypto::{ContentHash, Signature};
-    use sbo_core::message::{Action, Id, Message, ObjectType, Path};
-
-    let placeholder_sig = Signature::parse(&"0".repeat(128))?;
-    let mut msg = Message {
-        action: Action::Post,
-        path: Path::parse("/sys/names/")?,
-        id: Id::new(name)?,
-        object_type: ObjectType::Object,
-        signing_key: public_key.clone(),
-        signature: placeholder_sig,
-        content_type: Some("application/json".to_string()),
-        content_hash: Some(ContentHash::sha256(&payload)),
-        content_schema: Some("identity.v1".to_string()),
-        payload: Some(payload),
-        owner: None,
-        creator: None,
-        content_encoding: None,
-        policy_ref: None,
-        related: None,
+    // Build profile path if profile fields are provided
+    let profile_path = if has_profile {
+        Some(format!("/{}/profile", name))
+    } else {
+        None
     };
-    msg.sign(&signing_key);
 
-    // Serialize to wire format
-    let wire_bytes = sbo_core::wire::serialize(&msg);
+    // Create identity JWT using presets
+    let wire_bytes = if profile_path.is_some() {
+        sbo_core::presets::claim_name_with_profile(
+            &signing_key,
+            name,
+            profile_path.as_ref().unwrap(),
+        )
+    } else {
+        sbo_core::presets::claim_name(&signing_key, name)
+    };
 
     if dry_run {
         // Output the SBO message instead of submitting
@@ -89,8 +66,11 @@ pub async fn create(
     // Build identity URI
     let identity_uri = format!("{}/sys/names/{}", uri.trim_end_matches('/'), name);
 
-    println!("Submitting identity '{}' to {}", name, uri);
+    println!("Creating identity '{}' at {}", name, uri);
     println!("  Key: {} ({})", alias, public_key.to_string());
+    if let Some(ref path) = profile_path {
+        println!("  Profile: {}", path);
+    }
 
     match client
         .request(Request::SubmitIdentity {
@@ -113,6 +93,13 @@ pub async fn create(
                     if let Err(e) = keyring.add_identity(&alias, &identity_uri) {
                         eprintln!("Warning: failed to update keyring: {}", e);
                     }
+
+                    // Note about profile
+                    if has_profile {
+                        println!("\n  Note: Profile data will be stored at {}", profile_path.as_ref().unwrap());
+                        println!("  Create profile with: sbo uri post {}{} <profile.json>",
+                            uri.trim_end_matches('/'), profile_path.as_ref().unwrap());
+                    }
                 }
                 "unverified" => {
                     println!("\n○ Identity submitted (unverified)");
@@ -126,6 +113,11 @@ pub async fn create(
                     // Add identity to keyring (unverified - will check later)
                     if let Err(e) = keyring.add_identity(&alias, &identity_uri) {
                         eprintln!("Warning: failed to update keyring: {}", e);
+                    }
+
+                    // Note about profile
+                    if has_profile {
+                        println!("\n  Profile: Create after identity is verified");
                     }
                 }
                 "pending" => {
@@ -364,7 +356,11 @@ pub async fn show(name_or_uri: &str) -> Result<()> {
     Ok(())
 }
 
-/// Update an existing identity
+/// Update an existing identity's profile
+///
+/// With JWT identities, the identity object itself is immutable (contains just
+/// public_key and profile path). Profile data (display_name, bio, etc.) is stored
+/// in a separate profile.v1 object at the linked path.
 pub async fn update(
     uri: &str,
     key_alias: Option<&str>,
@@ -372,130 +368,69 @@ pub async fn update(
     description: Option<&str>,
     avatar: Option<&str>,
     website: Option<&str>,
-    no_wait: bool,
+    _no_wait: bool,
 ) -> Result<()> {
-    // First, fetch the existing identity from chain
-    let config = Config::load(&Config::config_path())?;
-    let client = IpcClient::new(config.daemon.socket_path);
+    // Parse the identity URI to extract name
+    let (chain_uri, name) = parse_identity_uri(uri);
 
-    let existing = match client
-        .request(Request::GetIdentity {
-            uri: uri.to_string(),
-        })
-        .await
-    {
-        Ok(Response::Ok { data }) => {
-            // Handle multiple identities case
-            if data.get("identities").is_some() {
-                eprintln!("Error: Multiple identities found. Please use full URI.");
-                std::process::exit(1);
-            }
-            data
-        }
-        Ok(Response::Error { message }) => {
-            eprintln!("Error: {}", message);
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("Failed to connect to daemon: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    // Get the public key from the existing identity
-    let existing_public_key = existing["public_key"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing public_key in identity"))?;
-
-    // Open keyring and find the matching key
-    let keyring = Keyring::open()?;
-
-    let alias = if let Some(a) = key_alias {
-        a.to_string()
-    } else {
-        // Find the key that matches this identity
-        keyring
-            .list()
-            .iter()
-            .find(|(_, entry)| entry.public_key == existing_public_key)
-            .map(|(alias, _)| alias.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No local key matches identity public key. Import the key first."
-                )
-            })?
-    };
-
-    let signing_key = keyring.get_signing_key(&alias)?;
-    let public_key = signing_key.public_key();
-
-    // Verify the key matches
-    if public_key.to_string() != existing_public_key {
-        eprintln!(
-            "Error: Key '{}' ({}) does not match identity's public key ({})",
-            alias,
-            public_key.to_string(),
-            existing_public_key
-        );
+    if name.is_empty() {
+        eprintln!("Error: Could not parse identity name from URI: {}", uri);
         std::process::exit(1);
     }
 
-    // Build updated identity - merge existing with new values
-    let mut identity = Identity::new(public_key.to_string());
+    // Check if any profile fields were provided
+    let has_updates = display_name.is_some()
+        || description.is_some()
+        || avatar.is_some()
+        || website.is_some();
 
-    identity.display_name = display_name
-        .map(|s| s.to_string())
-        .or_else(|| existing["display_name"].as_str().map(|s| s.to_string()));
+    if !has_updates {
+        eprintln!("Error: No fields to update. Specify at least one of:");
+        eprintln!("  --display-name, --description, --avatar, --website");
+        std::process::exit(1);
+    }
 
-    identity.description = description
-        .map(|s| s.to_string())
-        .or_else(|| existing["description"].as_str().map(|s| s.to_string()));
-
-    identity.avatar = avatar
-        .map(|s| s.to_string())
-        .or_else(|| existing["avatar"].as_str().map(|s| s.to_string()));
-
-    // Handle links - merge website if provided
-    let mut links: HashMap<String, String> = existing["links"]
-        .as_object()
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-
+    // Build profile object
+    let mut links_map = HashMap::new();
     if let Some(ws) = website {
-        links.insert("website".to_string(), ws.to_string());
+        links_map.insert("website".to_string(), ws.to_string());
     }
 
-    if !links.is_empty() {
-        identity.links = Some(links);
-    }
+    let profile = sbo_core::jwt::Profile {
+        display_name: display_name.map(|s| s.to_string()),
+        bio: description.map(|s| s.to_string()),
+        avatar: avatar.map(|s| s.to_string()),
+        banner: None,
+        location: None,
+        links: if links_map.is_empty() { None } else { Some(links_map) },
+        metadata: None,
+    };
 
-    identity.binding = existing["binding"].as_str().map(|s| s.to_string());
+    let profile_json = serde_json::to_vec_pretty(&profile)?;
+    let profile_path = format!("/{}/profile", name);
 
-    let payload = identity.to_json()?;
+    // Open keyring
+    let keyring = Keyring::open()?;
+    let alias = keyring.resolve_alias(key_alias)?;
+    let signing_key = keyring.get_signing_key(&alias)?;
+    let public_key = signing_key.public_key();
 
-    // Build SBO message (Post handles both create and update)
+    // Build profile message
     use sbo_core::crypto::{ContentHash, Signature};
     use sbo_core::message::{Action, Id, Message, ObjectType, Path};
-
-    // Extract name from URI
-    let (chain_uri, name) = parse_identity_uri(uri);
 
     let placeholder_sig = Signature::parse(&"0".repeat(128))?;
     let mut msg = Message {
         action: Action::Post,
-        path: Path::parse("/sys/names/")?,
-        id: Id::new(&name)?,
+        path: Path::parse(&format!("/{}/", name))?,
+        id: Id::new("profile")?,
         object_type: ObjectType::Object,
         signing_key: public_key.clone(),
         signature: placeholder_sig,
         content_type: Some("application/json".to_string()),
-        content_hash: Some(ContentHash::sha256(&payload)),
-        content_schema: Some("identity.v1".to_string()),
-        payload: Some(payload),
+        content_hash: Some(ContentHash::sha256(&profile_json)),
+        content_schema: Some("profile.v1".to_string()),
+        payload: Some(profile_json),
         owner: None,
         creator: None,
         content_encoding: None,
@@ -506,43 +441,37 @@ pub async fn update(
 
     let wire_bytes = sbo_core::wire::serialize(&msg);
 
-    println!("Updating identity '{}' at {}", name, chain_uri);
+    // Connect to daemon
+    let config = Config::load(&Config::config_path())?;
+    let client = IpcClient::new(config.daemon.socket_path);
 
+    println!("Updating profile for '{}' at {}", name, chain_uri);
+    println!("  Profile path: {}", profile_path);
+
+    // Submit via generic Submit (not SubmitIdentity since this is profile, not identity)
+    // For now, we use SubmitIdentity with the profile path as a workaround
+    // TODO: Add dedicated profile submission support
     match client
         .request(Request::SubmitIdentity {
             uri: chain_uri.to_string(),
-            name: name.to_string(),
+            name: format!("{}/profile", name), // Use profile path
             data: wire_bytes,
-            wait: !no_wait,
+            wait: true,
         })
         .await
     {
         Ok(Response::Ok { data }) => {
-            let status = data["status"].as_str().unwrap_or("unknown");
-            let identity_uri = data["uri"].as_str().unwrap_or(uri);
-
-            match status {
-                "verified" => {
-                    println!("\n✓ Identity updated and verified on-chain");
-                    println!("  URI: {}", identity_uri);
-                }
-                "unverified" => {
-                    println!("\n○ Identity update submitted (unverified)");
-                    println!("  URI: {}", identity_uri);
-                    println!("\n  Check status with: sbo id show {}", uri);
-                }
-                "pending" => {
-                    println!("\n○ Identity update submitted but verification timed out");
-                    println!("  URI: {}", identity_uri);
-                }
-                _ => {
-                    println!("{}", serde_json::to_string_pretty(&data)?);
-                }
-            }
+            let status = data["status"].as_str().unwrap_or("submitted");
+            println!("\n✓ Profile {} ({})", status, profile_path);
         }
         Ok(Response::Error { message }) => {
-            eprintln!("Error: {}", message);
-            std::process::exit(1);
+            // Profile submission not yet fully supported, provide guidance
+            eprintln!("Note: Profile update not yet fully supported via daemon.");
+            eprintln!("To update profile manually, create a profile.v1 JSON file and post it:");
+            eprintln!("  sbo uri post {}{} <profile.json>", chain_uri, profile_path);
+            eprintln!("\nProfile JSON format:");
+            println!("{}", serde_json::to_string_pretty(&profile)?);
+            return Err(anyhow::anyhow!("Profile update: {}", message));
         }
         Err(e) => {
             eprintln!("Failed to connect to daemon: {}", e);

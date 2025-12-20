@@ -1,9 +1,11 @@
 //! Schema validation for SBO objects
 //!
-//! Validates JSON payloads against Content-Schema specifications.
+//! Validates payloads against Content-Schema specifications.
 //!
 //! Supported schemas:
-//! - `identity.v1` - User identity objects
+//! - `identity.v1` - User identity objects (JWT format)
+//! - `domain.v1` - Domain objects (JWT format, always self-signed)
+//! - `profile.v1` - Profile data (JSON format)
 
 mod identity;
 
@@ -11,6 +13,7 @@ use crate::message::Message;
 use thiserror::Error;
 
 pub use identity::{Identity, validate_identity, parse_identity};
+pub use crate::jwt::{Profile, IdentityClaims, DomainClaims};
 
 /// Schema validation errors
 #[derive(Debug, Error)]
@@ -66,16 +69,69 @@ pub fn validate_schema(msg: &Message) -> SchemaResult<()> {
 
     match schema {
         "identity.v1" => {
-            let identity = identity::parse_identity(payload)?;
-            identity::validate_identity_fields(&identity)?;
-            identity::validate_identity_key_match(&identity, &msg.signing_key)?;
+            // JWT-based identity
+            let token = std::str::from_utf8(payload)
+                .map_err(|_| SchemaError::InvalidField {
+                    field: "payload".into(),
+                    reason: "JWT must be valid UTF-8".into(),
+                })?;
+
+            // Decode claims without verification first
+            let claims = crate::jwt::decode_identity_claims(token)
+                .map_err(|e| SchemaError::InvalidField {
+                    field: "jwt".into(),
+                    reason: e.to_string(),
+                })?;
+
+            // Verify public_key in JWT matches Public-Key header
+            let header_key = msg.signing_key.to_string();
+            if claims.public_key != header_key {
+                return Err(SchemaError::KeyMismatch {
+                    payload_key: claims.public_key,
+                    header_key,
+                });
+            }
+
+            // For self-signed, verify JWT signature matches public_key in payload
+            if claims.iss == "self" {
+                crate::jwt::verify_self_signed_identity(token)
+                    .map_err(|e| SchemaError::InvalidField {
+                        field: "signature".into(),
+                        reason: e.to_string(),
+                    })?;
+            }
+            // For domain-certified, caller must verify against domain key
+
             Ok(())
         }
         "domain.v1" => {
-            // Domain identity schema - similar to identity.v1
-            let identity = identity::parse_identity(payload)?;
-            identity::validate_identity_fields(&identity)?;
-            identity::validate_identity_key_match(&identity, &msg.signing_key)?;
+            // JWT-based domain (always self-signed)
+            let token = std::str::from_utf8(payload)
+                .map_err(|_| SchemaError::InvalidField {
+                    field: "payload".into(),
+                    reason: "JWT must be valid UTF-8".into(),
+                })?;
+
+            let claims = crate::jwt::verify_domain(token)
+                .map_err(|e| SchemaError::InvalidField {
+                    field: "jwt".into(),
+                    reason: e.to_string(),
+                })?;
+
+            // Verify public_key matches header
+            let header_key = msg.signing_key.to_string();
+            if claims.public_key != header_key {
+                return Err(SchemaError::KeyMismatch {
+                    payload_key: claims.public_key,
+                    header_key,
+                });
+            }
+
+            Ok(())
+        }
+        "profile.v1" => {
+            // Profile is plain JSON, not JWT
+            let _profile: crate::jwt::Profile = serde_json::from_slice(payload)?;
             Ok(())
         }
         _ => {
@@ -144,29 +200,27 @@ mod tests {
     }
 
     #[test]
-    fn test_identity_schema_valid() {
+    fn test_identity_v1_jwt_valid() {
         use crate::crypto::SigningKey;
-
-        // Generate a key and create identity with matching public_key
-        let key = SigningKey::generate();
-        let key_str = key.public_key().to_string();
-        let payload = format!(r#"{{"public_key":"{}","display_name":"Alice"}}"#, key_str);
-
-        // Need to create message with the same key
         use crate::message::{Message, Action, ObjectType, Id, Path};
         use crate::crypto::{ContentHash, Signature};
+
+        // Generate a key and create JWT identity
+        let key = SigningKey::generate();
+        let jwt = crate::jwt::create_self_signed_identity(&key, "alice", None).unwrap();
+        let payload = jwt.as_bytes();
 
         let placeholder_sig = Signature::parse(&"0".repeat(128)).unwrap();
         let mut msg = Message {
             action: Action::Post,
-            path: Path::parse("/alice/").unwrap(),
-            id: Id::new("identity").unwrap(),
+            path: Path::parse("/sys/names/").unwrap(),
+            id: Id::new("alice").unwrap(),
             object_type: ObjectType::Object,
             signing_key: key.public_key(),
             signature: placeholder_sig,
-            content_type: Some("application/json".to_string()),
-            content_hash: Some(ContentHash::sha256(payload.as_bytes())),
-            payload: Some(payload.into_bytes()),
+            content_type: Some("application/jwt".to_string()),
+            content_hash: Some(ContentHash::sha256(payload)),
+            payload: Some(payload.to_vec()),
             owner: None,
             creator: None,
             content_encoding: None,
@@ -180,30 +234,30 @@ mod tests {
     }
 
     #[test]
-    fn test_identity_schema_key_mismatch() {
+    fn test_identity_v1_jwt_key_mismatch() {
         use crate::crypto::SigningKey;
         use crate::message::{Message, Action, ObjectType, Id, Path};
         use crate::crypto::{ContentHash, Signature};
 
         // Generate two different keys
         let signing_key = SigningKey::generate();
-        let other_key = SigningKey::generate();
+        let jwt_key = SigningKey::generate();
 
-        // Create identity with a DIFFERENT key than what signs the message
-        let other_key_str = other_key.public_key().to_string();
-        let payload = format!(r#"{{"public_key":"{}"}}"#, other_key_str);
+        // Create JWT with jwt_key but sign message with signing_key
+        let jwt = crate::jwt::create_self_signed_identity(&jwt_key, "alice", None).unwrap();
+        let payload = jwt.as_bytes();
 
         let placeholder_sig = Signature::parse(&"0".repeat(128)).unwrap();
         let mut msg = Message {
             action: Action::Post,
-            path: Path::parse("/alice/").unwrap(),
-            id: Id::new("identity").unwrap(),
+            path: Path::parse("/sys/names/").unwrap(),
+            id: Id::new("alice").unwrap(),
             object_type: ObjectType::Object,
-            signing_key: signing_key.public_key(), // Signs with this key
+            signing_key: signing_key.public_key(), // Different key!
             signature: placeholder_sig,
-            content_type: Some("application/json".to_string()),
-            content_hash: Some(ContentHash::sha256(payload.as_bytes())),
-            payload: Some(payload.into_bytes()),
+            content_type: Some("application/jwt".to_string()),
+            content_hash: Some(ContentHash::sha256(payload)),
+            payload: Some(payload.to_vec()),
             owner: None,
             creator: None,
             content_encoding: None,
@@ -216,4 +270,75 @@ mod tests {
         let err = validate_schema(&msg).unwrap_err();
         assert!(matches!(err, SchemaError::KeyMismatch { .. }));
     }
+
+    #[test]
+    fn test_domain_v1_jwt_valid() {
+        use crate::crypto::SigningKey;
+        use crate::message::{Message, Action, ObjectType, Id, Path};
+        use crate::crypto::{ContentHash, Signature};
+
+        let key = SigningKey::generate();
+        let jwt = crate::jwt::create_domain(&key, "example.com").unwrap();
+        let payload = jwt.as_bytes();
+
+        let placeholder_sig = Signature::parse(&"0".repeat(128)).unwrap();
+        let mut msg = Message {
+            action: Action::Post,
+            path: Path::parse("/sys/domains/").unwrap(),
+            id: Id::new("example.com").unwrap(),
+            object_type: ObjectType::Object,
+            signing_key: key.public_key(),
+            signature: placeholder_sig,
+            content_type: Some("application/jwt".to_string()),
+            content_hash: Some(ContentHash::sha256(payload)),
+            payload: Some(payload.to_vec()),
+            owner: None,
+            creator: None,
+            content_encoding: None,
+            content_schema: Some("domain.v1".to_string()),
+            policy_ref: None,
+            related: None,
+        };
+        msg.sign(&key);
+
+        assert!(validate_schema(&msg).is_ok());
+    }
+
+    #[test]
+    fn test_profile_v1_json_valid() {
+        use crate::crypto::SigningKey;
+        use crate::message::{Message, Action, ObjectType, Id, Path};
+        use crate::crypto::{ContentHash, Signature};
+
+        let key = SigningKey::generate();
+        let profile = crate::jwt::Profile {
+            display_name: Some("Alice".to_string()),
+            bio: Some("Hello world".to_string()),
+            ..Default::default()
+        };
+        let payload = serde_json::to_vec(&profile).unwrap();
+
+        let placeholder_sig = Signature::parse(&"0".repeat(128)).unwrap();
+        let mut msg = Message {
+            action: Action::Post,
+            path: Path::parse("/alice/").unwrap(),
+            id: Id::new("profile").unwrap(),
+            object_type: ObjectType::Object,
+            signing_key: key.public_key(),
+            signature: placeholder_sig,
+            content_type: Some("application/json".to_string()),
+            content_hash: Some(ContentHash::sha256(&payload)),
+            payload: Some(payload),
+            owner: None,
+            creator: None,
+            content_encoding: None,
+            content_schema: Some("profile.v1".to_string()),
+            policy_ref: None,
+            related: None,
+        };
+        msg.sign(&key);
+
+        assert!(validate_schema(&msg).is_ok());
+    }
+
 }

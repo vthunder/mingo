@@ -21,6 +21,7 @@ pub mod proof;
 pub mod schema;
 pub mod keyring;
 pub mod dns;
+pub mod jwt;
 
 mod genesis;
 mod indexer;
