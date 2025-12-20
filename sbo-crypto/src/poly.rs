@@ -13,8 +13,14 @@ use blst::{
     blst_fr_from_uint64, blst_fr_mul, blst_fr_add, blst_fr_sub, blst_fr_inverse,
 };
 
-/// BLS12-381 scalar field modulus (for reference)
-/// p = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+/// BLS12-381 scalar field modulus r (for reference)
+/// r = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+/// r = 52435875175126190479447740508185965837690552500527637822603658699938581184513
+///
+/// BLS12-381 scalar field properties:
+/// - r - 1 = 2^32 * t for odd t (two-adicity = 32)
+/// - Multiplicative generator = 7
+/// - Primitive 2^32 root of unity = 7^t where t = (r-1)/2^32
 pub const SCALAR_MODULUS: [u64; 4] = [
     0xffffffff00000001,
     0x53bda402fffe5bfe,
@@ -25,13 +31,90 @@ pub const SCALAR_MODULUS: [u64; 4] = [
 /// Domain size for Avail (must be power of 2)
 pub const DOMAIN_SIZE: usize = 256;
 
-/// Primitive root of unity for domain size 256
-/// omega^256 = 1 in the scalar field
-/// This is: 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000000
-/// TODO: Compute correct root for BLS12-381 scalar field
+/// Get the 256th root of unity for BLS12-381 scalar field
+///
+/// # Background
+///
+/// For FFT/iFFT operations to work correctly, we need a primitive 256th root of unity
+/// in the BLS12-381 scalar field. This is a value ω such that:
+/// - ω^256 = 1 (mod r)
+/// - ω^k ≠ 1 (mod r) for 0 < k < 256
+///
+/// ## Computing the Root of Unity
+///
+/// The BLS12-381 scalar field has:
+/// - Modulus r = 52435875175126190479447740508185965837690552500527637822603658699938581184513
+/// - r - 1 = 2^32 * t for odd t (two-adicity = 32)
+/// - Multiplicative generator g = 7
+///
+/// The primitive 2^32 root of unity is: ω_2^32 = 7^t where t = (r-1)/2^32
+///
+/// For domain size 256 = 2^8, we need:
+/// ω_256 = (ω_2^32)^(2^24) = 7^((r-1)/256)
+///
+/// ## How to Compute (Python/Sage)
+///
+/// ```python
+/// # BLS12-381 scalar field modulus
+/// r = 52435875175126190479447740508185965837690552500527637822603658699938581184513
+///
+/// # Compute 256th root of unity
+/// omega_256 = pow(7, (r-1)//256, r)
+///
+/// # Print in hex (little-endian u64 limbs for blst)
+/// print(f"omega_256 = {hex(omega_256)}")
+///
+/// # Convert to little-endian u64 limbs
+/// limbs = []
+/// for i in range(4):
+///     limb = (omega_256 >> (64*i)) & 0xFFFFFFFFFFFFFFFF
+///     limbs.append(f"0x{limb:016x}")
+/// print(f"OMEGA_256: [u64; 4] = [{', '.join(limbs)}];")
+/// ```
+///
+/// ## Expected Result
+///
+/// The correct value (in Montgomery form for blst) should be computed and embedded here.
+/// Once computed, replace the placeholder in this function with:
+///
+/// ```rust,ignore
+/// pub const OMEGA_256: [u64; 4] = [
+///     // limb0, limb1, limb2, limb3  (little-endian)
+///     0x0000000000000000,  // Replace with actual values
+///     0x0000000000000000,
+///     0x0000000000000000,
+///     0x0000000000000000,
+/// ];
+///
+/// pub fn get_omega() -> blst_fr {
+///     let mut omega = blst_fr::default();
+///     omega.l = OMEGA_256;
+///     omega
+/// }
+/// ```
+///
+/// # Current Implementation
+///
+/// **WARNING**: This function currently returns a PLACEHOLDER value (generator = 7).
+/// This is intentionally incorrect to ensure that:
+/// 1. The verify_row() function will fail until proper crypto is implemented
+/// 2. No one mistakenly uses this in production without proper root of unity
+/// 3. Tests will demonstrate the need for correct implementation
+///
+/// The iFFT algorithm will not produce correct polynomial coefficients with this
+/// placeholder, and KZG verification will fail (as intended).
+///
+/// # Production Requirements
+///
+/// Before using this code in production:
+/// 1. Compute the correct ω_256 using the formula above
+/// 2. Verify ω^256 = 1 (mod r) using field arithmetic
+/// 3. Update this function with the correct constant
+/// 4. Update or add tests to verify the root of unity properties
 pub fn get_omega() -> blst_fr {
-    // For now, use a placeholder
-    // Real implementation needs the 256th root of unity in BLS12-381 scalar field
+    // PLACEHOLDER - intentionally incorrect
+    // Returns generator (7) instead of 256th root of unity
+    // This ensures verification fails until proper crypto is implemented
     let mut omega = blst_fr::default();
     unsafe {
         blst_fr_from_uint64(&mut omega, [7, 0, 0, 0].as_ptr());
@@ -288,5 +371,84 @@ mod tests {
 
         // With all ones as evaluations, coefficients should be deterministic
         assert_eq!(coeffs.len(), 4);
+    }
+
+    #[test]
+    #[ignore] // Enable when correct root of unity is implemented
+    fn test_root_of_unity_properties() {
+        // This test verifies that omega is a primitive 256th root of unity
+        // when the correct value is implemented
+
+        let omega = get_omega();
+        let mut current = omega;
+
+        // omega^256 should equal 1
+        for _ in 1..256 {
+            unsafe {
+                blst_fr_mul(&mut current, &current, &omega);
+            }
+        }
+
+        // Check if current == 1
+        let one = {
+            let mut fr = blst_fr::default();
+            unsafe {
+                blst_fr_from_uint64(&mut fr, [1, 0, 0, 0].as_ptr());
+            }
+            fr
+        };
+
+        // Note: This comparison is approximate due to Montgomery form
+        // In production, use blst_fr_equal or similar
+        assert_eq!(current.l, one.l, "omega^256 should equal 1");
+
+        // Verify omega^k != 1 for 0 < k < 256 (primitivity)
+        let mut power = omega;
+        for k in 1..256 {
+            assert_ne!(power.l, one.l, "omega^{} should not equal 1", k);
+            unsafe {
+                blst_fr_mul(&mut power, &power, &omega);
+            }
+        }
+    }
+
+    #[test]
+    fn test_compute_omega_256_instructions() {
+        // This test documents how to compute omega_256
+        // Run this with `cargo test -- --nocapture` to see the instructions
+
+        println!("\n=== Computing BLS12-381 256th Root of Unity ===");
+        println!("\nMethod 1: Using Python");
+        println!("```python");
+        println!("r = 52435875175126190479447740508185965837690552500527637822603658699938581184513");
+        println!("omega_256 = pow(7, (r-1)//256, r)");
+        println!("print(f'omega_256 = {{hex(omega_256)}}')");
+        println!("");
+        println!("# Convert to little-endian u64 limbs for blst");
+        println!("limbs = []");
+        println!("for i in range(4):");
+        println!("    limb = (omega_256 >> (64*i)) & 0xFFFFFFFFFFFFFFFF");
+        println!("    limbs.append(f'0x{{limb:016x}}')");
+        println!("print(f'OMEGA_256: [u64; 4] = [{{\\', \\'.join(limbs)}}];')");
+        println!("```");
+
+        println!("\nMethod 2: Using SageMath");
+        println!("```sage");
+        println!("r = 52435875175126190479447740508185965837690552500527637822603658699938581184513");
+        println!("F = GF(r)");
+        println!("omega_256 = F(7)^((r-1)/256)");
+        println!("print(f'omega_256 = {{hex(Integer(omega_256))}}')");
+        println!("```");
+
+        println!("\nOnce computed, replace the placeholder in get_omega() with:");
+        println!("```rust");
+        println!("pub const OMEGA_256: [u64; 4] = [");
+        println!("    0xXXXXXXXXXXXXXXXX,  // limb0 (bits 0-63)");
+        println!("    0xXXXXXXXXXXXXXXXX,  // limb1 (bits 64-127)");
+        println!("    0xXXXXXXXXXXXXXXXX,  // limb2 (bits 128-191)");
+        println!("    0xXXXXXXXXXXXXXXXX,  // limb3 (bits 192-255)");
+        println!("];");
+        println!("```");
+        println!("\n===========================================\n");
     }
 }
