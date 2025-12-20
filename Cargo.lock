@@ -5870,6 +5870,7 @@ dependencies = [
  "hex",
  "nix",
  "notify",
+ "parity-scale-codec",
  "reqwest 0.12.25",
  "sbo-core",
  "sbo-zkvm",

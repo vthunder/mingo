@@ -517,6 +517,15 @@ impl SyncEngine {
 
                 // Check if this is an SBOP (proof) message
                 if sbo_core::proof::is_sbop_message(&tx.data) {
+                    // Debug: show first and last bytes to diagnose parse failures
+                    let first_bytes: Vec<u8> = tx.data.iter().take(50).copied().collect();
+                    let last_bytes: Vec<u8> = tx.data.iter().rev().take(50).rev().copied().collect();
+                    tracing::info!(
+                        "[{}/{}] SBOP data: len={}, first 50: {:?}, last 50: {:02x?}",
+                        block_number, tx.index, tx.data.len(),
+                        String::from_utf8_lossy(&first_bytes),
+                        last_bytes
+                    );
                     match sbo_core::proof::parse_sbop(&tx.data) {
                         Ok(sbop) => {
                             tracing::info!(

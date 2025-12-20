@@ -106,13 +106,37 @@ pub fn parse_sbop(bytes: &[u8]) -> Result<SbopMessage, SbopError> {
         .map_err(|_| SbopError::InvalidHeader("Receipt-Length not a number".to_string()))?;
 
     // Payload is base64-encoded receipt
+    // Calculate expected base64 length from Receipt-Length
+    let expected_base64_len = ((receipt_length + 2) / 3) * 4;
+    let expected_total_len = pos + expected_base64_len;
+
     let payload = &bytes[pos..];
+
+    // Find the end of valid base64 content (stop at first non-base64 character)
+    // Base64 chars: A-Z, a-z, 0-9, +, /, =, and whitespace
+    let base64_end = payload.iter()
+        .position(|&b| !matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'=' | b'\n' | b'\r' | b' ' | b'\t'))
+        .unwrap_or(payload.len());
+
+    // Log diagnostic info about sizes
+    let trailing_bytes = bytes.len().saturating_sub(pos + base64_end);
+    if trailing_bytes > 0 || base64_end != expected_base64_len {
+        eprintln!(
+            "SBOP parse diagnostics: total_bytes={}, headers_end={}, payload_len={}, base64_end={}, expected_base64={}, trailing_garbage={}",
+            bytes.len(), pos, payload.len(), base64_end, expected_base64_len, trailing_bytes
+        );
+        if trailing_bytes > 0 && trailing_bytes <= 50 {
+            eprintln!("  trailing bytes: {:02x?}", &bytes[pos + base64_end..]);
+        }
+    }
+
+    let payload = &payload[..base64_end];
     let payload_str = std::str::from_utf8(payload)
         .map_err(|_| SbopError::InvalidBase64("Not valid UTF-8".to_string()))?
         .trim();
 
     let receipt_bytes = STANDARD.decode(payload_str)
-        .map_err(|e| SbopError::InvalidBase64(e.to_string()))?;
+        .map_err(|e| SbopError::InvalidBase64(format!("{} (base64_len={}, expected={})", e, payload_str.len(), expected_base64_len)))?;
 
     if receipt_bytes.len() != receipt_length {
         return Err(SbopError::LengthMismatch {

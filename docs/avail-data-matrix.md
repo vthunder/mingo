@@ -51,6 +51,35 @@ header.extension.v3 {
 - **Extension**: Vertical only (rows are doubled for erasure coding parity)
 - **Cell size**: 32 bytes (BLS12-381 scalar / U256)
 
+### Erasure Coding Row Interleaving
+
+**IMPORTANT**: The `rows` value in the block header is the ORIGINAL row count. The actual data matrix returned by `kate_queryRows` has 2× the rows due to erasure coding extension, with **original and parity rows interleaved**:
+
+```
+Extended Row 0  → Original Row 0 (data)
+Extended Row 1  → Parity for Row 0
+Extended Row 2  → Original Row 1 (data)
+Extended Row 3  → Parity for Row 1
+Extended Row 4  → Original Row 2 (data)
+...
+Extended Row 2N → Original Row N (data)
+Extended Row 2N+1 → Parity for Row N
+```
+
+This interleaving is a consequence of FFT-based erasure coding. When Avail extends the matrix:
+1. Each column is treated as polynomial evaluations
+2. IFFT is applied to get coefficients
+3. FFT is applied on an extended domain (2× points)
+4. The result interleaves original values with parity values
+
+**To fetch original row N, you must request extended row 2*N from the RPC.**
+
+Example for a block with `rows: 32` (header value):
+- Extended matrix has 64 rows (0-63)
+- Original data is in even rows: 0, 2, 4, ..., 62
+- Parity data is in odd rows: 1, 3, 5, ..., 63
+- To get all 32 original rows, request extended rows: 0, 2, 4, ..., 62
+
 ### Data Packing
 
 Each 32-byte scalar contains only **31 bytes of actual data**:
@@ -146,8 +175,16 @@ The call data for `DataAvailability::submit_data`:
 ```rust
 use avail_rust::kate;
 
+// Calculate which ORIGINAL rows we need based on chunk range
 let rows_needed: Vec<u32> = compute_rows_for_chunks(start_chunk, end_chunk, cols);
-let fetched = kate::query_rows(&client, rows_needed, Some(block_hash)).await?;
+
+// IMPORTANT: Convert original row indices to extended row indices (multiply by 2)
+// This is because the RPC returns the extended matrix with interleaved parity rows
+let extended_rows: Vec<u32> = rows_needed.iter().map(|r| r * 2).collect();
+
+let fetched = kate::query_rows(&client, extended_rows, Some(block_hash)).await?;
+
+// Map back: fetched[i] corresponds to original row rows_needed[i]
 ```
 
 ### Step 2: Extract Data from Scalars
@@ -266,9 +303,11 @@ SBO Messages:
 3. **Expecting raw data**: Matrix contains SCALE-encoded extrinsics
 4. **Ignoring IEC padding**: Must be removed before SCALE decoding
 5. **Chunk vs byte indexing**: `app_lookup.start` is chunk index, not byte offset
+6. **Requesting wrong row indices**: Header `rows` is original count; RPC returns extended matrix with 2× rows. To fetch original row N, request extended row 2*N. Odd rows contain parity data, not original data!
 
 ## References
 
 - [avail-core constants](https://github.com/availproject/avail-core/blob/main/core/src/constants.rs)
+- [avail-core kate com.rs](https://github.com/availproject/avail-core/blob/main/kate/src/com.rs) - FFT extension and interleaving
 - [avail-light kate rows](https://github.com/availproject/avail-light/blob/main/core/src/network/rpc/client.rs)
 - [kate recovery](https://github.com/availproject/avail-core/tree/main/kate/recovery)

@@ -31,6 +31,9 @@ flate2.workspace = true
 # Avail SDK for RPC queries
 avail-rust = { package = "avail-rust-client", git = "https://github.com/availproject/avail-rust", branch = "main" }
 
+# SCALE codec for proper extrinsic decoding
+parity-scale-codec = "3"
+
 # Config
 toml = "0.8"
 

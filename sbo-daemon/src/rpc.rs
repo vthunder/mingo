@@ -9,6 +9,15 @@ use crate::config::RpcConfig;
 use avail_rust::Client;
 use avail_rust::ext::avail_rust_core::rpc::kate;
 use flate2::read::GzDecoder;
+use parity_scale_codec::Decode;
+
+/// AppExtrinsic as stored in Avail's data matrix
+/// See: https://github.com/availproject/avail-core/blob/main/core/src/app_extrinsic.rs
+#[derive(Debug, Clone, Decode)]
+struct AppExtrinsic {
+    app_id: u32,
+    data: Vec<u8>,
+}
 
 #[cfg(feature = "zkvm")]
 use sbo_zkvm::types::{HeaderData, RowData, AppLookup, AppLookupEntry};
@@ -226,8 +235,13 @@ impl RpcClient {
 
         // === DEBUG: Save block data to files (only with --debug save-raw-block) ===
         if self.debug_save_raw {
-            let total_rows = rows as u32;
-            let all_row_indices: Vec<u32> = (0..total_rows).collect();
+            // Note: We fetch the EXTENDED matrix rows (2*original_rows) for debug purposes.
+            // The RPC returns an interleaved matrix where:
+            //   - Even rows (0, 2, 4, ...) contain original data
+            //   - Odd rows (1, 3, 5, ...) contain erasure-coded parity data
+            // The header `rows` is the ORIGINAL row count.
+            let extended_rows = rows * 2;
+            let all_row_indices: Vec<u32> = (0..extended_rows).collect();
 
             let mut debug_all_rows: Vec<(u32, kate::GRow)> = Vec::new();
             for chunk in all_row_indices.chunks(64) {
@@ -262,10 +276,11 @@ impl RpcClient {
             let _ = std::fs::write(&header_path, &header_json);
 
             // 2. Save ALL matrix rows as raw scalars (32 bytes each, big-endian)
+            // Note: This saves the extended matrix (2*original rows)
             let matrix_path = debug_dir.join(format!("block_{}_matrix.bin", block_number));
             if let Ok(mut f) = std::fs::File::create(&matrix_path) {
                 let _ = f.write_all(&cols.to_le_bytes());
-                let _ = f.write_all(&total_rows.to_le_bytes());
+                let _ = f.write_all(&extended_rows.to_le_bytes());
                 for (_row_idx, row) in &debug_all_rows {
                     for scalar in row.iter() {
                         let bytes: [u8; 32] = scalar.to_big_endian();
@@ -289,19 +304,40 @@ impl RpcClient {
         }
 
         // Fetch rows via Kate RPC (max 64 rows per call) - only needed rows for actual processing
+        // IMPORTANT: The header `rows` is the ORIGINAL row count. The RPC returns the EXTENDED matrix
+        // (2x rows due to erasure coding). Original data is in even extended rows:
+        //   Original row 0 → Extended row 0
+        //   Original row 1 → Extended row 2
+        //   Original row N → Extended row 2*N
+        // We request extended rows (2*N) and map them back to original indices.
         let mut all_rows: Vec<(u32, kate::GRow)> = Vec::new();
         for chunk in rows_needed.chunks(64) {
+            // Convert original row indices to extended row indices (multiply by 2)
+            let extended_rows: Vec<u32> = chunk.iter().map(|r| r * 2).collect();
             let rows = kate::query_rows(
                 &client.rpc_client,
-                chunk.to_vec(),
+                extended_rows,
                 Some(block_hash),
             )
             .await
             .map_err(|e| crate::DaemonError::Rpc(format!("kate_queryRows failed: {}", e)))?;
 
+            // Store with original row indices (for decode_app_data_from_rows lookups)
             for (i, row) in rows.into_iter().enumerate() {
                 all_rows.push((chunk[i], row));
             }
+        }
+
+        // Log fetched rows info
+        tracing::info!(
+            "Block {}: fetched {} rows (needed {:?}), cols={}",
+            block_number,
+            all_rows.len(),
+            rows_needed,
+            cols
+        );
+        for (row_idx, row) in &all_rows {
+            tracing::debug!("  row {}: {} cells", row_idx, row.len());
         }
 
         // Decode data for each app_id from the fetched rows
@@ -309,6 +345,14 @@ impl RpcClient {
         let mut tx_index = 0u32;
 
         for (app_id, start_cell, end_cell) in app_ranges {
+            // Log chunk range for debugging
+            let expected_cells = end_cell.saturating_sub(start_cell);
+            let expected_bytes = expected_cells as usize * DATA_CHUNK_SIZE;
+            tracing::info!(
+                "Block {} app_id={}: chunks {}..{} ({} cells, ~{} bytes expected)",
+                block_number, app_id, start_cell, end_cell, expected_cells, expected_bytes
+            );
+
             let mut data = decode_app_data_from_rows(
                 &all_rows,
                 start_cell,
@@ -317,11 +361,20 @@ impl RpcClient {
                 self.verbose_decode,
             );
 
+            tracing::info!(
+                "Block {} app_id={}: raw data after cell decode = {} bytes",
+                block_number, app_id, data.len()
+            );
+
             // Try gzip decompression
             if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
                 let mut decoder = GzDecoder::new(data.as_slice());
                 let mut decompressed = Vec::new();
                 if decoder.read_to_end(&mut decompressed).is_ok() {
+                    tracing::info!(
+                        "Block {} app_id={}: decompressed {} -> {} bytes",
+                        block_number, app_id, data.len(), decompressed.len()
+                    );
                     data = decompressed;
                 }
             }
@@ -467,16 +520,20 @@ impl RpcClient {
         }
 
         // Fetch rows via Kate RPC
+        // IMPORTANT: Map original row indices to extended row indices (2*N)
+        // See comment in get_block_data for explanation of erasure coding row interleaving
         let mut all_rows: Vec<(u32, kate::GRow)> = Vec::new();
         for chunk in rows_needed.chunks(64) {
+            let extended_rows: Vec<u32> = chunk.iter().map(|r| r * 2).collect();
             let fetched = kate::query_rows(
                 &client.rpc_client,
-                chunk.to_vec(),
+                extended_rows,
                 Some(block_hash),
             )
             .await
             .map_err(|e| crate::DaemonError::Rpc(format!("kate_queryRows failed: {}", e)))?;
 
+            // Store with original row indices
             for (i, row) in fetched.into_iter().enumerate() {
                 all_rows.push((chunk[i], row));
             }
@@ -592,7 +649,8 @@ fn decode_app_data_from_rows(
         }
     }
 
-    if verbose {
+    // Always log cell processing stats for debugging
+    if cells_missing > 0 || verbose {
         tracing::info!(
             "decode: processed={} cells, missing={}, raw_len={} bytes",
             cells_processed, cells_missing, data.len()
@@ -632,170 +690,153 @@ fn decode_app_data_from_rows(
     }
 }
 
-/// Decode SCALE-encoded Vec<Extrinsic> to extract submitted data blobs
+/// Decode SCALE-encoded Vec<AppExtrinsic> from the data matrix
 ///
-/// Structure in the matrix:
-/// - Vec length (compact)
-/// - For each extrinsic:
-///   - Extrinsic length (compact)
-///   - Extrinsic bytes: [signature...][call: pallet_idx, call_idx, app_id, data_len, data]
+/// The data matrix contains app extrinsics as Vec<AppExtrinsic> where:
+/// - AppExtrinsic { app_id: u32, data: Vec<u8> }
+/// - AppExtrinsic.data contains an ENCODED UncheckedExtrinsic
+/// - The actual submitted data is inside the extrinsic's call
 ///
-/// We extract the innermost 'data' field from each extrinsic.
+/// Uses parity-scale-codec for proper SCALE decoding.
 fn decode_app_extrinsics(data: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut offset = 0;
+    // Use parity-scale-codec to properly decode Vec<AppExtrinsic>
+    let extrinsics: Vec<AppExtrinsic> = Vec::<AppExtrinsic>::decode(&mut &data[..])
+        .map_err(|e| {
+            tracing::error!("SCALE decode error: {:?}", e);
+            "Failed to decode Vec<AppExtrinsic>"
+        })?;
 
-    // Decode Vec length
-    let (vec_len, consumed) = decode_scale_compact(&data[offset..])
-        .ok_or("Failed to decode Vec length")?;
-    offset += consumed;
+    tracing::debug!("Decoded {} AppExtrinsic(s) from {} bytes", extrinsics.len(), data.len());
 
-    tracing::debug!("Extrinsics Vec length: {}", vec_len);
-
-    let mut blobs = Vec::new();
-
-    for i in 0..vec_len {
-        if offset >= data.len() {
-            tracing::warn!("Unexpected end of data at extrinsic {}", i);
-            break;
-        }
-
-        // Decode extrinsic length
-        let (ext_len, consumed) = decode_scale_compact(&data[offset..])
-            .ok_or("Failed to decode extrinsic length")?;
-        offset += consumed;
-
-        tracing::debug!("Extrinsic {}: length={}, starts at offset {}", i, ext_len, offset);
-
-        if offset + ext_len > data.len() {
-            tracing::warn!("Extrinsic {} extends past data end", i);
-            break;
-        }
-
-        // Extract the data blob from within the extrinsic
-        // The extrinsic contains signature, call info, app_id, and the data
-        // We look for the data length prefix followed by actual data
-        let ext_data = &data[offset..offset + ext_len];
-
-        if let Some(blob) = extract_data_from_extrinsic(ext_data) {
-            blobs.push(blob);
-        } else {
-            tracing::warn!("Could not extract data blob from extrinsic {}", i);
-        }
-
-        offset += ext_len;
-    }
+    // Extract the submitted data from each AppExtrinsic
+    // AppExtrinsic.data contains an encoded extrinsic, we need to extract the inner data
+    let blobs: Vec<Vec<u8>> = extrinsics
+        .into_iter()
+        .filter_map(|ext| {
+            tracing::debug!("  AppExtrinsic: app_id={}, encoded_ext_len={}", ext.app_id, ext.data.len());
+            extract_data_from_encoded_extrinsic(&ext.data)
+        })
+        .collect();
 
     Ok(blobs)
 }
 
-/// Extract the submitted data blob from within an extrinsic
+/// Extract the submitted data blob from an encoded UncheckedExtrinsic
 ///
-/// Extrinsic structure (signed):
-/// - Version byte (0x84 for signed v4)
-/// - Address type + address
-/// - Signature type + signature (64 bytes for ed25519/sr25519)
-/// - Era, nonce, tip (variable)
-/// - Call: pallet_index (u8), call_index (u8), app_id (compact), data (Vec<u8>)
-///
-/// We scan for the data by looking for the compact length that precedes our actual data.
-fn extract_data_from_extrinsic(ext: &[u8]) -> Option<Vec<u8>> {
-    // Strategy: find "SBO-" magic (if present) and work backwards to find the length prefix
-    const SBO_MAGIC: &[u8] = b"SBO-";
-
-    if let Some(sbo_pos) = ext.windows(4).position(|w| w == SBO_MAGIC) {
-        // Look for compact length prefix just before SBO-
-        // Try 2-byte compact first (most common for our data sizes)
-        if sbo_pos >= 2 {
-            if let Some((len, 2)) = decode_scale_compact(&ext[sbo_pos - 2..]) {
-                let data_end = sbo_pos + len;
-                if data_end <= ext.len() {
-                    tracing::debug!(
-                        "Found data via SBO- magic: offset={}, len={}",
-                        sbo_pos, len
-                    );
-                    return Some(ext[sbo_pos..data_end].to_vec());
-                }
-            }
-        }
-        // Try 1-byte compact
-        if sbo_pos >= 1 {
-            if let Some((len, 1)) = decode_scale_compact(&ext[sbo_pos - 1..]) {
-                let data_end = sbo_pos + len;
-                if data_end <= ext.len() {
-                    return Some(ext[sbo_pos..data_end].to_vec());
-                }
-            }
-        }
-        // Fallback: take from SBO- to end (trim trailing zeros)
-        let mut end = ext.len();
-        while end > sbo_pos && ext[end - 1] == 0 {
-            end -= 1;
-        }
-        return Some(ext[sbo_pos..end].to_vec());
+/// UncheckedExtrinsic structure (signed v4):
+/// - Version byte: 0x84 (signed v4)
+/// - Address: MultiAddress (1 byte type + 32 bytes for Id)
+/// - Signature: MultiSignature (1 byte type + 64 bytes for Sr25519/Ed25519)
+/// - Extra: Era (1-2 bytes) + Nonce (compact) + Tip (compact) + AppId (compact)
+/// - Call: pallet_index (u8) + call_index (u8) + data (Vec<u8>)
+fn extract_data_from_encoded_extrinsic(encoded: &[u8]) -> Option<Vec<u8>> {
+    if encoded.is_empty() {
+        return None;
     }
 
-    // No SBO- magic found - try to decode based on structure
-    // This handles non-SBO data or data without the magic header
+    let mut input = &encoded[..];
 
-    // Scan for a reasonable compact length followed by non-zero data
-    for offset in (ext.len().saturating_sub(200))..ext.len().saturating_sub(4) {
-        if let Some((len, compact_size)) = decode_scale_compact(&ext[offset..]) {
-            let data_start = offset + compact_size;
-            let data_end = data_start + len;
+    // Version byte
+    let version = *input.first()?;
+    input = &input[1..];
 
-            // Validate: data should fit, be reasonable size, and start with non-zero
-            if data_end <= ext.len() && len >= 10 && data_start < ext.len() && ext[data_start] != 0 {
-                tracing::debug!(
-                    "Found data via scan: offset={}, len={}",
-                    data_start, len
-                );
-                return Some(ext[data_start..data_end].to_vec());
+    let is_signed = (version & 0x80) != 0;
+
+    if is_signed {
+        // Skip MultiAddress (type byte + address data)
+        let addr_type = *input.first()?;
+        input = &input[1..];
+
+        let addr_len = match addr_type {
+            0x00 => 32, // Id
+            0x01 => {   // Index - compact u32
+                let (_, consumed) = decode_compact(input)?;
+                consumed
             }
+            0x02 => {   // Raw - Vec<u8>
+                let (len, consumed) = decode_compact(input)?;
+                consumed + len
+            }
+            0x03 => 32, // Address32
+            0x04 => 20, // Address20
+            _ => return None,
+        };
+        if addr_len > input.len() { return None; }
+        input = &input[addr_len..];
+
+        // Skip MultiSignature (type byte + signature data)
+        let sig_type = *input.first()?;
+        input = &input[1..];
+
+        let sig_len = match sig_type {
+            0x00 | 0x01 => 64, // Ed25519 or Sr25519
+            0x02 => 65,        // Ecdsa
+            _ => return None,
+        };
+        if sig_len > input.len() { return None; }
+        input = &input[sig_len..];
+
+        // Skip Era
+        let era_byte = *input.first()?;
+        input = &input[1..];
+        if era_byte != 0x00 && !input.is_empty() {
+            // Mortal era is 2 bytes total, we already consumed 1
+            input = &input[1..];
         }
+
+        // Skip Nonce (compact)
+        let (_, consumed) = decode_compact(input)?;
+        input = &input[consumed..];
+
+        // Skip Tip (compact)
+        let (_, consumed) = decode_compact(input)?;
+        input = &input[consumed..];
+
+        // Skip AppId in SignedExtra (compact u32)
+        let (_, consumed) = decode_compact(input)?;
+        input = &input[consumed..];
     }
 
-    None
+    // Now at the Call
+    // Skip pallet_index and call_index
+    if input.len() < 2 { return None; }
+    let _pallet = input[0];
+    let _call = input[1];
+    input = &input[2..];
+
+    // The remaining data is Vec<u8> - the actual submitted blob
+    let data: Vec<u8> = Vec::<u8>::decode(&mut &input[..]).ok()?;
+
+    tracing::debug!("  Extracted {} bytes from extrinsic", data.len());
+    Some(data)
 }
 
-/// Decode a SCALE compact-encoded integer
-/// Returns (value, bytes_consumed) or None if invalid
-fn decode_scale_compact(data: &[u8]) -> Option<(usize, usize)> {
+/// Decode a SCALE compact integer, returns (value, bytes_consumed)
+fn decode_compact(data: &[u8]) -> Option<(usize, usize)> {
     if data.is_empty() {
         return None;
     }
 
     let mode = data[0] & 0b11;
     match mode {
-        0b00 => {
-            // Single byte mode: value = byte >> 2
-            Some(((data[0] >> 2) as usize, 1))
-        }
+        0b00 => Some(((data[0] >> 2) as usize, 1)),
         0b01 => {
-            // Two byte mode: value = u16 >> 2
-            if data.len() < 2 {
-                return None;
-            }
+            if data.len() < 2 { return None; }
             let val = u16::from_le_bytes([data[0], data[1]]) >> 2;
             Some((val as usize, 2))
         }
         0b10 => {
-            // Four byte mode: value = u32 >> 2
-            if data.len() < 4 {
-                return None;
-            }
+            if data.len() < 4 { return None; }
             let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) >> 2;
             Some((val as usize, 4))
         }
         0b11 => {
-            // Big integer mode: first byte >> 2 = number of following bytes - 4
             let num_bytes = ((data[0] >> 2) + 4) as usize;
-            if data.len() < 1 + num_bytes || num_bytes > 8 {
-                return None;
-            }
+            if data.len() < 1 + num_bytes || num_bytes > 8 { return None; }
             let mut bytes = [0u8; 8];
             bytes[..num_bytes].copy_from_slice(&data[1..1 + num_bytes]);
             Some((u64::from_le_bytes(bytes) as usize, 1 + num_bytes))
