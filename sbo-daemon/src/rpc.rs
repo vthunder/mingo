@@ -1,14 +1,13 @@
 //! Avail RPC Client
 //!
 //! Fetches block data from Avail RPC nodes using avail-rust SDK.
+//! Uses Kate RPC to query the data matrix directly by app_id.
 
 use std::io::Read as _;
+use std::io::Write as _;
 use crate::config::RpcConfig;
-use avail_rust::{
-    Client,
-    EncodeSelector,
-    ext::avail_rust_core::rpc::system::fetch_extrinsics::Options as RpcOptions,
-};
+use avail_rust::Client;
+use avail_rust::ext::avail_rust_core::rpc::kate;
 use flate2::read::GzDecoder;
 
 /// Transaction data from a block
@@ -31,11 +30,13 @@ pub struct RpcClient {
     config: RpcConfig,
     client: Option<Client>,
     verbose: bool,
+    verbose_decode: bool,
+    debug_save_raw: bool,
 }
 
 impl RpcClient {
-    pub fn new(config: RpcConfig, verbose: bool) -> Self {
-        Self { config, client: None, verbose }
+    pub fn new(config: RpcConfig, verbose: bool, verbose_decode: bool, debug_save_raw: bool) -> Self {
+        Self { config, client: None, verbose, verbose_decode, debug_save_raw }
     }
 
     /// Connect to the RPC endpoint
@@ -105,16 +106,61 @@ impl RpcClient {
         Ok(matching)
     }
 
-    /// Fetch block data for specific app_ids
+    /// Fetch block data for specific app_ids using Kate RPC (data matrix query)
+    ///
+    /// This queries the DA matrix directly, which is more efficient than parsing
+    /// extrinsics and scales better as block sizes grow.
     pub async fn fetch_block_data_for_app_ids(
         &mut self,
         block_number: u64,
         watched_app_ids: &[u32],
     ) -> crate::Result<BlockData> {
-        // First check if this block has any data for our app_ids (presence check only)
-        let matching_app_ids = self.get_block_app_ids(block_number, watched_app_ids).await?;
+        let client = self.get_client().await?.clone();
+        let block = client.block(block_number as u32);
 
-        if matching_app_ids.is_empty() {
+        // Get block header for app_lookup index and grid dimensions
+        let header = block.header()
+            .await
+            .map_err(|e| crate::DaemonError::Rpc(format!("Failed to get header: {}", e)))?;
+
+        // Get app_lookup index and grid dimensions from header extension
+        // Both V3 and V4 have size, index, and commitment.cols - extract the values
+        let (app_lookup_size, app_lookup_index, cols, rows) = match &header.extension {
+            avail_rust::ext::avail_rust_core::header::HeaderExtension::V3(ext) => {
+                (ext.app_lookup.size, &ext.app_lookup.index, ext.commitment.cols as u32, ext.commitment.rows as u32)
+            }
+            avail_rust::ext::avail_rust_core::header::HeaderExtension::V4(ext) => {
+                (ext.app_lookup.size, &ext.app_lookup.index, ext.commitment.cols as u32, ext.commitment.rows as u32)
+            }
+        };
+
+        if self.verbose_decode {
+            tracing::info!(
+                "Block {} header: app_lookup_size={}, index_entries={}, cols={}, rows={}",
+                block_number, app_lookup_size, app_lookup_index.len(), cols, rows
+            );
+            for item in app_lookup_index.iter() {
+                tracing::info!("  app_lookup entry: app_id={}, start={}", item.app_id, item.start);
+            }
+        }
+
+        // Find data ranges for our watched app_ids
+        // app_lookup uses chunk indices (each chunk = 31 bytes of data)
+        let mut app_ranges: Vec<(u32, u32, u32)> = Vec::new(); // (app_id, start_chunk, end_chunk)
+
+        for (i, item) in app_lookup_index.iter().enumerate() {
+            if watched_app_ids.contains(&item.app_id) {
+                // End is either the next entry's start or the total size
+                let end = if i + 1 < app_lookup_index.len() {
+                    app_lookup_index[i + 1].start
+                } else {
+                    app_lookup_size
+                };
+                app_ranges.push((item.app_id, item.start, end));
+            }
+        }
+
+        if app_ranges.is_empty() {
             return Ok(BlockData {
                 block_number,
                 transactions: Vec::new(),
@@ -122,66 +168,165 @@ impl RpcClient {
         }
 
         tracing::debug!(
-            "Block {} has data for app_ids: {:?}",
+            "Block {} app_ranges for watched ids: {:?}, cols={}",
             block_number,
-            matching_app_ids
+            app_ranges,
+            cols
         );
 
-        // Fetch all extrinsics - app_id is in signed extensions (not call data),
-        // so we can't filter by app_id here. We process all SubmitData and let
-        // the SBO parser handle filtering (non-SBO data will fail to parse).
-        let client = self.get_client().await?.clone();
-        let block = client.block(block_number as u32);
-        let opts = RpcOptions::new()
-            .encode_as(EncodeSelector::Call);
+        // Calculate which rows we need to fetch
+        // The start/end values are flat chunk indices into the data matrix
+        // Each row has `cols` cells of original data (extension is vertical, adding rows)
+        let mut rows_needed: Vec<u32> = Vec::new();
+        for &(_, start, end) in &app_ranges {
+            if cols == 0 {
+                continue;
+            }
+            let start_row = start / cols;
+            let end_row = (end.saturating_sub(1)) / cols;
+            for row in start_row..=end_row {
+                if !rows_needed.contains(&row) {
+                    rows_needed.push(row);
+                }
+            }
+        }
+        rows_needed.sort();
 
-        let mut infos = block.extrinsic_infos(opts)
-            .await
-            .map_err(|e| crate::DaemonError::Rpc(format!("Failed to fetch extrinsics: {}", e)))?;
+        if rows_needed.is_empty() {
+            return Ok(BlockData {
+                block_number,
+                transactions: Vec::new(),
+            });
+        }
 
-        let mut transactions = Vec::new();
+        tracing::debug!(
+            "Block {} fetching {} rows: {:?}",
+            block_number,
+            rows_needed.len(),
+            rows_needed
+        );
 
-        // Use first watched app_id for labeling (actual filtering happens at SBO parse level)
-        let label_app_id = watched_app_ids[0];
+        // Get block hash for Kate RPC
+        let block_hash = header.hash();
 
-        // Process all SubmitData extrinsics (pallet_id 29, variant_id 1)
-        for info in &mut infos {
-            if info.pallet_id == 29 && info.variant_id == 1 {
-                if let Some(call_data) = info.data.take() {
-                    if let Ok(bytes) = hex::decode(&call_data) {
-                        if bytes.len() > 2 {
-                            // Call format: [pallet_id, variant_id, compact_len, data...]
-                            // Note: app_id is in signed extensions, not call data
-                            let payload = &bytes[2..];
-                            match decode_compact_and_data(payload) {
-                                Ok(mut data) => {
-                                    // Try gzip decompression
-                                    if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-                                        let mut decoder = GzDecoder::new(data.as_slice());
-                                        let mut decompressed = Vec::new();
-                                        if decoder.read_to_end(&mut decompressed).is_ok() {
-                                            data = decompressed;
-                                        }
-                                    }
+        // === DEBUG: Save block data to files (only with --debug save-raw-block) ===
+        if self.debug_save_raw {
+            let total_rows = rows as u32;
+            let all_row_indices: Vec<u32> = (0..total_rows).collect();
 
-                                    transactions.push(AppTransaction {
-                                        app_id: label_app_id,
-                                        index: info.ext_index,
-                                        data,
-                                    });
-                                }
-                                Err(e) => {
-                                    tracing::trace!(
-                                        "Block {} ext {} decode error: {}",
-                                        block_number,
-                                        info.ext_index,
-                                        e
-                                    );
-                                }
-                            }
-                        }
+            let mut debug_all_rows: Vec<(u32, kate::GRow)> = Vec::new();
+            for chunk in all_row_indices.chunks(64) {
+                if let Ok(fetched) = kate::query_rows(
+                    &client.rpc_client,
+                    chunk.to_vec(),
+                    Some(block_hash),
+                ).await {
+                    for (i, row) in fetched.into_iter().enumerate() {
+                        debug_all_rows.push((chunk[i], row));
                     }
                 }
+            }
+
+            let debug_dir = std::path::Path::new("/tmp/sbo-debug");
+            let _ = std::fs::create_dir_all(debug_dir);
+
+            // 1. Save header as JSON
+            let header_path = debug_dir.join(format!("block_{}_header.json", block_number));
+            let header_json = format!(
+                "{{\"block_number\":{},\"hash\":\"{:?}\",\"parent_hash\":\"{:?}\",\"state_root\":\"{:?}\",\"extrinsics_root\":\"{:?}\",\"app_lookup_size\":{},\"cols\":{},\"rows\":{},\"app_lookup\":[{}]}}",
+                block_number,
+                block_hash,
+                header.parent_hash,
+                header.state_root,
+                header.extrinsics_root,
+                app_lookup_size,
+                cols,
+                rows,
+                app_lookup_index.iter().map(|i| format!("{{\"app_id\":{},\"start\":{}}}", i.app_id, i.start)).collect::<Vec<_>>().join(",")
+            );
+            let _ = std::fs::write(&header_path, &header_json);
+
+            // 2. Save ALL matrix rows as raw scalars (32 bytes each, big-endian)
+            let matrix_path = debug_dir.join(format!("block_{}_matrix.bin", block_number));
+            if let Ok(mut f) = std::fs::File::create(&matrix_path) {
+                let _ = f.write_all(&cols.to_le_bytes());
+                let _ = f.write_all(&total_rows.to_le_bytes());
+                for (_row_idx, row) in &debug_all_rows {
+                    for scalar in row.iter() {
+                        let bytes: [u8; 32] = scalar.to_big_endian();
+                        let _ = f.write_all(&bytes);
+                    }
+                }
+            }
+
+            // 3. Save the app_lookup index
+            let lookup_path = debug_dir.join(format!("block_{}_lookup.bin", block_number));
+            if let Ok(mut f) = std::fs::File::create(&lookup_path) {
+                let _ = f.write_all(&app_lookup_size.to_le_bytes());
+                let _ = f.write_all(&(app_lookup_index.len() as u32).to_le_bytes());
+                for item in app_lookup_index.iter() {
+                    let _ = f.write_all(&item.app_id.to_le_bytes());
+                    let _ = f.write_all(&item.start.to_le_bytes());
+                }
+            }
+
+            tracing::info!("Saved debug files to /tmp/sbo-debug/ for block {}", block_number);
+        }
+
+        // Fetch rows via Kate RPC (max 64 rows per call) - only needed rows for actual processing
+        let mut all_rows: Vec<(u32, kate::GRow)> = Vec::new();
+        for chunk in rows_needed.chunks(64) {
+            let rows = kate::query_rows(
+                &client.rpc_client,
+                chunk.to_vec(),
+                Some(block_hash),
+            )
+            .await
+            .map_err(|e| crate::DaemonError::Rpc(format!("kate_queryRows failed: {}", e)))?;
+
+            for (i, row) in rows.into_iter().enumerate() {
+                all_rows.push((chunk[i], row));
+            }
+        }
+
+        // Decode data for each app_id from the fetched rows
+        let mut transactions = Vec::new();
+        let mut tx_index = 0u32;
+
+        for (app_id, start_cell, end_cell) in app_ranges {
+            let mut data = decode_app_data_from_rows(
+                &all_rows,
+                start_cell,
+                end_cell,
+                cols,
+                self.verbose_decode,
+            );
+
+            // Try gzip decompression
+            if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+                let mut decoder = GzDecoder::new(data.as_slice());
+                let mut decompressed = Vec::new();
+                if decoder.read_to_end(&mut decompressed).is_ok() {
+                    data = decompressed;
+                }
+            }
+
+            tracing::debug!(
+                "Block {} app_id={} data_len={} (cells {}..{})",
+                block_number,
+                app_id,
+                data.len(),
+                start_cell,
+                end_cell
+            );
+
+            if !data.is_empty() {
+                transactions.push(AppTransaction {
+                    app_id,
+                    index: tx_index,
+                    data,
+                });
+                tx_index += 1;
             }
         }
 
@@ -243,59 +388,286 @@ impl RpcClient {
     }
 }
 
-/// Decode a SCALE compact-encoded u32, returning (value, bytes_consumed)
-fn decode_compact_u32(bytes: &[u8]) -> Result<(u32, usize), String> {
-    if bytes.is_empty() {
-        return Err("Empty bytes".to_string());
+/// Avail matrix constants (from avail-core)
+const CHUNK_SIZE: usize = 32;       // U256 = 32 bytes per cell
+const DATA_CHUNK_SIZE: usize = 31;  // Actual data per cell (last byte is padding)
+
+/// Decode app data from fetched matrix rows
+///
+/// The data matrix contains SCALE-encoded extrinsics, not raw submitted data.
+/// Structure: Vec<Extrinsic> where each extrinsic contains the submitted blob.
+///
+/// Based on avail-light/avail-core implementation:
+/// - Rows are fetched via kate::query_rows
+/// - Each scalar is converted to big-endian 32 bytes
+/// - Only first 31 bytes (DATA_CHUNK_SIZE) contain data, last byte is padding
+/// - Cells are processed in row-major order (chunk_idx = row * cols + col)
+/// - IEC 9797-1 padding is removed
+/// - Then SCALE Vec<Vec<u8>> is decoded to get actual submitted blobs
+fn decode_app_data_from_rows(
+    rows: &[(u32, kate::GRow)],
+    start_chunk: u32,
+    end_chunk: u32,
+    cols: u32,
+    verbose: bool,
+) -> Vec<u8> {
+    if verbose {
+        tracing::info!(
+            "decode_app_data_from_rows: start_chunk={}, end_chunk={}, cols={}, fetched_rows={}",
+            start_chunk, end_chunk, cols, rows.len()
+        );
     }
 
-    let first = bytes[0];
-    let mode = first & 0b11;
+    let mut data = Vec::new();
+    let mut cells_processed = 0u32;
+    let mut cells_missing = 0u32;
 
+    // Process cells in row-major order
+    for chunk_idx in start_chunk..end_chunk {
+        let row_idx = chunk_idx / cols;
+        let col_idx = chunk_idx % cols;
+
+        if let Some((_, row)) = rows.iter().find(|(r, _)| *r == row_idx) {
+            if (col_idx as usize) < row.len() {
+                let scalar = &row[col_idx as usize];
+                // Big-endian, take first 31 bytes (last byte is padding per avail-core)
+                let bytes: [u8; CHUNK_SIZE] = scalar.to_big_endian();
+                data.extend_from_slice(&bytes[..DATA_CHUNK_SIZE]);
+                cells_processed += 1;
+            } else {
+                cells_missing += 1;
+            }
+        } else {
+            cells_missing += 1;
+        }
+    }
+
+    if verbose {
+        tracing::info!(
+            "decode: processed={} cells, missing={}, raw_len={} bytes",
+            cells_processed, cells_missing, data.len()
+        );
+    }
+
+    // Apply IEC 9797-1 unpadding (remove 0x80 + trailing zeros)
+    let unpadded_len = unpad_iec_9797_1(&data);
+    if unpadded_len < data.len() {
+        tracing::debug!(
+            "IEC 9797-1 unpadding: {} -> {} bytes",
+            data.len(), unpadded_len
+        );
+        data.truncate(unpadded_len);
+    }
+
+    // Decode SCALE Vec<Vec<u8>> to extract submitted blobs
+    // The matrix contains extrinsic data, structured as Vec<(extrinsic_len, extrinsic_bytes)>
+    // We need to extract the actual submitted data from within each extrinsic
+    match decode_app_extrinsics(&data) {
+        Ok(blobs) => {
+            if verbose {
+                tracing::info!("Decoded {} blob(s) from extrinsics", blobs.len());
+            }
+            // Concatenate all blobs (typically just one)
+            let mut result = Vec::new();
+            for (i, blob) in blobs.iter().enumerate() {
+                tracing::debug!("  blob {}: {} bytes", i, blob.len());
+                result.extend_from_slice(blob);
+            }
+            result
+        }
+        Err(e) => {
+            tracing::warn!("Failed to decode extrinsics: {}, returning raw data", e);
+            data
+        }
+    }
+}
+
+/// Decode SCALE-encoded Vec<Extrinsic> to extract submitted data blobs
+///
+/// Structure in the matrix:
+/// - Vec length (compact)
+/// - For each extrinsic:
+///   - Extrinsic length (compact)
+///   - Extrinsic bytes: [signature...][call: pallet_idx, call_idx, app_id, data_len, data]
+///
+/// We extract the innermost 'data' field from each extrinsic.
+fn decode_app_extrinsics(data: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut offset = 0;
+
+    // Decode Vec length
+    let (vec_len, consumed) = decode_scale_compact(&data[offset..])
+        .ok_or("Failed to decode Vec length")?;
+    offset += consumed;
+
+    tracing::debug!("Extrinsics Vec length: {}", vec_len);
+
+    let mut blobs = Vec::new();
+
+    for i in 0..vec_len {
+        if offset >= data.len() {
+            tracing::warn!("Unexpected end of data at extrinsic {}", i);
+            break;
+        }
+
+        // Decode extrinsic length
+        let (ext_len, consumed) = decode_scale_compact(&data[offset..])
+            .ok_or("Failed to decode extrinsic length")?;
+        offset += consumed;
+
+        tracing::debug!("Extrinsic {}: length={}, starts at offset {}", i, ext_len, offset);
+
+        if offset + ext_len > data.len() {
+            tracing::warn!("Extrinsic {} extends past data end", i);
+            break;
+        }
+
+        // Extract the data blob from within the extrinsic
+        // The extrinsic contains signature, call info, app_id, and the data
+        // We look for the data length prefix followed by actual data
+        let ext_data = &data[offset..offset + ext_len];
+
+        if let Some(blob) = extract_data_from_extrinsic(ext_data) {
+            blobs.push(blob);
+        } else {
+            tracing::warn!("Could not extract data blob from extrinsic {}", i);
+        }
+
+        offset += ext_len;
+    }
+
+    Ok(blobs)
+}
+
+/// Extract the submitted data blob from within an extrinsic
+///
+/// Extrinsic structure (signed):
+/// - Version byte (0x84 for signed v4)
+/// - Address type + address
+/// - Signature type + signature (64 bytes for ed25519/sr25519)
+/// - Era, nonce, tip (variable)
+/// - Call: pallet_index (u8), call_index (u8), app_id (compact), data (Vec<u8>)
+///
+/// We scan for the data by looking for the compact length that precedes our actual data.
+fn extract_data_from_extrinsic(ext: &[u8]) -> Option<Vec<u8>> {
+    // Strategy: find "SBO-" magic (if present) and work backwards to find the length prefix
+    const SBO_MAGIC: &[u8] = b"SBO-";
+
+    if let Some(sbo_pos) = ext.windows(4).position(|w| w == SBO_MAGIC) {
+        // Look for compact length prefix just before SBO-
+        // Try 2-byte compact first (most common for our data sizes)
+        if sbo_pos >= 2 {
+            if let Some((len, 2)) = decode_scale_compact(&ext[sbo_pos - 2..]) {
+                let data_end = sbo_pos + len;
+                if data_end <= ext.len() {
+                    tracing::debug!(
+                        "Found data via SBO- magic: offset={}, len={}",
+                        sbo_pos, len
+                    );
+                    return Some(ext[sbo_pos..data_end].to_vec());
+                }
+            }
+        }
+        // Try 1-byte compact
+        if sbo_pos >= 1 {
+            if let Some((len, 1)) = decode_scale_compact(&ext[sbo_pos - 1..]) {
+                let data_end = sbo_pos + len;
+                if data_end <= ext.len() {
+                    return Some(ext[sbo_pos..data_end].to_vec());
+                }
+            }
+        }
+        // Fallback: take from SBO- to end (trim trailing zeros)
+        let mut end = ext.len();
+        while end > sbo_pos && ext[end - 1] == 0 {
+            end -= 1;
+        }
+        return Some(ext[sbo_pos..end].to_vec());
+    }
+
+    // No SBO- magic found - try to decode based on structure
+    // This handles non-SBO data or data without the magic header
+
+    // Scan for a reasonable compact length followed by non-zero data
+    for offset in (ext.len().saturating_sub(200))..ext.len().saturating_sub(4) {
+        if let Some((len, compact_size)) = decode_scale_compact(&ext[offset..]) {
+            let data_start = offset + compact_size;
+            let data_end = data_start + len;
+
+            // Validate: data should fit, be reasonable size, and start with non-zero
+            if data_end <= ext.len() && len >= 10 && data_start < ext.len() && ext[data_start] != 0 {
+                tracing::debug!(
+                    "Found data via scan: offset={}, len={}",
+                    data_start, len
+                );
+                return Some(ext[data_start..data_end].to_vec());
+            }
+        }
+    }
+
+    None
+}
+
+/// Decode a SCALE compact-encoded integer
+/// Returns (value, bytes_consumed) or None if invalid
+fn decode_scale_compact(data: &[u8]) -> Option<(usize, usize)> {
+    if data.is_empty() {
+        return None;
+    }
+
+    let mode = data[0] & 0b11;
     match mode {
         0b00 => {
-            // Single-byte mode: upper 6 bits are the value
-            Ok(((first >> 2) as u32, 1))
+            // Single byte mode: value = byte >> 2
+            Some(((data[0] >> 2) as usize, 1))
         }
         0b01 => {
-            // Two-byte mode
-            if bytes.len() < 2 {
-                return Err("Not enough bytes for 2-byte compact".to_string());
+            // Two byte mode: value = u16 >> 2
+            if data.len() < 2 {
+                return None;
             }
-            let val = u16::from_le_bytes([first, bytes[1]]) >> 2;
-            Ok((val as u32, 2))
+            let val = u16::from_le_bytes([data[0], data[1]]) >> 2;
+            Some((val as usize, 2))
         }
         0b10 => {
-            // Four-byte mode
-            if bytes.len() < 4 {
-                return Err("Not enough bytes for 4-byte compact".to_string());
+            // Four byte mode: value = u32 >> 2
+            if data.len() < 4 {
+                return None;
             }
-            let val = u32::from_le_bytes([first, bytes[1], bytes[2], bytes[3]]) >> 2;
-            Ok((val, 4))
+            let val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) >> 2;
+            Some((val as usize, 4))
         }
         0b11 => {
-            // Big-integer mode (shouldn't happen for u32 app_id)
-            Err("Big-integer mode not supported for u32".to_string())
+            // Big integer mode: first byte >> 2 = number of following bytes - 4
+            let num_bytes = ((data[0] >> 2) + 4) as usize;
+            if data.len() < 1 + num_bytes || num_bytes > 8 {
+                return None;
+            }
+            let mut bytes = [0u8; 8];
+            bytes[..num_bytes].copy_from_slice(&data[1..1 + num_bytes]);
+            Some((u64::from_le_bytes(bytes) as usize, 1 + num_bytes))
         }
-        _ => unreachable!(),
+        _ => None,
     }
 }
 
-/// Decode SCALE compact-encoded length and return the data bytes
-fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let (length, header_size) = decode_compact_u32(bytes)?;
-    let length = length as usize;
-
-    let data_start = header_size;
-    let data_end = data_start + length;
-
-    if bytes.len() < data_end {
-        return Err(format!(
-            "Not enough data: expected {} bytes, have {}",
-            length,
-            bytes.len() - data_start
-        ));
+/// Remove IEC 9797-1 padding (0x80 followed by zeros)
+/// Returns the length of the unpadded data
+fn unpad_iec_9797_1(data: &[u8]) -> usize {
+    // Scan backwards: skip zeros, then expect 0x80
+    let mut i = data.len();
+    while i > 0 && data[i - 1] == 0x00 {
+        i -= 1;
     }
-
-    Ok(bytes[data_start..data_end].to_vec())
+    // Check for the 0x80 marker
+    if i > 0 && data[i - 1] == 0x80 {
+        i - 1
+    } else {
+        // No valid padding found, return original length
+        data.len()
+    }
 }
+

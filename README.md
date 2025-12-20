@@ -545,6 +545,10 @@ dig TXT _sbo.yourdomain.com
 # _sbo.yourdomain.com. TXT "sbo=v1 chain=avail:turing appId=506"
 ```
 
+### Advanced debugging
+
+For detailed daemon diagnostics, see [docs/daemon-debugging.md](docs/daemon-debugging.md).
+
 ---
 
 ## License

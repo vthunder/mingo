@@ -11,7 +11,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use sbo_daemon::config::Config;
-use sbo_daemon::ipc::{self, IpcServer, Request, Response, SignRequestStatus, SignRequest as IpcSignRequest, SignedAssertion};
+use sbo_daemon::ipc::{IpcServer, Request, Response, SignRequestStatus, SignRequest as IpcSignRequest};
+use sbo_daemon::state_db_path_for_uri;
 use sbo_daemon::lc::LcManager;
 use sbo_daemon::prover::Prover;
 use sbo_daemon::repo::{RepoManager, SboUri};
@@ -40,9 +41,14 @@ enum Commands {
         foreground: bool,
 
         /// Verbose output for specific components (can be repeated)
-        /// Options: rpc, raw-incoming, blocks
+        /// Options: rpc, rpc-decode, raw-incoming, blocks
         #[arg(long = "verbose", short = 'v', value_name = "COMPONENT")]
         verbose: Vec<String>,
+
+        /// Debug options (can be repeated)
+        /// Options: save-raw-block
+        #[arg(long = "debug", short = 'd', value_name = "OPTION")]
+        debug: Vec<String>,
 
         /// Enable prover mode (generate ZK proofs for processed blocks)
         #[arg(long)]
@@ -63,6 +69,8 @@ enum Commands {
 pub struct VerboseFlags {
     /// Log RPC connection details
     pub rpc: bool,
+    /// Log RPC decode details (block headers, matrix decoding)
+    pub rpc_decode: bool,
     /// Log raw incoming data for repos
     pub raw_incoming: bool,
     /// Log every block processed (even empty ones)
@@ -73,8 +81,24 @@ impl VerboseFlags {
     fn from_args(args: &[String]) -> Self {
         Self {
             rpc: args.iter().any(|s| s == "rpc"),
+            rpc_decode: args.iter().any(|s| s == "rpc-decode"),
             raw_incoming: args.iter().any(|s| s == "raw-incoming"),
             blocks: args.iter().any(|s| s == "blocks"),
+        }
+    }
+}
+
+/// Debug flags for development/troubleshooting
+#[derive(Clone, Default)]
+pub struct DebugFlags {
+    /// Save raw block data (header, matrix, lookup) to /tmp/sbo-debug/
+    pub save_raw_block: bool,
+}
+
+impl DebugFlags {
+    fn from_args(args: &[String]) -> Self {
+        Self {
+            save_raw_block: args.iter().any(|s| s == "save-raw-block"),
         }
     }
 }
@@ -99,7 +123,7 @@ impl DaemonState {
         let repos = RepoManager::load(config.daemon.repos_index.clone())?;
 
         let lc = LcManager::new(config.light_client.clone());
-        let rpc = RpcClient::new(config.rpc.clone(), false);
+        let rpc = RpcClient::new(config.rpc.clone(), false, false, false);
         let turbo = TurboDaClient::new(config.turbo_da.clone());
 
         Ok(Self {
@@ -132,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Init => {
             init_config(&config_path, &config)?;
         }
-        Commands::Start { foreground, verbose, prover, light } => {
+        Commands::Start { foreground, verbose, debug, prover, light } => {
             // Auto-create sample config if it doesn't exist
             if !config_path.exists() {
                 std::fs::create_dir_all(Config::sbo_dir())?;
@@ -146,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("Cannot enable both --prover and --light modes simultaneously");
             }
             let verbose_flags = VerboseFlags::from_args(&verbose);
+            let debug_flags = DebugFlags::from_args(&debug);
 
             // Override config with CLI flags
             let mut config = config;
@@ -162,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("Light mode enabled via CLI flag");
             }
 
-            run_daemon(config, verbose_flags).await?;
+            run_daemon(config, verbose_flags, debug_flags).await?;
         }
         Commands::Status => {
             show_status(&config).await?;
@@ -228,7 +253,7 @@ async fn check_dns_on_startup(repos: &RepoManager) {
     }
 }
 
-async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()> {
+async fn run_daemon(config: Config, verbose: VerboseFlags, debug: DebugFlags) -> anyhow::Result<()> {
     tracing::info!("Starting SBO daemon");
 
     // Check for existing daemon
@@ -274,6 +299,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
     // Start sync engine
     let state_for_sync = Arc::clone(&state);
     let verbose_for_sync = verbose.clone();
+    let debug_for_sync = debug.clone();
     let prover_config = config.prover.clone();
     let turbo_config = config.turbo_da.clone();
     let light_mode = config.light.enabled;
@@ -332,7 +358,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags) -> anyhow::Result<()>
             // Process blocks for each repo
             let mut sync = SyncEngine::new(
                 LcManager::new(lc_config),
-                RpcClient::new(rpc_config, verbose_for_sync.rpc),
+                RpcClient::new(rpc_config, verbose_for_sync.rpc, verbose_for_sync.rpc_decode, debug_for_sync.save_raw_block),
                 verbose_for_sync.raw_incoming,
                 light_mode,
             );
@@ -733,8 +759,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 uri.starts_with(&r.uri.to_string()) || uri.starts_with(&r.display_uri)
             });
 
-            let (repo_path, identity_uri) = match repo {
-                Some(r) => (r.path.clone(), format!("{}/sys/names/{}", r.uri.to_string().trim_end_matches('/'), name)),
+            let (repo_uri, identity_uri) = match repo {
+                Some(r) => (r.uri.to_string(), format!("{}/sys/names/{}", r.uri.to_string().trim_end_matches('/'), name)),
                 None => return Response::error(format!("No repo configured for URI: {}. Add with: sbo repo add {} <path>", uri, uri)),
             };
 
@@ -746,7 +772,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
                     if wait && !light_mode {
                         // Poll for verification in full mode
-                        let state_path = repo_path.join("state");
+                        // State is stored in ~/.sbo/repos/<sanitized_uri>/state, not in the mountpoint
+                        let state_path = state_db_path_for_uri(&repo_uri);
                         if let Ok(state_db) = sbo_core::state::StateDb::open(&state_path) {
                             // Poll for up to 30 seconds
                             let start = std::time::Instant::now();
