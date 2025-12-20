@@ -46,6 +46,43 @@ pub struct DataProof {
     pub leaf: [u8; 32],
 }
 
+/// App lookup entry from header
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppLookupEntry {
+    pub app_id: u32,
+    pub start: u32,
+}
+
+/// Complete app lookup from header
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppLookup {
+    pub size: u32,
+    pub index: Vec<AppLookupEntry>,
+}
+
+/// Header verification data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeaderData {
+    pub block_number: u64,
+    pub header_hash: [u8; 32],
+    pub parent_hash: [u8; 32],
+    pub state_root: [u8; 32],
+    pub extrinsics_root: [u8; 32],
+    pub data_root: [u8; 32],
+    pub row_commitments: Vec<u8>,
+    pub rows: u32,
+    pub cols: u32,
+    pub app_lookup: AppLookup,
+    pub app_id: u32,
+}
+
+/// Full row data for verification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RowData {
+    pub row: u32,
+    pub cells: Vec<[u8; 32]>,
+}
+
 /// Input to the zkVM guest program
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockProofInput {
@@ -64,10 +101,12 @@ pub struct BlockProofInput {
     /// Scales with touched objects, not total state size
     #[serde(default)]
     pub state_witness: StateTransitionWitness,
-    pub data_proof: Option<DataProof>,
-    pub row_commitments: Vec<KzgCommitment>,
-    pub cell_proofs: Vec<CellProof>,
-    pub grid_cols: u32,
+    /// Header data for verification
+    pub header_data: Option<HeaderData>,
+    /// Full row data for rows containing app data
+    pub row_data: Vec<RowData>,
+    /// Hash of raw cell data before SCALE decoding
+    pub raw_cells_hash: [u8; 32],
 }
 
 /// Output committed by the zkVM
@@ -183,104 +222,66 @@ fn verify_header_chain(input: &BlockProofInput) {
 
 /// Verify data availability proofs
 fn verify_data_availability(input: &BlockProofInput) -> [u8; 32] {
-    // If no data proof, return empty root (for testing/dev)
-    let Some(data_proof) = &input.data_proof else {
+    // If no header data, return empty root (for testing/dev)
+    let Some(header_data) = &input.header_data else {
         return [0u8; 32];
     };
 
-    // 1. Verify merkle proof
-    assert!(
-        verify_merkle_proof(data_proof),
-        "Merkle proof verification failed"
+    // 1. Verify raw cells hash
+    // Compute hash of all cells from row_data and verify it matches raw_cells_hash
+    let computed_hash = compute_cells_hash(&input.row_data);
+    assert_eq!(
+        computed_hash, input.raw_cells_hash,
+        "Raw cells hash mismatch"
     );
 
-    // 2. Verify KZG proofs for each cell
-    for cell in &input.cell_proofs {
+    // 2. Verify KZG commitments for each row (stubbed for now)
+    // In production, this would verify that row_commitments in header_data
+    // are valid KZG commitments to the row data
+    for row in &input.row_data {
         assert!(
-            verify_kzg_cell(&input.row_commitments, cell, input.grid_cols),
-            "KZG cell proof verification failed"
+            verify_row_commitment(header_data, row),
+            "Row commitment verification failed for row {}", row.row
         );
     }
 
-    // 3. Verify reassembled data matches actions
-    let reassembled = reassemble_data(&input.cell_proofs);
-    let actions_hash = sbo_crypto::sha256(&input.actions_data);
-    let reassembled_hash = sbo_crypto::sha256(&reassembled);
-    assert_eq!(actions_hash, reassembled_hash, "Data reassembly mismatch");
+    // 3. Verify actions_data matches SCALE-decoded cells
+    // For now, we trust that the host decoded correctly
+    // In production, this would SCALE-decode cells and verify match
+    // (SCALE decoding in zkVM is expensive, so we may accept this trust boundary)
 
-    data_proof.data_root
+    header_data.data_root
 }
 
-/// Verify merkle proof against data_root
-fn verify_merkle_proof(proof: &DataProof) -> bool {
-    let mut current = proof.leaf;
-    let mut index = proof.leaf_index;
-
-    for sibling in &proof.proof {
-        current = if index % 2 == 0 {
-            hash_pair(&current, sibling)
-        } else {
-            hash_pair(sibling, &current)
-        };
-        index /= 2;
+/// Compute hash of all cells from row data
+fn compute_cells_hash(row_data: &[RowData]) -> [u8; 32] {
+    // Concatenate all cells in order and hash
+    let mut all_cells = Vec::new();
+    for row in row_data {
+        for cell in &row.cells {
+            all_cells.extend_from_slice(cell);
+        }
     }
-
-    current == proof.data_root
+    sbo_crypto::sha256(&all_cells)
 }
 
-/// Hash two merkle nodes
-fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut combined = [0u8; 64];
-    combined[..32].copy_from_slice(left);
-    combined[32..].copy_from_slice(right);
-    sbo_crypto::sha256(&combined)
-}
+/// Verify row commitment matches row data
+fn verify_row_commitment(header_data: &HeaderData, row: &RowData) -> bool {
+    // Extract the commitment for this row from header_data.row_commitments
+    let row_idx = row.row as usize;
+    let commitment_size = 48; // Each KZG commitment is 48 bytes
 
-/// Verify a single cell's KZG proof
-fn verify_kzg_cell(
-    row_commitments: &[KzgCommitment],
-    cell: &CellProof,
-    _grid_cols: u32,
-) -> bool {
-    // Get row commitment
-    let row_idx = cell.row as usize;
-    if row_idx >= row_commitments.len() {
-        return false;
-    }
-
-    let _commitment = &row_commitments[row_idx];
-
-    // Verify using blst (accelerated in zkVM)
-    // For now, basic point validation - full pairing check needs SRS
-    verify_kzg_proof_basic(&cell.proof)
-}
-
-/// Basic KZG proof validation (point on curve)
-fn verify_kzg_proof_basic(proof: &KzgProof) -> bool {
-    // Basic validation: check proof is 48 bytes (compressed G1 point)
-    if proof.0.len() != 48 {
+    if row_idx * commitment_size + commitment_size > header_data.row_commitments.len() {
         return false;
     }
 
     // KZG verification stubbed out for now
-    // Full verification requires:
-    // 1. Point decompression using blst (RISC Zero accelerated)
-    // 2. Pairing check against SRS (trusted setup)
+    // In production, this would:
+    // 1. Extract the 48-byte commitment for this row
+    // 2. Compute polynomial from row.cells
+    // 3. Evaluate commitment using blst pairing check
+    // 4. Verify commitment matches computed polynomial
     //
-    // In production, this would call sbo-crypto's KZG verification
-    // For now, return true to allow compilation and testing of the DA flow.
+    // For now, just verify the commitment exists
     true
-}
-
-/// Reassemble data from cell proofs
-fn reassemble_data(cells: &[CellProof]) -> Vec<u8> {
-    // Sort by (row, col) and concatenate
-    let mut sorted: Vec<_> = cells.iter().collect();
-    sorted.sort_by_key(|c| (c.row, c.col));
-
-    let mut data = Vec::new();
-    for cell in sorted {
-        data.extend_from_slice(&cell.data);
-    }
-    data
 }

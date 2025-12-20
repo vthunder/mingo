@@ -12,6 +12,7 @@ pub mod verifier;
 pub use types::{
     BlockProofInput, BlockProofOutput,
     DataProof, CellProof, KzgCommitment, KzgProof,
+    AppLookupEntry, AppLookup, HeaderData, RowData,
     ReceiptKind,
 };
 

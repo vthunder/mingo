@@ -1,6 +1,6 @@
 //! Proof generation for SBO blocks
 
-use crate::types::{BlockProofInput, BlockProofOutput, DataProof, CellProof, KzgCommitment, StateTransitionWitness};
+use crate::types::{BlockProofInput, BlockProofOutput, StateTransitionWitness};
 use sbo_zkvm_methods::SBO_ZKVM_GUEST_ELF;
 use thiserror::Error;
 
@@ -93,10 +93,9 @@ pub fn prove_genesis(
         prev_receipt_bytes: None,
         is_first_proof: false, // Block 0 is true genesis, not bootstrap
         state_witness: StateTransitionWitness::default(),
-        data_proof: None,
-        row_commitments: Vec::new(),
-        cell_proofs: Vec::new(),
-        grid_cols: 256,
+        header_data: None,
+        row_data: Vec::new(),
+        raw_cells_hash: [0u8; 32],
     };
 
     prove_block(input, None)
@@ -107,10 +106,9 @@ pub fn prove_genesis(
 pub fn prove_genesis_with_da(
     block_hash: [u8; 32],
     genesis_actions: Vec<u8>,
-    data_proof: DataProof,
-    row_commitments: Vec<KzgCommitment>,
-    cell_proofs: Vec<CellProof>,
-    grid_cols: u32,
+    header_data: crate::types::HeaderData,
+    row_data: Vec<crate::types::RowData>,
+    raw_cells_hash: [u8; 32],
 ) -> Result<ProofReceipt, ProverError> {
     let input = BlockProofInput {
         prev_state_root: [0u8; 32],
@@ -122,10 +120,9 @@ pub fn prove_genesis_with_da(
         prev_receipt_bytes: None,
         is_first_proof: false, // Block 0 is true genesis, not bootstrap
         state_witness: StateTransitionWitness::default(),
-        data_proof: Some(data_proof),
-        row_commitments,
-        cell_proofs,
-        grid_cols,
+        header_data: Some(header_data),
+        row_data,
+        raw_cells_hash,
     };
 
     prove_block(input, None)
@@ -160,10 +157,9 @@ pub fn prove_continuation(
         prev_receipt_bytes: Some(prev_receipt_bytes.to_vec()),
         is_first_proof: false, // Has prev_journal, not bootstrap
         state_witness: StateTransitionWitness::default(),
-        data_proof: None,
-        row_commitments: Vec::new(),
-        cell_proofs: Vec::new(),
-        grid_cols: 256,
+        header_data: None,
+        row_data: Vec::new(),
+        raw_cells_hash: [0u8; 32],
     };
 
     prove_block(input, Some(prev_receipt_bytes))
@@ -177,10 +173,9 @@ pub fn prove_continuation_with_da(
     block_hash: [u8; 32],
     parent_hash: [u8; 32],
     actions_data: Vec<u8>,
-    data_proof: DataProof,
-    row_commitments: Vec<KzgCommitment>,
-    cell_proofs: Vec<CellProof>,
-    grid_cols: u32,
+    header_data: crate::types::HeaderData,
+    row_data: Vec<crate::types::RowData>,
+    raw_cells_hash: [u8; 32],
 ) -> Result<ProofReceipt, ProverError> {
     use risc0_zkvm::Receipt;
 
@@ -202,10 +197,9 @@ pub fn prove_continuation_with_da(
         prev_receipt_bytes: Some(prev_receipt_bytes.to_vec()),
         is_first_proof: false, // Has prev_journal, not bootstrap
         state_witness: StateTransitionWitness::default(),
-        data_proof: Some(data_proof),
-        row_commitments,
-        cell_proofs,
-        grid_cols,
+        header_data: Some(header_data),
+        row_data,
+        raw_cells_hash,
     };
 
     prove_block(input, Some(prev_receipt_bytes))

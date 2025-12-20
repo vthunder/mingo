@@ -288,10 +288,9 @@ impl Prover {
             prev_receipt_bytes: None,
             is_first_proof,  // Bootstrap mode for first proof
             state_witness: state_witness.clone(),
-            data_proof: None,
-            row_commitments: Vec::new(),
-            cell_proofs: Vec::new(),
-            grid_cols: 256,
+            header_data: None,
+            row_data: Vec::new(),
+            raw_cells_hash: [0u8; 32],
         };
 
         // Generate proof
