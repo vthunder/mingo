@@ -177,40 +177,15 @@ pub fn ifft(evaluations: &[blst_fr]) -> Vec<blst_fr> {
     coeffs
 }
 
-/// Compute KZG commitment: C = sum(a_i * G1^(tau^i))
+/// Compute KZG commitment using SRS: C = sum(a_i * SRS[i])
 ///
 /// For row verification, we compute this from the polynomial coefficients
 /// and compare against the row commitment from the header.
 ///
-/// NOTE: This requires the SRS (Structured Reference String) from Avail's trusted setup.
-/// For now, returns a placeholder. Real implementation needs the actual SRS.
+/// This uses the SRS (Structured Reference String) from Avail's trusted setup
+/// via the srs module's multi-scalar multiplication function.
 pub fn compute_commitment(coefficients: &[blst_fr]) -> [u8; 48] {
-    // TODO: Implement actual MSM with Avail's SRS
-    // The SRS is: [G1, tau*G1, tau^2*G1, ..., tau^(n-1)*G1]
-    // where tau is the secret from trusted setup
-    //
-    // For each coefficient a_i, compute: a_i * (tau^i * G1)
-    // Sum all these points to get the commitment
-    //
-    // For now, return a placeholder that will fail verification
-    // This forces us to implement the real thing before shipping
-
-    let mut commitment = [0u8; 48];
-
-    // Hash the coefficients as a temporary placeholder
-    // This is NOT cryptographically valid - just for testing the flow
-    use sha2::{Sha256, Digest};
-    let mut hasher = Sha256::new();
-    for coeff in coefficients {
-        // Convert each u64 limb to bytes
-        for limb in coeff.l.iter() {
-            hasher.update(&limb.to_le_bytes());
-        }
-    }
-    let hash = hasher.finalize();
-    commitment[..32].copy_from_slice(&hash);
-
-    commitment
+    crate::srs::msm(coefficients)
 }
 
 /// Verify a row's data against its commitment from the header
