@@ -215,6 +215,7 @@ pub struct PartialTrie {
 #[derive(Debug, Clone)]
 enum PartialNode {
     /// A node with all children known
+    #[allow(dead_code)]
     Complete {
         children: BTreeMap<String, PartialNode>,
     },

@@ -5,6 +5,7 @@ use crate::state::StateDb;
 
 /// Block indexer that processes DA layer blocks
 pub struct Indexer {
+    #[allow(dead_code)]
     state: StateDb,
 }
 

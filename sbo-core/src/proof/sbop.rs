@@ -108,7 +108,7 @@ pub fn parse_sbop(bytes: &[u8]) -> Result<SbopMessage, SbopError> {
     // Payload is base64-encoded receipt
     // Calculate expected base64 length from Receipt-Length
     let expected_base64_len = ((receipt_length + 2) / 3) * 4;
-    let expected_total_len = pos + expected_base64_len;
+    let _expected_total_len = pos + expected_base64_len;
 
     let payload = &bytes[pos..];
 

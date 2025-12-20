@@ -399,6 +399,7 @@ fn parse_hex_32(s: &str) -> Result<[u8; 32], SboqError> {
 }
 
 /// Create an SboqMessage from a TrieProof
+#[allow(dead_code)]
 pub fn sboq_from_trie_proof(
     path: &str,
     id: &str,

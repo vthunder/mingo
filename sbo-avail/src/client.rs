@@ -84,6 +84,7 @@ struct SubmitResponse {
 /// Response from /v2/blocks/{n}/data
 #[derive(Debug, Deserialize)]
 struct BlockDataResponse {
+    #[allow(dead_code)]
     block_number: u64,
     data_transactions: Vec<DataTransaction>,
 }
@@ -91,6 +92,7 @@ struct BlockDataResponse {
 #[derive(Debug, Deserialize)]
 struct DataTransaction {
     data: String, // base64 encoded
+    #[allow(dead_code)]
     extrinsic: Option<String>,
 }
 

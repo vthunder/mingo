@@ -3,7 +3,7 @@
 //! Manages the standalone Avail light client process.
 
 use crate::config::LightClientConfig;
-use std::process::{Child, Command};
+use std::process::Child;
 use tokio::sync::watch;
 
 /// Light client status from /v2/status

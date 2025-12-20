@@ -108,6 +108,7 @@ struct DaemonState {
     config: Config,
     repos: RepoManager,
     lc: LcManager,
+    #[allow(dead_code)]
     rpc: RpcClient,
     turbo: TurboDaClient,
     /// Pending sign requests from apps (keyed by request_id)
@@ -653,7 +654,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             }))
         }
 
-        Request::Submit { repo_path, sbo_path, id, data } => {
+        Request::Submit { repo_path, sbo_path: _, id: _, data } => {
             let state = state.read().await;
 
             // Find the repo

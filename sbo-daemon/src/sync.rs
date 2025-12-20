@@ -159,6 +159,7 @@ fn verify_proof(
     // Note: get_state_root_at_block(N) returns state AFTER block N was processed
     // So for prev_state_root (state BEFORE block_from), we need block_from - 1
     // For genesis (block_from == 0 or first proof), prev_state_root should be [0; 32]
+    #[allow(unused_variables)] // Used in zkvm feature
     let pre_root = if sbop.block_from == 0 {
         Some([0u8; 32]) // Genesis starts with empty state
     } else {

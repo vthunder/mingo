@@ -86,6 +86,7 @@ pub struct Prover {
     /// Block number when state first changed (for batch_size countdown)
     state_change_block: Option<u64>,
     /// Whether we've generated a proof yet (for bootstrap mode)
+    #[allow(dead_code)]
     first_proof_generated: bool,
 }
 
@@ -216,6 +217,7 @@ impl Prover {
             merged_witnesses.extend(block.state_witness.witnesses.clone());
             merged_sibling_hints.extend(block.state_witness.sibling_hints.clone());
         }
+        #[allow(unused_variables)] // Used in zkvm feature
         let state_witness = StateTransitionWitness {
             prev_state_root: pre_state_root,
             witnesses: merged_witnesses,
