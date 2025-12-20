@@ -351,7 +351,7 @@ brew install cmake  # macOS
 apt install cmake   # Linux
 
 # Build with zkVM
-cargo build --release
+cargo build --release --features zkvm
 ```
 
 ### Prover Configuration
