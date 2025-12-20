@@ -2,9 +2,9 @@
 
 ## What is SBO?
 
-SBO (Sovereign Blockchain Objects) is a protocol for storing and retrieving data on blockchain data availability (DA) layers. Data is organized into repositories with filesystem-like paths, signed by identities, and anchored to DA layers like Avail. The result is sovereign, portable data that can be synced, verified, and proven without trusting any centralized server.
+SBO (Sovereign Blockchain Objects) is a protocol for storing and retrieving data on blockchain data availability (DA) layers. Data is organized into repositories with filesystem-like paths, signed by identities, and anchored to the Avail DA layer. The result is sovereign, portable data that can be synced, verified, and proven without trusting any centralized server.
 
-This reference implementation provides everything needed to run SBO nodes, create identities, authenticate users, and generate cryptographic proofs.
+This reference implementation uses [Avail](https://www.availproject.org/) as its DA layer and provides everything needed to run SBO nodes, create identities, authenticate users, and generate cryptographic proofs.
 
 ## What You Can Do
 
@@ -297,13 +297,11 @@ See [ZK Validity Proofs](#zk-validity-proofs) for setup details.
                     │     / Prover      │
                     └─────────┬─────────┘
                               │
-              ┌───────────────┼───────────────┐
-              │               │               │
-              ▼               ▼               ▼
-        ┌──────────┐   ┌──────────┐   ┌──────────┐
-        │  Avail   │   │ Celestia │   │  Other   │
-        │   DA     │   │   DA     │   │   DA     │
-        └──────────┘   └──────────┘   └──────────┘
+                              ▼
+                        ┌──────────┐
+                        │  Avail   │
+                        │   DA     │
+                        └──────────┘
 ```
 
 **Data flow:**
@@ -319,6 +317,27 @@ See [ZK Validity Proofs](#zk-validity-proofs) for setup details.
 ## ZK Validity Proofs
 
 ZK proofs enable trustless verification of state transitions without re-executing all transactions.
+
+### What the Proofs Verify
+
+The zkVM guest program generates proofs that verify three key properties:
+
+**1. Header Chain Correctness**
+- Each block's parent hash matches the previous block's hash
+- Block numbers are sequential
+- Headers are valid per Avail consensus rules
+
+**2. State Transitions**
+- All SBO messages in each block are correctly validated (signatures, ownership, policies)
+- The state trie is updated correctly for each create/update/delete operation
+- The final state root matches the computed result
+
+**3. Data Availability (via Avail's KZG commitments)**
+- **Row commitments** - Each row of app data matches the KZG commitment in the block header
+- **App completeness** - All chunks for the app ID are present (no missing data)
+- **Data binding** - The proven state transition is bound to the verified DA data
+
+This means light clients can trust that the proven state came from data that was actually available on-chain, computed correctly according to SBO rules, without downloading and re-executing the full data themselves.
 
 ### Building with zkVM Support
 
