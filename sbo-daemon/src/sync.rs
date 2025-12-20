@@ -368,6 +368,7 @@ pub struct SyncEngine {
     lc: LcManager,
     rpc: RpcClient,
     verbose_raw: bool,
+    verbose_rpc_decode: bool,
     /// Light mode: only process SBOP proofs, skip state transitions
     light_mode: bool,
     /// StateDb instances per repo URI
@@ -375,8 +376,8 @@ pub struct SyncEngine {
 }
 
 impl SyncEngine {
-    pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool, light_mode: bool) -> Self {
-        Self { lc, rpc, verbose_raw, light_mode, state_dbs: HashMap::new() }
+    pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool, verbose_rpc_decode: bool, light_mode: bool) -> Self {
+        Self { lc, rpc, verbose_raw, verbose_rpc_decode, light_mode, state_dbs: HashMap::new() }
     }
 
     /// Get or open StateDb for a repo by URI
@@ -506,26 +507,30 @@ impl SyncEngine {
                 // Find repos that match this app_id
                 let matching_repos = repos.get_by_app_id(tx.app_id);
 
-                // Log submission discovery
-                tracing::info!(
-                    "[{}/{}] Received {} bytes for app {}",
-                    block_number,
-                    tx.index,
-                    tx.data.len(),
-                    tx.app_id
-                );
+                // Log submission discovery (verbose only)
+                if self.verbose_rpc_decode {
+                    tracing::info!(
+                        "[{}/{}] Received {} bytes for app {}",
+                        block_number,
+                        tx.index,
+                        tx.data.len(),
+                        tx.app_id
+                    );
+                }
 
                 // Check if this is an SBOP (proof) message
                 if sbo_core::proof::is_sbop_message(&tx.data) {
-                    // Debug: show first and last bytes to diagnose parse failures
-                    let first_bytes: Vec<u8> = tx.data.iter().take(50).copied().collect();
-                    let last_bytes: Vec<u8> = tx.data.iter().rev().take(50).rev().copied().collect();
-                    tracing::info!(
-                        "[{}/{}] SBOP data: len={}, first 50: {:?}, last 50: {:02x?}",
-                        block_number, tx.index, tx.data.len(),
-                        String::from_utf8_lossy(&first_bytes),
-                        last_bytes
-                    );
+                    // Debug: show first and last bytes to diagnose parse failures (verbose only)
+                    if self.verbose_rpc_decode {
+                        let first_bytes: Vec<u8> = tx.data.iter().take(50).copied().collect();
+                        let last_bytes: Vec<u8> = tx.data.iter().rev().take(50).rev().copied().collect();
+                        tracing::info!(
+                            "[{}/{}] SBOP data: len={}, first 50: {:?}, last 50: {:02x?}",
+                            block_number, tx.index, tx.data.len(),
+                            String::from_utf8_lossy(&first_bytes),
+                            last_bytes
+                        );
+                    }
                     match sbo_core::proof::parse_sbop(&tx.data) {
                         Ok(sbop) => {
                             tracing::info!(

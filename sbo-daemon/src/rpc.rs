@@ -328,14 +328,16 @@ impl RpcClient {
             }
         }
 
-        // Log fetched rows info
-        tracing::info!(
-            "Block {}: fetched {} rows (needed {:?}), cols={}",
-            block_number,
-            all_rows.len(),
-            rows_needed,
-            cols
-        );
+        // Log fetched rows info (verbose only)
+        if self.verbose_decode {
+            tracing::info!(
+                "Block {}: fetched {} rows (needed {:?}), cols={}",
+                block_number,
+                all_rows.len(),
+                rows_needed,
+                cols
+            );
+        }
         for (row_idx, row) in &all_rows {
             tracing::debug!("  row {}: {} cells", row_idx, row.len());
         }
@@ -345,13 +347,15 @@ impl RpcClient {
         let mut tx_index = 0u32;
 
         for (app_id, start_cell, end_cell) in app_ranges {
-            // Log chunk range for debugging
+            // Log chunk range for debugging (verbose only)
             let expected_cells = end_cell.saturating_sub(start_cell);
             let expected_bytes = expected_cells as usize * DATA_CHUNK_SIZE;
-            tracing::info!(
-                "Block {} app_id={}: chunks {}..{} ({} cells, ~{} bytes expected)",
-                block_number, app_id, start_cell, end_cell, expected_cells, expected_bytes
-            );
+            if self.verbose_decode {
+                tracing::info!(
+                    "Block {} app_id={}: chunks {}..{} ({} cells, ~{} bytes expected)",
+                    block_number, app_id, start_cell, end_cell, expected_cells, expected_bytes
+                );
+            }
 
             let mut data = decode_app_data_from_rows(
                 &all_rows,
@@ -361,20 +365,24 @@ impl RpcClient {
                 self.verbose_decode,
             );
 
-            tracing::info!(
-                "Block {} app_id={}: raw data after cell decode = {} bytes",
-                block_number, app_id, data.len()
-            );
+            if self.verbose_decode {
+                tracing::info!(
+                    "Block {} app_id={}: raw data after cell decode = {} bytes",
+                    block_number, app_id, data.len()
+                );
+            }
 
             // Try gzip decompression
             if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
                 let mut decoder = GzDecoder::new(data.as_slice());
                 let mut decompressed = Vec::new();
                 if decoder.read_to_end(&mut decompressed).is_ok() {
-                    tracing::info!(
-                        "Block {} app_id={}: decompressed {} -> {} bytes",
-                        block_number, app_id, data.len(), decompressed.len()
-                    );
+                    if self.verbose_decode {
+                        tracing::info!(
+                            "Block {} app_id={}: decompressed {} -> {} bytes",
+                            block_number, app_id, data.len(), decompressed.len()
+                        );
+                    }
                     data = decompressed;
                 }
             }
@@ -649,11 +657,16 @@ fn decode_app_data_from_rows(
         }
     }
 
-    // Always log cell processing stats for debugging
-    if cells_missing > 0 || verbose {
-        tracing::info!(
+    // Log cell processing stats (verbose only, or warn if missing cells)
+    if cells_missing > 0 {
+        tracing::warn!(
             "decode: processed={} cells, missing={}, raw_len={} bytes",
             cells_processed, cells_missing, data.len()
+        );
+    } else if verbose {
+        tracing::info!(
+            "decode: processed={} cells, raw_len={} bytes",
+            cells_processed, data.len()
         );
     }
 

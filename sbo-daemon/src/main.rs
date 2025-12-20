@@ -360,6 +360,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags, debug: DebugFlags) ->
                 LcManager::new(lc_config),
                 RpcClient::new(rpc_config, verbose_for_sync.rpc, verbose_for_sync.rpc_decode, debug_for_sync.save_raw_block),
                 verbose_for_sync.raw_incoming,
+                verbose_for_sync.rpc_decode,
                 light_mode,
             );
 
