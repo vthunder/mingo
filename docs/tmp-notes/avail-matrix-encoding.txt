@@ -1,0 +1,73 @@
+  Data Encoding (submission → matrix)
+
+  1. Original data is IEC 9797-1 padded (data + 0x80 + zeros)
+  2. Split into 31-byte chunks (DATA_CHUNK_SIZE=31)
+  3. Each chunk is extended to 32 bytes by appending a zero byte
+  4. These 32-byte chunks become BLS12-381 scalars in the matrix
+
+  Data Decoding (matrix → data)
+
+  1. Read 32-byte scalars from matrix in big-endian format
+  2. Extract first 31 bytes (0..31) from each scalar - the last byte is padding
+  3. Concatenate all 31-byte chunks in order
+  4. Remove IEC 9797-1 padding (find 0x80 marker, strip)
+
+  What this means for our code
+
+  Currently my code was reading full 32-byte scalars. I need to:
+  1. Use big-endian (confirmed by request_kate_rows)
+  2. Take only bytes [0..31] from each 32-byte scalar
+  3. Find and strip IEC 9797-1 padding at the end
+
+====
+
+  Key Findings from Avail Source Code
+
+  1. Byte format: Scalars are 32 bytes big-endian
+  2. Data extraction: Only first 31 bytes (DATA_CHUNK_SIZE) contain data, last byte is padding
+  3. Padding: IEC 9797-1 (data + 0x80 + zeros) is applied to the concatenated data
+
+  Changes Made
+
+  - decode_app_data_from_rows(): Now uses verified logic matching avail-light client
+    - Big-endian scalars
+    - Takes first 31 bytes from each 32-byte cell
+    - Applies IEC 9797-1 unpadding
+    - Better debug output (ASCII preview, first cell dumps)
+  - Removed unused wrapper stripping code (the data matrix contains raw submitted data)
+  - Debug files saved to /tmp/sbo-debug/ when processing blocks with tracked app_id
+
+  To Test
+
+  ./target/release/sbo-daemon start --verbose
+
+  Wait for a block with app 506 data, or force a resync to a known block. The debug output will show:
+  - First 64 bytes as hex
+  - ASCII preview to see if "SBO-" is visible
+  - Per-cell debug for first 3 cells
+
+  Sources:
+  - https://github.com/availproject/avail-light/blob/main/core/src/network/rpc/client.rs
+  - https://raw.githubusercontent.com/availproject/avail-core/main/core/src/constants.rs
+  - https://raw.githubusercontent.com/availproject/avail-core/main/kate/src/com.rs
+
+====
+
+The matrix contains full extrinsics with SCALE encoded data, so to
+extract the app data the extrinsic needs to be unwrapped.
+
+Actually it is a vector of extrinsics, not just an individual
+extrinsic (since there can be multiple data submissions for an appid
+in a given block:
+
+(...) This is a SCALE-encoded Vec<Extrinsic>:
+
+  04              = Vec length 1 (1 extrinsic)
+  71 17           = extrinsic length = 1500 bytes
+  [1500 bytes of signed extrinsic]:
+    - signature (64 bytes)
+    - public key (32 bytes)
+    - era/nonce/tip
+    - call: [pallet_idx, call_idx, app_id=506, data_len=1386, data...]
+
+  So the data matrix contains the full extrinsic structure, not just raw submitted data. We need to decode the SCALE Vec<Vec<u8>> to get the actual payloads.

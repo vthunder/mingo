@@ -1,0 +1,43 @@
+⏺ Summary: JWT Identity Implementation Complete
+
+  I've completed the JWT-based identity implementation for SBO. Here's what was done:
+
+  Completed Changes
+
+  1. JWT Module (sbo-core/src/jwt.rs)
+  - Manual RFC 7519/8037 compliant JWT implementation (no external JWT library)
+  - EdDSA algorithm for ed25519 signatures (extensible to BLS)
+  - Identity JWT: iss: "self" or iss: "domain:X", sub, public_key, profile, iat
+  - Domain JWT: iss: "self", sub, public_key, iat
+
+  2. Schema Validation (sbo-core/src/schema/mod.rs)
+  - identity.v1 - JWT identity validation with key matching and signature verification
+  - domain.v1 - JWT domain validation (always self-signed)
+  - profile.v1 - JSON profile object validation
+  - Removed identity.claim legacy support (per your request)
+
+  3. Genesis Presets (sbo-core/src/presets.rs)
+  - genesis() - Mode A genesis (self-signed sys identity)
+  - genesis_with_domain() - Mode B genesis (domain-certified sys)
+  - claim_name() - JWT identity claim
+  - claim_name_with_profile() - JWT identity with profile link
+
+  4. CLI Identity Commands (sbo-cli/src/commands/identity.rs)
+  - create() - Uses JWT format, creates profile link if profile fields provided
+  - update() - Updates profile object (profile.v1 schema)
+  - Profile data (display_name, bio, etc.) stored in separate profile.v1 objects
+
+  Test Results
+
+  All 55 tests pass across sbo-core:
+  - 10 JWT tests
+  - 14 schema tests
+  - 12 other unit tests
+  - 8 wire parser tests
+  - Integration tests
+
+  Future Work (Not Critical for MVP)
+
+  - Explicit domain CLI commands (sbo domain create/show/list)
+  - Daemon IPC updates for domain management
+  - Automatic profile object creation during sbo id create
