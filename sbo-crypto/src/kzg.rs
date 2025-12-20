@@ -1,8 +1,10 @@
 //! KZG polynomial commitment verification for Avail data availability
 //!
-//! Uses BLS12-381 curve (accelerated in RISC Zero zkVM)
+//! Uses BLS12-381 curve via the `blst` library.
+//!
+//! Note: This module requires both `kzg` and `std` features because `blst` requires std.
 
-#![cfg(feature = "kzg")]
+#![cfg(all(feature = "kzg", feature = "std"))]
 
 extern crate alloc;
 

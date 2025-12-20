@@ -19,17 +19,40 @@ pub mod ed25519;
 #[cfg(feature = "bls")]
 pub mod bls;
 
-#[cfg(feature = "kzg")]
+// kzg, poly, srs_data, and srs modules require std because blst needs std
+#[cfg(all(feature = "kzg", feature = "std"))]
 pub mod kzg;
 
-#[cfg(feature = "kzg")]
+#[cfg(all(feature = "kzg", feature = "std"))]
 pub mod poly;
 
-#[cfg(feature = "kzg")]
+#[cfg(all(feature = "kzg", feature = "std"))]
+mod srs_data;
+
+#[cfg(all(feature = "kzg", feature = "std"))]
 pub mod srs;
 
-#[cfg(feature = "kzg")]
+// zkVM version of poly module - uses bls12_381 crate (accelerated in RISC Zero)
+// This provides real KZG verification inside the zkVM guest
+#[cfg(all(feature = "kzg", feature = "zkvm", not(feature = "std")))]
+#[path = "poly_zkvm.rs"]
+pub mod poly;
+
+// Fallback stub for kzg without zkvm or std (shouldn't normally happen)
+#[cfg(all(feature = "kzg", not(feature = "zkvm"), not(feature = "std")))]
+pub mod poly {
+    //! Stub poly module (no verification available)
+    pub fn verify_row(_cells: &[[u8; 32]], _expected_commitment: &[u8; 48]) -> bool {
+        // No verification available without std or zkvm
+        panic!("KZG verification requires either std (blst) or zkvm (bls12_381) feature");
+    }
+}
+
+#[cfg(all(feature = "kzg", feature = "std"))]
 pub use kzg::{KzgCommitment, KzgProof, CellProof, KzgError};
+
+#[cfg(all(feature = "kzg", feature = "std"))]
+pub use srs::{SRS_POINT_COUNT, G1_COMPRESSED_SIZE};
 
 pub mod trie;
 pub use trie::{

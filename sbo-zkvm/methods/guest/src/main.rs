@@ -85,28 +85,22 @@ pub struct RowData {
 }
 
 /// Input to the zkVM guest program
+/// IMPORTANT: Field order MUST match sbo_zkvm/src/types.rs exactly for postcard serialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockProofInput {
     pub prev_state_root: [u8; 32],
     pub block_number: u64,
     pub block_hash: [u8; 32],
     pub parent_hash: [u8; 32],
-    pub actions_data: Vec<u8>,
     pub prev_journal: Option<Vec<u8>>,
     pub prev_receipt_bytes: Option<Vec<u8>>,
-    /// Bootstrap mode: first proof in chain (no previous proof required)
-    /// When true, prev_journal is not required even if block_number != 0
     #[serde(default)]
     pub is_first_proof: bool,
-    /// Witness for state transition (creates, updates, deletes with proofs)
-    /// Scales with touched objects, not total state size
     #[serde(default)]
     pub state_witness: StateTransitionWitness,
-    /// Header data for verification
     pub header_data: Option<HeaderData>,
-    /// Full row data for rows containing app data
     pub row_data: Vec<RowData>,
-    /// Hash of raw cell data before SCALE decoding
+    pub actions_data: Vec<u8>,
     pub raw_cells_hash: [u8; 32],
 }
 

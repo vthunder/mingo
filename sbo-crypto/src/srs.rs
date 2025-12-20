@@ -7,10 +7,15 @@
 //! Source: https://github.com/availproject/avail-srs
 //! SRS files: https://srs.availproject.org
 
-#![cfg(feature = "kzg")]
+//! Note: This module requires both `kzg` and `std` features because
+//! `blst` requires std. For zkVM, use the stub implementation in poly.rs.
+
+#![cfg(all(feature = "kzg", feature = "std"))]
 
 extern crate alloc;
 use blst::{blst_p1_affine, blst_p1, blst_fr};
+
+pub use crate::srs_data::{SRS_POINT_COUNT, G1_COMPRESSED_SIZE};
 
 /// Maximum domain size supported
 /// Avail uses 256 columns in their data matrix, and the SRS supports up to 1024 points
@@ -21,51 +26,19 @@ pub const MAX_DOMAIN_SIZE: usize = 256;
 /// They extracted 1024 points (2^10) from Filecoin's challenge_19
 pub const SRS_TOTAL_POINTS: usize = 1024;
 
-/// Embedded SRS points (G1 affine, compressed 48 bytes each)
-///
-/// TODO: Replace with actual Avail SRS from trusted setup
-/// The actual SRS is available at https://srs.availproject.org
-/// - File: pp_1024.data (serialized reference strings)
-/// - File: g1_g2_1024.txt (G1 and G2 points in text format)
-/// - File: extracted.data (compressed parameters, 15.7 MB)
-///
-/// For now, use placeholder generator points (INVALID for production)
-/// Each entry is 48 bytes (compressed G1 affine point)
-/// Total size would be: 48 * MAX_DOMAIN_SIZE = 12,288 bytes
-pub static SRS_G1_POINTS: &[u8] = &[
-    // Placeholder: This must be replaced with actual SRS
-    // Format: concatenated 48-byte compressed BLS12-381 G1 points
-    // Index i contains tau^i * G1 where tau is the secret from trusted setup
-    //
-    // To embed real SRS:
-    // 1. Download from https://srs.availproject.org/pp_1024.data
-    // 2. Extract first 256 G1 points (48 bytes each = 12,288 bytes total)
-    // 3. Replace this array with the actual bytes
-    //
-    // Until then, this is intentionally empty to force proper implementation
-];
-
 /// Load SRS point at index i
 ///
 /// Returns the G1 point corresponding to tau^i * G1 from the trusted setup.
-/// Returns None if index is out of bounds or SRS is not loaded.
+/// Returns None if index is out of bounds or SRS point decompression fails.
+///
+/// The SRS is loaded from the embedded g1_g2_1024.txt file from Avail's repository.
+/// This file contains 1024 G1 points from Filecoin's Powers of Tau ceremony.
+///
+/// # Performance
+/// - With `std` feature: First call parses all 256 points, subsequent calls use cached data
+/// - Without `std`: Parses on every call (slower but works in zkVM)
 pub fn get_srs_point(index: usize) -> Option<blst_p1_affine> {
-    if index >= MAX_DOMAIN_SIZE {
-        return None;
-    }
-
-    // TODO: Decompress from SRS_G1_POINTS once actual SRS is embedded
-    // The actual implementation would:
-    // 1. Slice SRS_G1_POINTS[index*48..(index+1)*48]
-    // 2. Call blst_p1_uncompress() to decompress to affine point
-    // 3. Validate the point is on curve and in correct subgroup
-
-    // For now, return generator (placeholder - DO NOT USE IN PRODUCTION)
-    // This is intentionally wrong to ensure it fails verification
-    unsafe {
-        let generator_ptr = blst::blst_p1_affine_generator();
-        Some(*generator_ptr)
-    }
+    crate::srs_data::get_srs_point(index)
 }
 
 /// Compute MSM: sum(scalars[i] * srs_points[i])

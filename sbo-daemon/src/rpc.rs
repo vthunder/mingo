@@ -425,17 +425,13 @@ impl RpcClient {
         // Extract data from header extension (V3 and V4 supported)
         let (app_lookup_size, app_lookup_index, cols, rows, row_commitments) = match &header.extension {
             avail_rust::ext::avail_rust_core::header::HeaderExtension::V3(ext) => {
-                // Serialize row commitments
-                let commitments: Vec<u8> = ext.commitment.commitment.iter()
-                    .flat_map(|c| c.0.to_vec())
-                    .collect();
+                // KateCommitment.commitment is already Vec<u8> (concatenated 48-byte G1 points)
+                let commitments = ext.commitment.commitment.clone();
                 (ext.app_lookup.size, &ext.app_lookup.index,
                  ext.commitment.cols as u32, ext.commitment.rows as u32, commitments)
             }
             avail_rust::ext::avail_rust_core::header::HeaderExtension::V4(ext) => {
-                let commitments: Vec<u8> = ext.commitment.commitment.iter()
-                    .flat_map(|c| c.0.to_vec())
-                    .collect();
+                let commitments = ext.commitment.commitment.clone();
                 (ext.app_lookup.size, &ext.app_lookup.index,
                  ext.commitment.cols as u32, ext.commitment.rows as u32, commitments)
             }

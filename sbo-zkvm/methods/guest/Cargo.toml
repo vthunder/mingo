@@ -29,3 +29,7 @@ sbo-types = { path = "../../../sbo-types", default-features = false, features = 
 sbo-crypto = { path = "../../../sbo-crypto", default-features = false, features = ["alloc", "ed25519", "zkvm", "serde", "kzg"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
+
+# Note: Standard bls12_381 crate is used (no RISC Zero acceleration yet)
+# The accelerated version has std compatibility issues with risc0-bigint2
+# This will work but be slower - real acceleration can be added when risc0 support matures
