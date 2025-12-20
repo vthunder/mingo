@@ -52,6 +52,10 @@ enum Commands {
     #[command(subcommand)]
     Id(IdCommands),
 
+    /// Domain management (domain.v1 objects)
+    #[command(subcommand)]
+    Domain(DomainCommands),
+
     /// Debugging and low-level tools
     #[command(subcommand)]
     Debug(DebugCommands),
@@ -335,6 +339,46 @@ enum IdCommands {
 }
 
 #[derive(Subcommand)]
+enum DomainCommands {
+    /// Create a domain on chain (domain.v1 schema)
+    ///
+    /// Creates a domain authority object that can certify identities.
+    /// Posts to /sys/domains/<domain-name>/
+    ///
+    /// Examples:
+    ///   sbo domain create sbo+raw://avail:turing:506/ example.com
+    ///   sbo domain create sbo+raw://avail:turing:506/ example.com --key domain-key
+    Create {
+        /// SBO URI of the chain/app (e.g., sbo+raw://avail:turing:506/)
+        uri: String,
+
+        /// Domain name to create (e.g., example.com)
+        domain_name: String,
+
+        /// Key alias to use for signing (default: "default")
+        #[arg(long)]
+        key: Option<String>,
+
+        /// Output the SBO message to stdout instead of submitting
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// List domains from synced repos
+    List {
+        /// SBO URI to filter (e.g., sbo+raw://avail:turing:506/)
+        uri: Option<String>,
+    },
+
+    /// Show detailed domain information
+    Show {
+        /// Domain name or full SBO URI
+        /// (e.g., example.com or sbo+raw://avail:turing:506/sys/domains/example.com)
+        domain: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum RepoCommands {
     /// Create a new repository with genesis (sys identity + root policy)
     ///
@@ -343,10 +387,15 @@ enum RepoCommands {
     ///
     /// Supports DNS-based URIs (sbo://) which are resolved via DNS TXT records.
     ///
+    /// Use --domain to create a domain-certified genesis (Mode B), where the sys
+    /// identity is signed by a domain key and the policy requires all identities
+    /// to be domain-certified.
+    ///
     /// Examples:
     ///   sbo repo create sbo://myapp.com/ ./my-repo
     ///   sbo repo create sbo+raw://avail:turing:506/ ./my-repo
     ///   sbo repo create sbo+raw://avail:turing:506/ ./my-repo --key default
+    ///   sbo repo create sbo+raw://avail:turing:506/ ./my-repo --domain example.com
     Create {
         /// SBO URI with root path (e.g., sbo://myapp.com/ or sbo+raw://avail:turing:506/)
         uri: String,
@@ -355,6 +404,14 @@ enum RepoCommands {
         /// Key alias to use for signing genesis (default: "default")
         #[arg(long)]
         key: Option<String>,
+        /// Domain name for Mode B genesis (domain-certified sys identity)
+        /// When specified, creates a domain object first, then a domain-signed
+        /// sys identity, with policy requiring domain signatures on all names.
+        #[arg(long)]
+        domain: Option<String>,
+        /// Key alias for domain signing (default: uses same key as --key)
+        #[arg(long)]
+        domain_key: Option<String>,
     },
     /// Add a repository to follow
     Add {
@@ -596,7 +653,7 @@ async fn main() -> anyhow::Result<()> {
             let client = IpcClient::new(config.daemon.socket_path);
 
             match repo_cmd {
-                RepoCommands::Create { uri, path, key } => {
+                RepoCommands::Create { uri, path, key, domain, domain_key } => {
                     use sbo_core::keyring::Keyring;
 
                     // Open keyring and get signing key
@@ -646,12 +703,45 @@ async fn main() -> anyhow::Result<()> {
                     };
 
                     // Generate genesis payload
-                    let genesis_data = sbo_core::presets::genesis(&signing_key);
+                    let genesis_data = if let Some(ref domain_name) = domain {
+                        // Mode B: Domain-certified genesis with restriction
+                        let domain_alias = match domain_key {
+                            Some(ref dk) => match keyring.resolve_alias(Some(dk)) {
+                                Ok(a) => a,
+                                Err(e) => {
+                                    eprintln!("Error resolving domain key: {}", e);
+                                    std::process::exit(1);
+                                }
+                            },
+                            None => alias.clone(), // Use same key as sys
+                        };
+
+                        let domain_signing_key = match keyring.get_signing_key(&domain_alias) {
+                            Ok(k) => k,
+                            Err(e) => {
+                                eprintln!("Failed to get domain signing key: {}", e);
+                                std::process::exit(1);
+                            }
+                        };
+
+                        println!("Creating domain-certified repository at {}", display_uri);
+                        println!("  Domain:     {}", domain_name);
+                        println!("  Domain Key: {} ({})", domain_alias, domain_signing_key.public_key().to_string());
+                        println!("  Sys Key:    {} ({})", alias, signing_key.public_key().to_string());
+
+                        sbo_core::presets::genesis_with_domain_and_restriction(
+                            &domain_signing_key,
+                            &signing_key,
+                            domain_name,
+                        )
+                    } else {
+                        // Mode A: Standard self-signed genesis
+                        println!("Creating new repository at {}", display_uri);
+                        println!("  Key: {} ({})", alias, signing_key.public_key().to_string());
+                        sbo_core::presets::genesis(&signing_key)
+                    };
 
                     let path = canonicalize_path(&path)?;
-
-                    println!("Creating new repository at {}", display_uri);
-                    println!("  Key: {} ({})", alias, signing_key.public_key().to_string());
                     println!("  Path: {}", path.display());
 
                     match client.request(Request::RepoCreate {
@@ -679,6 +769,10 @@ async fn main() -> anyhow::Result<()> {
                             println!("  From Block:    {}", data["from_block"].as_u64().unwrap_or(0));
                             println!("  Submission ID: {}", data["submission_id"].as_str().unwrap_or("?"));
                             println!("  Sys Identity:  {} → {}", sys_identity_uri, alias);
+                            if domain.is_some() {
+                                println!("  Mode:          Domain-certified (Mode B)");
+                                println!("  Note:          All identities must be domain-signed");
+                            }
                             println!("\nThe daemon will sync this repo automatically.");
                         }
                         Ok(Response::Error { message }) => {
@@ -1290,6 +1384,25 @@ async fn main() -> anyhow::Result<()> {
                 }
                 IdCommands::Resolve { email } => {
                     commands::identity::resolve(&email).await?;
+                }
+            }
+        }
+
+        Commands::Domain(domain_cmd) => {
+            match domain_cmd {
+                DomainCommands::Create { uri, domain_name, key, dry_run } => {
+                    commands::domain::create(
+                        &uri,
+                        &domain_name,
+                        key.as_deref(),
+                        dry_run,
+                    ).await?;
+                }
+                DomainCommands::List { uri } => {
+                    commands::domain::list(uri.as_deref()).await?;
+                }
+                DomainCommands::Show { domain } => {
+                    commands::domain::show(&domain).await?;
                 }
             }
         }

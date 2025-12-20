@@ -178,6 +178,123 @@ pub fn genesis_with_domain(
     batch
 }
 
+/// Generate Mode B genesis with domain-signing restriction
+///
+/// Like genesis_with_domain, but the root policy requires all identities
+/// in /sys/names/* to have payloads signed by a domain object in /sys/domains/*.
+///
+/// Creates: domain object, domain-certified sys identity, root policy with restriction
+pub fn genesis_with_domain_and_restriction(
+    domain_signing_key: &SigningKey,
+    sys_signing_key: &SigningKey,
+    domain_name: &str,
+) -> Vec<u8> {
+    let domain_public_key = domain_signing_key.public_key();
+    let sys_public_key = sys_signing_key.public_key();
+
+    // 1. Domain object (JWT, self-signed by domain key)
+    let domain_jwt = crate::jwt::create_domain(domain_signing_key, domain_name)
+        .expect("JWT creation should not fail");
+    let domain_bytes = domain_jwt.as_bytes().to_vec();
+    let domain_hash = ContentHash::sha256(&domain_bytes);
+
+    let mut domain_msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/domains/").unwrap(),
+        id: Id::new(domain_name).unwrap(),
+        object_type: ObjectType::Object,
+        signing_key: domain_public_key.clone(),
+        signature: crate::crypto::Signature([0u8; 64]),
+        content_type: Some("application/jwt".to_string()),
+        content_hash: Some(domain_hash),
+        payload: Some(domain_bytes),
+        owner: None,
+        creator: None,
+        content_encoding: None,
+        content_schema: Some("domain.v1".to_string()),
+        policy_ref: None,
+        related: None,
+    };
+    domain_msg.sign(domain_signing_key);
+
+    // 2. System identity (JWT, domain-certified)
+    let sys_email = format!("sys@{}", domain_name);
+    let sys_jwt = crate::jwt::create_domain_certified_identity(
+        domain_signing_key,
+        domain_name,
+        &sys_email,
+        &sys_public_key,
+        None,
+    )
+    .expect("JWT creation should not fail");
+    let sys_bytes = sys_jwt.as_bytes().to_vec();
+    let sys_hash = ContentHash::sha256(&sys_bytes);
+
+    let mut sys_msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/names/").unwrap(),
+        id: Id::new("sys").unwrap(),
+        object_type: ObjectType::Object,
+        signing_key: sys_public_key.clone(),
+        signature: crate::crypto::Signature([0u8; 64]),
+        content_type: Some("application/jwt".to_string()),
+        content_hash: Some(sys_hash),
+        payload: Some(sys_bytes),
+        owner: None,
+        creator: None,
+        content_encoding: None,
+        content_schema: Some("identity.v1".to_string()),
+        policy_ref: None,
+        related: None,
+    };
+    sys_msg.sign(sys_signing_key);
+
+    // 3. Root policy with domain-signing restriction
+    let policy_payload = serde_json::json!({
+        "grants": [
+            {"to": "*", "can": ["create"], "on": "/sys/names/*"},
+            {"to": "owner", "can": ["update", "delete"], "on": "/sys/names/*"},
+            {"to": "owner", "can": ["*"], "on": "/$owner/**"}
+        ],
+        "restrictions": [
+            {
+                "on": "/sys/names/*",
+                "require": {
+                    "schema": "identity.v1",
+                    "require_payload_signed_by": { "path": "/sys/domains/*" }
+                }
+            }
+        ]
+    });
+    let policy_bytes = serde_json::to_vec(&policy_payload).unwrap();
+    let policy_hash = ContentHash::sha256(&policy_bytes);
+
+    let mut policy_msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/policies/").unwrap(),
+        id: Id::new("root").unwrap(),
+        object_type: ObjectType::Object,
+        signing_key: sys_public_key.clone(),
+        signature: crate::crypto::Signature([0u8; 64]),
+        content_type: Some("application/json".to_string()),
+        content_hash: Some(policy_hash),
+        payload: Some(policy_bytes),
+        owner: None,
+        creator: None,
+        content_encoding: None,
+        content_schema: Some("policy.v2".to_string()),
+        policy_ref: None,
+        related: None,
+    };
+    policy_msg.sign(sys_signing_key);
+
+    // Concatenate in order: domain, sys, policy
+    let mut batch = wire::serialize(&domain_msg);
+    batch.extend(wire::serialize(&sys_msg));
+    batch.extend(wire::serialize(&policy_msg));
+    batch
+}
+
 /// Generate a simple post message
 pub fn post(signing_key: &SigningKey, path: &str, id: &str, payload: &[u8]) -> Vec<u8> {
     let public_key = signing_key.public_key();
@@ -260,6 +377,40 @@ pub fn claim_name_with_profile(signing_key: &SigningKey, name: &str, profile_pat
         creator: None,
         content_encoding: None,
         content_schema: Some("identity.v1".to_string()),
+        policy_ref: None,
+        related: None,
+    };
+    msg.sign(signing_key);
+
+    wire::serialize(&msg)
+}
+
+/// Create a domain object at /sys/domains/<domain_name>
+///
+/// Domains are self-signed authority objects that can certify identities.
+/// The domain JWT contains: iss ("self"), sub (domain name), public_key, iat.
+pub fn create_domain(signing_key: &SigningKey, domain_name: &str) -> Vec<u8> {
+    let public_key = signing_key.public_key();
+
+    let jwt = crate::jwt::create_domain(signing_key, domain_name)
+        .expect("JWT creation should not fail");
+    let payload_bytes = jwt.as_bytes().to_vec();
+    let content_hash = ContentHash::sha256(&payload_bytes);
+
+    let mut msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/domains/").unwrap(),
+        id: Id::new(domain_name).unwrap(),
+        object_type: ObjectType::Object,
+        signing_key: public_key,
+        signature: crate::crypto::Signature([0u8; 64]),
+        content_type: Some("application/jwt".to_string()),
+        content_hash: Some(content_hash),
+        payload: Some(payload_bytes),
+        owner: None,
+        creator: None,
+        content_encoding: None,
+        content_schema: Some("domain.v1".to_string()),
         policy_ref: None,
         related: None,
     };

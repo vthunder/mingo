@@ -103,6 +103,25 @@ pub enum Request {
         /// Full URI (e.g., sbo+raw://avail:turing:506/sys/names/alice) or just name
         uri: String,
     },
+    /// Submit a domain to /sys/domains/<domain_name>
+    SubmitDomain {
+        /// Chain URI (e.g., sbo+raw://avail:turing:506/)
+        uri: String,
+        /// Domain name (e.g., example.com)
+        domain_name: String,
+        /// Signed wire-format message
+        data: Vec<u8>,
+    },
+    /// List domains from synced repos
+    ListDomains {
+        /// Optional chain URI filter
+        uri: Option<String>,
+    },
+    /// Get a specific domain
+    GetDomain {
+        /// Full URI (e.g., sbo+raw://avail:turing:506/sys/domains/example.com) or just domain name
+        domain: String,
+    },
     /// Create a new repo with genesis (sys identity + root policy)
     RepoCreate {
         /// Display URI (what user provided - could be sbo:// or sbo+raw://)

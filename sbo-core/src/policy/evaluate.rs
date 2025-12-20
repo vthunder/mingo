@@ -148,7 +148,79 @@ fn check_requirements(
         }
     }
 
+    // Check require_payload_signed_by
+    // This verifies the JWT issuer maps to an object at the required path pattern.
+    // Note: Cryptographic signature verification happens in the daemon's validation layer.
+    if let Some(ref signed_by) = require.require_payload_signed_by {
+        if let Some(reason) = check_payload_signed_by(signed_by, message) {
+            return Some(reason);
+        }
+    }
+
     None
+}
+
+/// Check if the payload's JWT issuer maps to an object at the required path pattern
+fn check_payload_signed_by(
+    signed_by: &super::types::RequirePayloadSignedBy,
+    message: &Message,
+) -> Option<String> {
+    // Get payload
+    let payload = message.payload.as_ref()?;
+
+    // Try to parse as JWT (UTF-8 string)
+    let token = match std::str::from_utf8(payload) {
+        Ok(t) => t,
+        Err(_) => return Some("Payload is not valid UTF-8 (expected JWT)".to_string()),
+    };
+
+    // Decode JWT claims to get issuer
+    let claims = match crate::jwt::decode_identity_claims(token) {
+        Ok(c) => c,
+        Err(e) => return Some(format!("Failed to decode JWT: {}", e)),
+    };
+
+    // Map issuer to object path
+    let issuer_path = match issuer_to_path(&claims.iss) {
+        Some(p) => p,
+        None => {
+            return Some(format!(
+                "Issuer '{}' does not reference an external signing object",
+                claims.iss
+            ));
+        }
+    };
+
+    // Check if issuer path matches the required pattern
+    let pattern = super::path::PathPattern::new(&signed_by.path);
+    let issuer_path_parsed = match crate::message::Path::parse(&issuer_path) {
+        Ok(p) => p,
+        Err(_) => return Some(format!("Invalid issuer path: {}", issuer_path)),
+    };
+
+    if !pattern.matches(&issuer_path_parsed, None) {
+        return Some(format!(
+            "Issuer path '{}' does not match required pattern '{}'",
+            issuer_path, signed_by.path
+        ));
+    }
+
+    None
+}
+
+/// Map a JWT issuer to an object path
+///
+/// - "domain:example.com" -> "/sys/domains/example.com"
+/// - "self" -> None (no external object)
+fn issuer_to_path(issuer: &str) -> Option<String> {
+    if let Some(domain) = issuer.strip_prefix("domain:") {
+        Some(format!("/sys/domains/{}", domain))
+    } else if issuer == "self" {
+        None // Self-signed, no external signing object
+    } else {
+        // Unknown issuer format - could extend in future
+        None
+    }
 }
 
 fn identity_matches(

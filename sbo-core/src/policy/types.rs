@@ -74,6 +74,22 @@ pub struct Requirements {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
+
+    /// Require the payload to be signed by an object at the specified path pattern
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_payload_signed_by: Option<RequirePayloadSignedBy>,
+}
+
+/// Requirement that an object's payload (JWT) must be signed by another object
+///
+/// The payload's JWT issuer (e.g., "domain:example.com") is mapped to an object path
+/// (e.g., "/sys/domains/example.com"), and the signature is verified against that object's
+/// public key. The issuer path must match the specified pattern.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RequirePayloadSignedBy {
+    /// Path pattern where the signing object must exist
+    /// e.g., "/sys/domains/*" means the issuer must be a domain object
+    pub path: String,
 }
 
 /// Schema requirement (single or multiple allowed)

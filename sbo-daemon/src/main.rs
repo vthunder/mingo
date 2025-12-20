@@ -980,6 +980,155 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             }
         }
 
+        Request::SubmitDomain { uri, domain_name, data } => {
+            // Get state for repo lookup
+            let state_read = state.read().await;
+
+            // Find repo matching the URI
+            let repo = state_read.repos.list().find(|r| {
+                uri.starts_with(&r.uri.to_string()) || uri.starts_with(&r.display_uri)
+            });
+
+            let domain_uri = match repo {
+                Some(r) => format!("{}/sys/domains/{}", r.uri.to_string().trim_end_matches('/'), domain_name),
+                None => return Response::error(format!("No repo configured for URI: {}. Add with: sbo repo add {} <path>", uri, uri)),
+            };
+
+            // Submit via TurboDA
+            match state_read.turbo.submit_raw(&data).await {
+                Ok(result) => {
+                    Response::ok(serde_json::json!({
+                        "status": "submitted",
+                        "uri": domain_uri,
+                        "submission_id": result.submission_id,
+                    }))
+                }
+                Err(e) => Response::error(format!("Submission failed: {}", e)),
+            }
+        }
+
+        Request::ListDomains { uri } => {
+            let state_read = state.read().await;
+            let mut domains = Vec::new();
+
+            for repo in state_read.repos.list() {
+                // Filter by URI if provided
+                if let Some(ref filter_uri) = uri {
+                    let resolved = repo.uri.to_string();
+                    if !resolved.starts_with(filter_uri) && !repo.display_uri.starts_with(filter_uri) {
+                        continue;
+                    }
+                }
+
+                // Scan /sys/domains/ directory
+                let domains_path = repo.path.join("sys").join("domains");
+                if domains_path.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&domains_path) {
+                        for entry in entries.flatten() {
+                            let domain_name = entry.file_name().to_string_lossy().to_string();
+                            let entry_path = entry.path();
+
+                            // Try to read domain content
+                            let content = if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                                std::fs::read(&entry_path).ok()
+                            } else if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                std::fs::read_dir(&entry_path).ok().and_then(|files| {
+                                    files.flatten().find(|f| f.file_type().map(|t| t.is_file()).unwrap_or(false))
+                                        .and_then(|f| std::fs::read(f.path()).ok())
+                                })
+                            } else {
+                                None
+                            };
+
+                            if let Some(content) = content {
+                                if let Ok(msg) = sbo_core::wire::parse(&content) {
+                                    if let Some(payload) = &msg.payload {
+                                        // Parse domain JWT to get public key
+                                        if let Ok(token_str) = std::str::from_utf8(payload) {
+                                            if let Ok(claims) = sbo_core::jwt::decode_identity_claims(token_str) {
+                                                domains.push(serde_json::json!({
+                                                    "uri": format!("{}/sys/domains/{}", repo.uri.to_string().trim_end_matches('/'), domain_name),
+                                                    "chain": repo.uri.to_string(),
+                                                    "domain": domain_name,
+                                                    "public_key": claims.public_key,
+                                                    "status": "verified",
+                                                }));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Response::ok(serde_json::json!({ "domains": domains }))
+        }
+
+        Request::GetDomain { domain } => {
+            let state_read = state.read().await;
+
+            // Parse domain reference - either full URI or just domain name
+            let (chain_uri, domain_name) = if domain.starts_with("sbo+raw://") || domain.starts_with("sbo://") {
+                // Full URI - extract chain and domain
+                if let Some(domains_pos) = domain.find("/sys/domains/") {
+                    let chain = &domain[..domains_pos + 1];
+                    let name = &domain[domains_pos + 13..]; // Skip "/sys/domains/"
+                    (Some(chain.to_string()), name.to_string())
+                } else {
+                    return Response::error("Invalid domain URI: must contain /sys/domains/");
+                }
+            } else {
+                // Just a domain name - search all repos
+                (None, domain)
+            };
+
+            let mut found_domains = Vec::new();
+
+            for repo in state_read.repos.list() {
+                // Filter by chain if provided
+                if let Some(ref chain) = chain_uri {
+                    let chain_trimmed = chain.trim_end_matches('/');
+                    let resolved = repo.uri.to_string();
+                    if !resolved.starts_with(chain_trimmed) && !repo.display_uri.starts_with(chain_trimmed) {
+                        continue;
+                    }
+                }
+
+                // Try to read the domain file
+                let domain_path = repo.path.join("sys").join("domains").join(&domain_name);
+                if domain_path.exists() {
+                    if let Ok(content) = std::fs::read(&domain_path) {
+                        if let Ok(msg) = sbo_core::wire::parse(&content) {
+                            if let Some(payload) = &msg.payload {
+                                // Parse domain JWT
+                                if let Ok(token_str) = std::str::from_utf8(payload) {
+                                    if let Ok(claims) = sbo_core::jwt::decode_identity_claims(token_str) {
+                                        found_domains.push(serde_json::json!({
+                                            "uri": format!("{}/sys/domains/{}", repo.uri.to_string().trim_end_matches('/'), domain_name),
+                                            "chain": repo.uri.to_string(),
+                                            "domain": domain_name,
+                                            "public_key": claims.public_key,
+                                            "status": "verified",
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if found_domains.is_empty() {
+                Response::error(format!("Domain '{}' not found", domain_name))
+            } else if found_domains.len() == 1 {
+                Response::ok(found_domains.into_iter().next().unwrap())
+            } else {
+                Response::ok(serde_json::json!({ "domains": found_domains }))
+            }
+        }
+
         Request::RepoCreate { display_uri, resolved_uri, path, genesis_data } => {
             // Parse and validate the resolved URI (always sbo+raw://)
             let parsed_uri = match SboUri::parse(&resolved_uri) {
