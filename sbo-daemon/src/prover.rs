@@ -540,4 +540,164 @@ mod tests {
         assert_eq!(ReceiptKind::from_str("GROTH16"), ReceiptKind::Groth16);
         assert_eq!(ReceiptKind::from_str("unknown"), ReceiptKind::Composite);
     }
+
+    #[test]
+    fn test_prover_with_da_data_dev_mode() {
+        use sbo_core::StateTransitionWitness;
+
+        let config = ProverConfig {
+            enabled: true,
+            batch_size: 1,
+            receipt_kind: "composite".to_string(),
+            dev_mode: true,
+        };
+
+        let mut prover = Prover::new(config);
+
+        // Block with state change
+        let pre_state = [0u8; 32];
+        let post_state = [1u8; 32];
+        let block_data = vec![1, 2, 3, 4, 5];
+
+        // Add block without DA data (basic path)
+        prover.add_block(
+            100,
+            pre_state,
+            post_state,
+            block_data.clone(),
+            StateTransitionWitness::default(),
+        );
+
+        // Should prove after batch_size blocks
+        assert!(prover.should_prove(101));
+
+        let result = prover.generate_proof().unwrap();
+        assert_eq!(result.from_block, 100);
+        assert_eq!(result.to_block, 100);
+
+        // Dev mode receipt should start with "DEV:"
+        assert!(result.receipt.starts_with(b"DEV:"));
+
+        // Receipt should be reproducible (same inputs = same output)
+        let mut prover2 = Prover::new(ProverConfig {
+            enabled: true,
+            batch_size: 1,
+            receipt_kind: "composite".to_string(),
+            dev_mode: true,
+        });
+
+        prover2.add_block(
+            100,
+            pre_state,
+            post_state,
+            block_data,
+            StateTransitionWitness::default(),
+        );
+
+        let result2 = prover2.generate_proof().unwrap();
+        assert_eq!(result.receipt, result2.receipt);
+    }
+
+    #[cfg(feature = "zkvm")]
+    #[test]
+    fn test_prover_with_da_data_full() {
+        use sbo_core::StateTransitionWitness;
+        use sbo_zkvm::types::{HeaderData, RowData, AppLookup, AppLookupEntry};
+
+        let config = ProverConfig {
+            enabled: true,
+            batch_size: 1,
+            receipt_kind: "composite".to_string(),
+            dev_mode: true, // Still use dev mode to avoid slow zkVM
+        };
+
+        let mut prover = Prover::new(config);
+
+        // Create mock DA data
+        let header_data = HeaderData {
+            block_number: 100,
+            header_hash: [1u8; 32],
+            parent_hash: [2u8; 32],
+            state_root: [3u8; 32],
+            extrinsics_root: [4u8; 32],
+            data_root: [5u8; 32],
+            row_commitments: vec![0u8; 48], // One row commitment
+            rows: 1,
+            cols: 64,
+            app_lookup: AppLookup {
+                size: 64,
+                index: vec![AppLookupEntry { app_id: 506, start: 0 }],
+            },
+            app_id: 506,
+        };
+
+        let row_data = vec![RowData {
+            row: 0,
+            cells: vec![[0u8; 32]; 64],
+        }];
+
+        // Compute raw cells hash
+        let mut all_cells = Vec::new();
+        for row in &row_data {
+            for cell in &row.cells {
+                all_cells.extend_from_slice(cell);
+            }
+        }
+        let raw_cells_hash: [u8; 32] = {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(&all_cells);
+            hasher.finalize().into()
+        };
+
+        // Add block with DA data
+        prover.add_block_with_da(
+            100,
+            [0u8; 32],
+            [1u8; 32],
+            vec![1, 2, 3, 4],
+            StateTransitionWitness::default(),
+            Some(header_data),
+            row_data,
+            raw_cells_hash,
+        );
+
+        assert!(prover.should_prove(101));
+
+        let result = prover.generate_proof().unwrap();
+        assert_eq!(result.from_block, 100);
+        assert!(result.receipt.starts_with(b"DEV:"));
+    }
+
+    #[test]
+    fn test_sbop_message_with_da_proof() {
+        let config = ProverConfig {
+            enabled: true,
+            batch_size: 1,
+            receipt_kind: "composite".to_string(),
+            dev_mode: true,
+        };
+
+        let prover = Prover::new(config);
+
+        // Create a proof result
+        let result = ProofResult {
+            receipt: b"DEV:test_receipt_data".to_vec(),
+            receipt_kind: ReceiptKind::Composite,
+            from_block: 100,
+            to_block: 110,
+        };
+
+        let sbop_bytes = prover.create_sbop_message(&result);
+
+        // Verify it's a valid SBOP message
+        assert!(sbo_core::proof::is_sbop_message(&sbop_bytes));
+
+        // Parse and verify contents
+        let parsed = sbo_core::proof::parse_sbop(&sbop_bytes).unwrap();
+        assert_eq!(parsed.block_from, 100);
+        assert_eq!(parsed.block_to, 110);
+        assert_eq!(parsed.receipt_kind, "composite");
+        assert_eq!(parsed.receipt_bytes, b"DEV:test_receipt_data".to_vec());
+    }
 }
