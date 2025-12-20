@@ -23,6 +23,9 @@ pub mod bls;
 pub mod kzg;
 
 #[cfg(feature = "kzg")]
+pub mod poly;
+
+#[cfg(feature = "kzg")]
 pub use kzg::{KzgCommitment, KzgProof, CellProof, KzgError};
 
 pub mod trie;
