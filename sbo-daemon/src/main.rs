@@ -864,9 +864,15 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                             if let Some(content) = content {
                                 if let Ok(msg) = sbo_core::wire::parse(&content) {
                                     if let Some(payload) = &msg.payload {
-                                        // Parse identity payload
+                                        // Parse identity payload - try multiple formats
                                         let identity_data = if let Ok(identity) = sbo_core::schema::parse_identity(payload) {
+                                            // JSON identity schema
                                             Some((identity.public_key, identity.display_name))
+                                        } else if let Ok(token_str) = std::str::from_utf8(payload) {
+                                            // Try JWT format (Content-Type: application/jwt)
+                                            sbo_core::jwt::decode_identity_claims(token_str).ok().map(|claims| {
+                                                (claims.public_key, None)
+                                            })
                                         } else {
                                             // Fallback for raw JSON
                                             serde_json::from_slice::<serde_json::Value>(payload).ok().and_then(|v| {
@@ -936,9 +942,15 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                     if let Ok(content) = std::fs::read(&identity_path) {
                         if let Ok(msg) = sbo_core::wire::parse(&content) {
                             if let Some(payload) = &msg.payload {
-                                // Parse identity payload
+                                // Parse identity payload - try multiple formats
                                 let identity_data = if let Ok(identity) = sbo_core::schema::parse_identity(payload) {
+                                    // JSON identity schema
                                     Some((identity.public_key, identity.display_name, identity.description, identity.avatar, identity.links, identity.binding))
+                                } else if let Ok(token_str) = std::str::from_utf8(payload) {
+                                    // Try JWT format (Content-Type: application/jwt)
+                                    sbo_core::jwt::decode_identity_claims(token_str).ok().map(|claims| {
+                                        (claims.public_key, None, None, None, None, None)
+                                    })
                                 } else {
                                     // Fallback for raw JSON
                                     serde_json::from_slice::<serde_json::Value>(payload).ok().and_then(|v| {
