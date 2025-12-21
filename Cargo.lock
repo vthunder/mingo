@@ -5806,10 +5806,12 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "parity-scale-codec",
  "sbo-avail",
  "sbo-core",
  "sbo-crypto",
  "sbo-daemon",
+ "sbo-rpc",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
@@ -5873,6 +5875,7 @@ dependencies = [
  "parity-scale-codec",
  "reqwest 0.12.25",
  "sbo-core",
+ "sbo-rpc",
  "sbo-zkvm",
  "serde",
  "serde_json",
@@ -5884,6 +5887,18 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber 0.3.22",
+]
+
+[[package]]
+name = "sbo-rpc"
+version = "0.1.0"
+dependencies = [
+ "avail-rust-client",
+ "flate2",
+ "parity-scale-codec",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

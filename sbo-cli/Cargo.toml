@@ -14,6 +14,7 @@ sbo-core.workspace = true
 sbo-crypto.workspace = true
 sbo-avail.workspace = true
 sbo-daemon.workspace = true
+sbo-rpc.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -26,4 +27,5 @@ tracing-subscriber.workspace = true
 hex.workspace = true
 serde_json.workspace = true
 flate2.workspace = true
+parity-scale-codec = "3"
 avail-rust = { package = "avail-rust-client", git = "https://github.com/availproject/avail-rust", branch = "main" }

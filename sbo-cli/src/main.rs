@@ -552,8 +552,20 @@ enum DaCommands {
     /// Check DA connection status
     Ping,
 
-    /// Scan a specific block for data submissions
+    /// Scan a block using data matrix rows (Kate RPC)
     Scan {
+        /// Block number to scan
+        block: u64,
+        /// Show raw transaction data
+        #[arg(long)]
+        raw: bool,
+        /// App ID to query (default: 506)
+        #[arg(long, default_value = "506")]
+        app_id: u32,
+    },
+
+    /// Scan a block using extrinsic parsing (legacy)
+    ScanExt {
         /// Block number to scan
         block: u64,
         /// Show raw transaction data
@@ -640,6 +652,9 @@ async fn main() -> anyhow::Result<()> {
                         }
                         DaCommands::Scan { block, raw, app_id } => {
                             commands::da::scan(block, raw, app_id).await?;
+                        }
+                        DaCommands::ScanExt { block, raw, app_id } => {
+                            commands::da::scan_ext(block, raw, app_id).await?;
                         }
                         DaCommands::Status { submission_id } => {
                             commands::da::turbo_status(&submission_id).await?;

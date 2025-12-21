@@ -547,8 +547,9 @@ impl SyncEngine {
                             let matching_repos = repos.get_by_app_id(tx.app_id);
                             let light_mode = self.light_mode; // Copy to avoid borrow checker issues
                             for repo in matching_repos {
-                                let uri = repo.uri.to_string();
-                                if let Ok(state_db) = self.get_state_db(&uri) {
+                                let resolved_uri = repo.uri.to_string();
+                                let display_uri = &repo.display_uri;
+                                if let Ok(state_db) = self.get_state_db(&resolved_uri) {
                                     // In light mode: use cryptographic verification and store proven state roots
                                     // In normal mode: verify against existing computed state
                                     let verified = if light_mode {
@@ -561,14 +562,14 @@ impl SyncEngine {
                                                 ) {
                                                     tracing::warn!(
                                                         "Failed to store proven state root for {}: {}",
-                                                        uri, e
+                                                        display_uri, e
                                                     );
                                                 } else {
                                                     tracing::info!(
                                                         "Light mode: stored proven state root {} at block {} for {}",
                                                         hex::encode(&output.new_state_root[..4]),
                                                         output.block_to,
-                                                        uri
+                                                        display_uri
                                                     );
                                                 }
                                                 true
@@ -577,7 +578,7 @@ impl SyncEngine {
                                             Err(e) => {
                                                 tracing::warn!(
                                                     "Light mode verification error for {}: {}",
-                                                    uri, e
+                                                    display_uri, e
                                                 );
                                                 false
                                             }
@@ -589,7 +590,7 @@ impl SyncEngine {
                                             Err(e) => {
                                                 tracing::warn!(
                                                     "Failed to verify proof for {}: {}",
-                                                    uri, e
+                                                    display_uri, e
                                                 );
                                                 false
                                             }
@@ -607,13 +608,13 @@ impl SyncEngine {
                                     if let Err(e) = state_db.put_proof(&stored_proof) {
                                         tracing::warn!(
                                             "Failed to store proof for {}: {}",
-                                            uri, e
+                                            display_uri, e
                                         );
                                     } else {
                                         let status = if verified { "verified" } else { "unverified" };
                                         tracing::info!(
                                             "Stored {} SBOP proof for {} (blocks {}-{})",
-                                            status, uri, sbop.block_from, sbop.block_to
+                                            status, display_uri, sbop.block_from, sbop.block_to
                                         );
                                     }
                                 }
@@ -675,12 +676,12 @@ impl SyncEngine {
                             }
                         }
 
-                        // Get state DB for this repo (keyed by URI)
-                        let uri = repo.uri.to_string();
-                        let state_db = match self.get_state_db(&uri) {
+                        // Get state DB for this repo (keyed by resolved URI)
+                        let resolved_uri = repo.uri.to_string();
+                        let state_db = match self.get_state_db(&resolved_uri) {
                             Ok(db) => db,
                             Err(e) => {
-                                tracing::error!("Failed to open state DB for {}: {}", uri, e);
+                                tracing::error!("Failed to open state DB for {}: {}", repo.display_uri, e);
                                 continue;
                             }
                         };

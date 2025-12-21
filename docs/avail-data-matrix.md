@@ -128,21 +128,25 @@ fn pad_to_chunk(chunk: [u8; 31]) -> [u8; 32] {
 
 ### Layer 3: SCALE Encoding
 
-The data in the matrix is **not** raw submitted bytes. It's SCALE-encoded extrinsic data:
+The data in the matrix is **not** raw submitted bytes. Per [avail-core kate/recovery](https://github.com/availproject/avail-core/blob/main/kate/recovery/src/com.rs), the matrix stores:
 
-```
-Vec<Extrinsic> where each Extrinsic contains:
-  - Compact length prefix
-  - Extrinsic bytes (signature, call data, submitted blob)
+```rust
+// From kate/recovery: AppData is Vec<Vec<u8>> = "list of extrinsics encoded in a block"
+// decode_app_extrinsics returns Result<AppData, _> where AppData = Vec<Vec<u8>>
+Vec<Vec<u8>>  // SCALE-encoded vector of opaque extrinsic bytes
 ```
 
-Structure:
+Each inner `Vec<u8>` is one raw encoded `UncheckedExtrinsic` (opaque bytes with length prefix).
+
+Structure after removing IEC padding:
 ```
-[vec_len: compact]
-[ext_0_len: compact][ext_0_bytes...]
-[ext_1_len: compact][ext_1_bytes...]
+[outer_vec_len: compact]                    // Number of extrinsics
+[ext_0_len: compact][ext_0_bytes...]        // First extrinsic (length-prefixed)
+[ext_1_len: compact][ext_1_bytes...]        // Second extrinsic
 ...
 ```
+
+**Authoritative source**: In kate/src/com.rs, the encoding step uses `opaques.encode()` where `opaques` is `Vec<Vec<u8>>`. This SCALE-encodes the structured collection, preserving length information and boundaries between individual extrinsics.
 
 ### Layer 4: Extrinsic Structure
 
@@ -150,22 +154,39 @@ Each extrinsic (for signed `submit_data` calls) contains:
 
 ```
 [version: u8]           // 0x84 for signed v4
-[address_type: u8]      // MultiAddress variant
-[address: 32 bytes]     // Public key
-[signature_type: u8]    // 0x00=Ed25519, 0x01=Sr25519
-[signature: 64 bytes]   // Signature
-[era: 1-2 bytes]        // Mortality
+[address_type: u8]      // MultiAddress variant (0x00=Id)
+[address: 32 bytes]     // Public key (for Id variant)
+[signature_type: u8]    // 0x00=Ed25519, 0x01=Sr25519, 0x02=Ecdsa
+[signature: 64-65 bytes]// Signature (65 for Ecdsa)
+[era: 1-2 bytes]        // Mortality (0x00=immortal, else mortal)
 [nonce: compact]        // Account nonce
 [tip: compact]          // Transaction tip
+[app_id: compact]       // **Avail-specific**: Application ID in SignedExtra
 [call_data...]          // The actual call
 ```
 
-The call data for `DataAvailability::submit_data`:
+**Note**: The `app_id` field in SignedExtra is Avail-specific and not part of standard Substrate extrinsics.
+
+The call data for `DataAvailability::submit_data` (pallet=29, call=1):
 
 ```
-[pallet_index: u8]      // DataAvailability pallet
-[call_index: u8]        // submit_data call
-[data: Vec<u8>]         // Compact length + raw bytes
+[pallet_index: u8]      // 29 = DataAvailability pallet
+[call_index: u8]        // 1 = submit_data call
+[data: Vec<u8>]         // Compact length + raw submitted bytes
+```
+
+### Layer 5: Optional Gzip Compression
+
+Submitted data may optionally be gzip-compressed. Check for gzip magic bytes:
+
+```rust
+if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+    // Data is gzip-compressed, decompress before parsing
+    let mut decoder = GzDecoder::new(data.as_slice());
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed)?;
+    data = decompressed;
+}
 ```
 
 ## Decoding Algorithm
@@ -218,51 +239,145 @@ fn unpad_iec_9797_1(data: &mut Vec<u8>) {
 }
 ```
 
-### Step 4: Decode SCALE Vec
+### Step 4: Decode SCALE Vec<Vec<u8>>
+
+Use standard SCALE decoding to parse the outer vector:
 
 ```rust
-fn decode_scale_compact(data: &[u8]) -> Option<(usize, usize)> {
-    let mode = data[0] & 0b11;
-    match mode {
-        0b00 => Some((data[0] as usize >> 2, 1)),
-        0b01 => Some((u16::from_le_bytes([data[0], data[1]]) as usize >> 2, 2)),
-        0b10 => Some((u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize >> 2, 4)),
-        _ => None, // Big integer mode
-    }
-}
+use parity_scale_codec::Decode;
 
-let (vec_len, consumed) = decode_scale_compact(&data)?;
-let mut offset = consumed;
+// Decode as Vec<Vec<u8>> per avail-core spec
+let extrinsics: Vec<Vec<u8>> = Vec::<Vec<u8>>::decode(&mut &data[..])?;
 
-for _ in 0..vec_len {
-    let (ext_len, consumed) = decode_scale_compact(&data[offset..])?;
-    offset += consumed;
+println!("Decoded {} extrinsic(s)", extrinsics.len());
 
-    let extrinsic = &data[offset..offset + ext_len];
-    let blob = extract_data_from_extrinsic(extrinsic);
-
-    offset += ext_len;
+for ext_bytes in extrinsics {
+    let blob = extract_data_from_extrinsic(&ext_bytes)?;
+    // Process blob...
 }
 ```
 
 ### Step 5: Extract Data from Extrinsic
 
-For SBO data, find the "SBO-" magic and work backwards to find the compact length:
+Parse the extrinsic structure properly - do NOT use magic byte scanning:
 
 ```rust
-fn extract_data_from_extrinsic(ext: &[u8]) -> Option<Vec<u8>> {
-    const SBO_MAGIC: &[u8] = b"SBO-";
+fn extract_data_from_extrinsic(encoded: &[u8]) -> Option<Vec<u8>> {
+    let mut input = encoded;
 
-    let sbo_pos = ext.windows(4).position(|w| w == SBO_MAGIC)?;
+    // Skip optional length prefix (check if first bytes look like a length)
+    // ... (see full implementation in sbo-cli/src/commands/da.rs)
 
-    // Compact length is 2 bytes before SBO-
-    let (data_len, _) = decode_scale_compact(&ext[sbo_pos - 2..])?;
+    // Version byte
+    let version = input[0];
+    input = &input[1..];
+    let is_signed = (version & 0x80) != 0;
 
-    Some(ext[sbo_pos..sbo_pos + data_len].to_vec())
+    if is_signed {
+        // Skip MultiAddress (1 byte type + 32 bytes for Id variant)
+        let addr_type = input[0];
+        input = &input[1..];
+        let addr_len = match addr_type {
+            0x00 => 32,  // Id
+            0x01 => decode_compact_len(input),  // Index
+            // ... other variants
+        };
+        input = &input[addr_len..];
+
+        // Skip MultiSignature (1 byte type + 64-65 bytes)
+        let sig_type = input[0];
+        input = &input[1..];
+        let sig_len = match sig_type {
+            0x00 | 0x01 => 64,  // Ed25519, Sr25519
+            0x02 => 65,         // Ecdsa
+        };
+        input = &input[sig_len..];
+
+        // Skip Era (1-2 bytes)
+        let era = input[0];
+        input = &input[1..];
+        if era != 0x00 { input = &input[1..]; }
+
+        // Skip Nonce (compact)
+        let (_, consumed) = decode_compact(input)?;
+        input = &input[consumed..];
+
+        // Skip Tip (compact)
+        let (_, consumed) = decode_compact(input)?;
+        input = &input[consumed..];
+
+        // Skip AppId in SignedExtra (compact) - Avail-specific!
+        let (app_id, consumed) = decode_compact(input)?;
+        input = &input[consumed..];
+    }
+
+    // Pallet and call index
+    let pallet = input[0];
+    let call = input[1];
+    input = &input[2..];
+
+    // For DataAvailability::submit_data (29, 1), decode Vec<u8>
+    if pallet == 29 && call == 1 {
+        let data: Vec<u8> = Vec::<u8>::decode(&mut &input[..])?;
+        return Some(data);
+    }
+
+    None
 }
 ```
 
-## Example: Block 2723989
+**Important**: Never use magic byte scanning (e.g., searching for "SBO-"). Always parse the extrinsic structure properly using the standard encoding.
+
+### Step 6: Decompress if Gzipped
+
+```rust
+use flate2::read::GzDecoder;
+
+let final_data = if blob.len() >= 2 && blob[0] == 0x1f && blob[1] == 0x8b {
+    let mut decoder = GzDecoder::new(blob.as_slice());
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed)?;
+    decompressed
+} else {
+    blob
+};
+```
+
+## Example: Block 2726277
+
+```
+Header:
+  block_number: 2726277
+  app_lookup_size: 70  (70 chunks total)
+  cols: 128
+  rows: 1
+  app_lookup: [{app_id: 246, start: 0}, {app_id: 506, start: 21}]
+
+For app_id 506:
+  Chunks: 21 to 70 (49 chunks, ~1519 bytes raw)
+
+Decoded structure (after IEC unpadding):
+  Vec<Vec<u8>> with 1 extrinsic:
+    [04]              Outer vec length = 1
+    [d9 17]           Inner vec length = 1498 bytes (compact: 0x17d9 >> 2 = 1494... wait, let me recalc)
+
+  Extrinsic 0 (1498 bytes):
+    [84]              Version 0x84 = signed, version 4
+    [00][32 bytes]    MultiAddress::Id (public key)
+    [01][64 bytes]    MultiSignature::Sr25519
+    [era][nonce][tip] SignedExtra fields
+    [f5 03]           app_id = 506 (compact)
+    [1d][01]          pallet=29, call=1 (DataAvailability::submit_data)
+    [a9 15]           Data length = 1386 bytes (compact)
+    [1386 bytes]      Raw SBO data
+
+SBO Message:
+  Action: post
+  Path: /sys/names/sys
+  (Contains system identity registration)
+```
+
+## Example: Block 2723989 (Legacy)
 
 ```
 Header:
@@ -300,14 +415,19 @@ SBO Messages:
 
 1. **Wrong byte order**: Scalars are big-endian, not little-endian
 2. **Using all 32 bytes**: Only first 31 bytes contain data
-3. **Expecting raw data**: Matrix contains SCALE-encoded extrinsics
+3. **Expecting raw data**: Matrix contains SCALE-encoded `Vec<Vec<u8>>` of extrinsics
 4. **Ignoring IEC padding**: Must be removed before SCALE decoding
 5. **Chunk vs byte indexing**: `app_lookup.start` is chunk index, not byte offset
 6. **Requesting wrong row indices**: Header `rows` is original count; RPC returns extended matrix with 2× rows. To fetch original row N, request extended row 2*N. Odd rows contain parity data, not original data!
+7. **Missing AppId in SignedExtra**: Avail adds `app_id` after `tip` in signed extrinsics - must skip this when parsing
+8. **Magic byte scanning**: Never search for patterns like "SBO-" to find data boundaries - parse the structure properly
+9. **Ignoring gzip compression**: Submitted data may be gzip-compressed (check for 0x1f 0x8b magic)
 
 ## References
 
+- [avail-core kate/recovery com.rs](https://github.com/availproject/avail-core/blob/main/kate/recovery/src/com.rs) - **Authoritative source** for `AppData = Vec<Vec<u8>>` and `decode_app_extrinsics`
+- [avail-core kate com.rs](https://github.com/availproject/avail-core/blob/main/kate/src/com.rs) - Encoding with `opaques.encode()` where opaques is `Vec<Vec<u8>>`, FFT extension and interleaving
 - [avail-core constants](https://github.com/availproject/avail-core/blob/main/core/src/constants.rs)
-- [avail-core kate com.rs](https://github.com/availproject/avail-core/blob/main/kate/src/com.rs) - FFT extension and interleaving
-- [avail-light kate rows](https://github.com/availproject/avail-light/blob/main/core/src/network/rpc/client.rs)
-- [kate recovery](https://github.com/availproject/avail-core/tree/main/kate/recovery)
+- [avail-light app_client.rs](https://github.com/availproject/avail-light/blob/main/core/src/app_client.rs) - Light client usage of kate_recovery
+- [avail-light rpc client](https://github.com/availproject/avail-light/blob/main/core/src/network/rpc/client.rs)
+- [sbo-cli da.rs](../sbo-cli/src/commands/da.rs) - Working implementation of matrix decoding

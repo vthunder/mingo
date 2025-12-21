@@ -1,0 +1,23 @@
+[package]
+name = "sbo-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SBO RPC client and Avail data matrix decoding"
+
+[dependencies]
+# Avail
+avail-rust = { package = "avail-rust-client", git = "https://github.com/availproject/avail-rust", branch = "main" }
+parity-scale-codec = "3"
+
+# Compression
+flate2.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Async
+tokio.workspace = true

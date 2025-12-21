@@ -880,8 +880,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
                                         if let Some((public_key, display_name)) = identity_data {
                                             identities.push(serde_json::json!({
-                                                "uri": format!("{}/sys/names/{}", repo.uri.to_string().trim_end_matches('/'), name),
-                                                "chain": repo.uri.to_string(),
+                                                "uri": format!("{}/sys/names/{}", repo.display_uri.trim_end_matches('/'), name),
+                                                "chain": &repo.display_uri,
                                                 "name": name,
                                                 "display_name": display_name,
                                                 "public_key": public_key,
@@ -952,8 +952,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
                                 if let Some((public_key, display_name, description, avatar, links, binding)) = identity_data {
                                     found_identities.push(serde_json::json!({
-                                        "uri": format!("{}/sys/names/{}", repo.uri.to_string().trim_end_matches('/'), name),
-                                        "chain": repo.uri.to_string(),
+                                        "uri": format!("{}/sys/names/{}", repo.display_uri.trim_end_matches('/'), name),
+                                        "chain": &repo.display_uri,
                                         "name": name,
                                         "public_key": public_key,
                                         "display_name": display_name,
@@ -1047,8 +1047,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                                         if let Ok(token_str) = std::str::from_utf8(payload) {
                                             if let Ok(claims) = sbo_core::jwt::decode_identity_claims(token_str) {
                                                 domains.push(serde_json::json!({
-                                                    "uri": format!("{}/sys/domains/{}", repo.uri.to_string().trim_end_matches('/'), domain_name),
-                                                    "chain": repo.uri.to_string(),
+                                                    "uri": format!("{}/sys/domains/{}", repo.display_uri.trim_end_matches('/'), domain_name),
+                                                    "chain": &repo.display_uri,
                                                     "domain": domain_name,
                                                     "public_key": claims.public_key,
                                                     "status": "verified",
@@ -1106,8 +1106,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                                 if let Ok(token_str) = std::str::from_utf8(payload) {
                                     if let Ok(claims) = sbo_core::jwt::decode_identity_claims(token_str) {
                                         found_domains.push(serde_json::json!({
-                                            "uri": format!("{}/sys/domains/{}", repo.uri.to_string().trim_end_matches('/'), domain_name),
-                                            "chain": repo.uri.to_string(),
+                                            "uri": format!("{}/sys/domains/{}", repo.display_uri.trim_end_matches('/'), domain_name),
+                                            "chain": &repo.display_uri,
                                             "domain": domain_name,
                                             "public_key": claims.public_key,
                                             "status": "verified",

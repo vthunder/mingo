@@ -15,6 +15,7 @@ zkvm = ["sbo-zkvm"]
 
 [dependencies]
 sbo-core.workspace = true
+sbo-rpc.workspace = true
 sbo-zkvm = { path = "../sbo-zkvm", features = ["prove"], optional = true }
 tokio.workspace = true
 tokio-stream.workspace = true

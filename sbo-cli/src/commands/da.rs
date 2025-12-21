@@ -13,6 +13,9 @@ use avail_rust::{
     ext::avail_rust_core::rpc::system::fetch_extrinsics::Options as RpcOptions,
 };
 
+// Use shared decode functions from sbo-rpc
+use sbo_rpc::{decode_app_data_from_rows, DATA_CHUNK_SIZE};
+
 /// Stream blocks from DA layer
 pub async fn stream(from: u64, limit: Option<u64>, raw: bool) -> Result<()> {
     println!("Connecting to Avail...");
@@ -354,8 +357,146 @@ fn decode_compact_and_data(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(bytes[data_start..data_end].to_vec())
 }
 
-/// Scan a specific block for data submissions
-pub async fn scan(block_number: u64, show_raw: bool, _app_id: u32) -> Result<()> {
+/// Scan a block using data matrix rows (Kate RPC)
+///
+/// This uses the same approach as sbo-daemon/rpc.rs to fetch data via
+/// kate::query_rows, which retrieves data directly from the DA matrix.
+pub async fn scan(block_number: u64, show_raw: bool, app_id: u32) -> Result<()> {
+    use avail_rust::ext::avail_rust_core::rpc::kate;
+
+    let config = Config::load(&Config::config_path()).unwrap_or_default();
+    let endpoint = config.rpc.endpoints.first()
+        .ok_or_else(|| anyhow::anyhow!("No RPC endpoints configured"))?;
+
+    println!("Connecting to RPC: {}", endpoint);
+    let client = AvailRustClient::new(endpoint).await?;
+
+    println!("Fetching block {} (app_id={})...", block_number, app_id);
+
+    let block = client.block(block_number as u32);
+    let header = block.header().await?;
+    let block_hash = header.hash();
+
+    // Extract app_lookup and dimensions from header
+    let (app_lookup_size, app_lookup_index, cols, rows) = match &header.extension {
+        avail_rust::ext::avail_rust_core::header::HeaderExtension::V3(ext) => {
+            (ext.app_lookup.size, &ext.app_lookup.index, ext.commitment.cols as u32, ext.commitment.rows as u32)
+        }
+        avail_rust::ext::avail_rust_core::header::HeaderExtension::V4(ext) => {
+            (ext.app_lookup.size, &ext.app_lookup.index, ext.commitment.cols as u32, ext.commitment.rows as u32)
+        }
+    };
+
+    println!("\n=== Block {} ===", block_number);
+    println!("Matrix: {}x{} (original rows, extended={})", rows, cols, rows * 2);
+    println!("App lookup size: {} chunks", app_lookup_size);
+
+    println!("\n--- App Lookup ---");
+    for item in app_lookup_index.iter() {
+        println!("  app_id {} starts at chunk {}", item.app_id, item.start);
+    }
+
+    // Find data range for our app_id
+    let mut app_start = None;
+    let mut app_end = app_lookup_size;
+
+    for (i, item) in app_lookup_index.iter().enumerate() {
+        if item.app_id == app_id {
+            app_start = Some(item.start);
+            if i + 1 < app_lookup_index.len() {
+                app_end = app_lookup_index[i + 1].start;
+            }
+            break;
+        }
+    }
+
+    let Some(start_chunk) = app_start else {
+        println!("\nApp ID {} not found in this block", app_id);
+        return Ok(());
+    };
+
+    let chunk_count = app_end - start_chunk;
+    println!("\n--- App {} Data ---", app_id);
+    println!("Chunks: {} to {} ({} chunks, ~{} bytes)",
+        start_chunk, app_end, chunk_count, chunk_count as usize * DATA_CHUNK_SIZE);
+
+    // Calculate which rows we need for this app's data
+    let start_row = start_chunk / cols;
+    let end_row = (app_end.saturating_sub(1)) / cols;
+    let rows_needed: Vec<u32> = (start_row..=end_row).collect();
+
+    println!("Rows needed: {:?} (original indices)", rows_needed);
+
+    // Fetch rows via Kate RPC (convert to extended row indices)
+    let extended_rows: Vec<u32> = rows_needed.iter().map(|r| r * 2).collect();
+    println!("Fetching extended rows: {:?}", extended_rows);
+
+    let fetched = kate::query_rows(
+        &client.rpc_client,
+        extended_rows,
+        Some(block_hash),
+    ).await?;
+
+    // Map fetched rows back to original indices
+    let all_rows: Vec<(u32, kate::GRow)> = rows_needed.iter()
+        .zip(fetched.into_iter())
+        .map(|(&idx, row)| (idx, row))
+        .collect();
+
+    // Use shared decode function from sbo-rpc
+    // This handles: cell extraction, IEC padding removal, SCALE Vec<Vec<u8>> decode,
+    // extrinsic parsing, and gzip decompression
+    println!("\n--- Decoding using shared sbo-rpc functions ---");
+    let data = decode_app_data_from_rows(&all_rows, start_chunk, app_end, cols, true);
+
+    if data.is_empty() {
+        println!("No data extracted from matrix");
+        return Ok(());
+    }
+
+    println!("\n--- Decoded Data: {} bytes ---", data.len());
+
+    // Try to parse as SBO
+    match sbo_core::wire::parse(&data) {
+        Ok(msg) => {
+            println!("SBO Message: {} {}{}", msg.action.name(), msg.path, msg.id);
+            println!("Signing key: {:?}", msg.signing_key);
+        }
+        Err(e) => {
+            println!("Not a valid SBO message: {}", e);
+            let preview: String = data.iter().take(80)
+                .map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '.' })
+                .collect();
+            println!("Data preview: {}", preview);
+        }
+    }
+
+    if show_raw {
+        println!("\n--- Raw Data ---");
+        match std::str::from_utf8(&data) {
+            Ok(s) => {
+                for line in s.lines().take(30) {
+                    println!("| {}", line);
+                }
+                if s.lines().count() > 30 {
+                    println!("| ... ({} more lines)", s.lines().count() - 30);
+                }
+            }
+            Err(_) => {
+                println!("| {}", hex::encode(&data[..std::cmp::min(200, data.len())]));
+            }
+        }
+        println!("-----------------");
+    }
+
+    Ok(())
+}
+
+// Note: unpad_iec_9797_1 and extract_data_from_encoded_extrinsic
+// are now provided by sbo_rpc crate
+
+/// Scan a specific block for data submissions (extrinsic parsing, legacy)
+pub async fn scan_ext(block_number: u64, show_raw: bool, _app_id: u32) -> Result<()> {
     let config = Config::load(&Config::config_path()).unwrap_or_default();
     let endpoint = config.rpc.endpoints.first()
         .ok_or_else(|| anyhow::anyhow!("No RPC endpoints configured"))?;
