@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use sbo_daemon::config::Config;
+use sbo_daemon::http::{self, SignRequestStore};
 use sbo_daemon::ipc::{IpcServer, Request, Response, SignRequestStatus, SignRequest as IpcSignRequest};
 use sbo_daemon::lc::LcManager;
 use sbo_daemon::prover::Prover;
@@ -182,6 +183,18 @@ impl DaemonState {
     }
 }
 
+impl SignRequestStore for DaemonState {
+    fn create_sign_request(&mut self, request: IpcSignRequest) -> String {
+        let id = request.request_id.clone();
+        self.sign_requests.insert(id.clone(), request);
+        id
+    }
+
+    fn get_sign_request(&self, request_id: &str) -> Option<&IpcSignRequest> {
+        self.sign_requests.get(request_id)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize logging
@@ -338,6 +351,14 @@ async fn run_daemon(config: Config, verbose: VerboseFlags, debug: DebugFlags) ->
 
         if let Err(e) = ipc_server.run(handler).await {
             tracing::error!("IPC server error: {}", e);
+        }
+    });
+
+    // Start HTTP server for web auth
+    let state_for_http = Arc::clone(&state);
+    let http_handle = tokio::spawn(async move {
+        if let Err(e) = http::run_server(state_for_http, 7890).await {
+            tracing::error!("HTTP server error: {}", e);
         }
     });
 
@@ -527,6 +548,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags, debug: DebugFlags) ->
     }
 
     ipc_handle.abort();
+    http_handle.abort();
     sync_handle.abort();
 
     Ok(())

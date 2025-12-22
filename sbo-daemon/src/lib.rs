@@ -10,6 +10,7 @@ pub mod rpc;
 pub mod turbo;
 pub mod sync;
 pub mod ipc;
+pub mod http;
 pub mod validate;
 pub mod prover;
 
