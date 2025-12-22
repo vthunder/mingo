@@ -199,14 +199,27 @@ enum IdCommands {
     /// then posts it to /sys/names/<name>/ with Content-Schema: identity.v1
     ///
     /// Examples:
+    ///   # Self-signed identity
     ///   sbo id create sbo+raw://avail:turing:506/ alice
     ///   sbo id create sbo+raw://avail:turing:506/ alice --display-name "Alice Smith"
+    ///
+    ///   # Domain-certified identity
+    ///   sbo id create --email alice@sandmill.org
     Create {
         /// SBO URI of the chain/app (e.g., sbo+raw://avail:turing:506/)
-        uri: String,
+        /// Required for self-signed identities, not used for --email flow
+        #[arg(required_unless_present = "email", conflicts_with = "email")]
+        uri: Option<String>,
 
         /// Name to claim (will post to /sys/names/<name>/)
-        name: String,
+        /// Required for self-signed identities, not used for --email flow
+        #[arg(required_unless_present = "email", conflicts_with = "email")]
+        name: Option<String>,
+
+        /// Email address for domain-certified identity (e.g., alice@sandmill.org)
+        /// When provided, the domain certifies the identity binding
+        #[arg(long)]
+        email: Option<String>,
 
         /// Key alias to use for signing (default: "default")
         #[arg(long)]
@@ -1348,19 +1361,31 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Id(id_cmd) => {
             match id_cmd {
-                IdCommands::Create { uri, name, key, display_name, description, avatar, website, binding, dry_run, no_wait } => {
-                    commands::identity::create(
-                        &uri,
-                        &name,
-                        key.as_deref(),
-                        display_name.as_deref(),
-                        description.as_deref(),
-                        avatar.as_deref(),
-                        website.as_deref(),
-                        binding.as_deref(),
-                        dry_run,
-                        no_wait,
-                    ).await?;
+                IdCommands::Create { uri, name, email, key, display_name, description, avatar, website, binding, dry_run, no_wait } => {
+                    if let Some(email_addr) = email {
+                        // Domain-certified identity flow
+                        commands::identity::create_domain_certified(
+                            &email_addr,
+                            key.as_deref(),
+                            no_wait,
+                        ).await?;
+                    } else {
+                        // Self-signed identity flow (original behavior)
+                        let uri = uri.expect("uri required when email not provided");
+                        let name = name.expect("name required when email not provided");
+                        commands::identity::create(
+                            &uri,
+                            &name,
+                            key.as_deref(),
+                            display_name.as_deref(),
+                            description.as_deref(),
+                            avatar.as_deref(),
+                            website.as_deref(),
+                            binding.as_deref(),
+                            dry_run,
+                            no_wait,
+                        ).await?;
+                    }
                 }
                 IdCommands::List { uri } => {
                     commands::identity::list(uri.as_deref()).await?;

@@ -838,6 +838,287 @@ pub async fn import_email(email: &str) -> Result<()> {
     Ok(())
 }
 
+/// Create a domain-certified identity
+///
+/// Uses the domain's identity provisioning endpoint to get a signed JWT.
+/// The domain certifies the binding between the email and public key.
+pub async fn create_domain_certified(
+    email: &str,
+    key_alias: Option<&str>,
+    no_wait: bool,
+) -> Result<()> {
+    use std::io::Write;
+    use std::time::Duration;
+
+    // Parse email to extract local part and domain
+    let (local_part, domain) = match sbo_core::dns::parse_email(email) {
+        Some(parts) => parts,
+        None => {
+            eprintln!("Error: Invalid email address: {}", email);
+            std::process::exit(1);
+        }
+    };
+
+    // Open keyring and resolve signing key
+    let mut keyring = Keyring::open()?;
+    let alias = keyring.resolve_alias(key_alias)?;
+    let signing_key = keyring.get_signing_key(&alias)?;
+    let public_key = signing_key.public_key();
+
+    println!("Creating domain-certified identity for {}", email);
+    println!("  Local key: {} ({})", alias, public_key.to_string());
+
+    // Connect to daemon
+    let config = Config::load(&Config::config_path())?;
+    let client = IpcClient::new(config.daemon.socket_path.clone());
+
+    // Request identity provisioning from daemon
+    println!("  Requesting identity provisioning from {}...", domain);
+
+    let response = client
+        .request(Request::RequestIdentityProvisioning {
+            email: email.to_string(),
+            public_key: public_key.to_string(),
+        })
+        .await;
+
+    let (status, request_id, verification_uri, identity_jwt) = match response {
+        Ok(Response::Ok { data }) => {
+            let status = data["status"].as_str().unwrap_or("unknown").to_string();
+            let request_id = data["request_id"].as_str().map(|s| s.to_string());
+            let verification_uri = data["verification_uri"].as_str().map(|s| s.to_string());
+            let identity_jwt = data["identity_jwt"].as_str().map(|s| s.to_string());
+            (status, request_id, verification_uri, identity_jwt)
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("Error: {}", message);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to connect to daemon: {}", e);
+            eprintln!("Is the daemon running? Try: sbo daemon start");
+            std::process::exit(1);
+        }
+    };
+
+    // If already complete (user was logged in), we have the JWT
+    let identity_jwt = if status == "complete" {
+        println!("  ✓ Domain returned identity immediately (already authenticated)");
+        identity_jwt.expect("identity_jwt should be present when status is complete")
+    } else if status == "pending" {
+        // Need to poll
+        let request_id = request_id.expect("request_id should be present when status is pending");
+        let verification_uri = verification_uri.expect("verification_uri should be present");
+
+        println!();
+        println!("  Please authenticate at:");
+        println!("  {}", verification_uri);
+        println!();
+
+        // Try to open browser
+        if let Err(_e) = open::that(&verification_uri) {
+            // Failed to open browser, user can manually visit
+        }
+
+        // Poll for completion
+        print!("  Waiting for authentication");
+        std::io::stdout().flush()?;
+
+        let poll_interval = Duration::from_secs(2);
+        let max_attempts = 150; // 5 minutes at 2 second intervals
+
+        let mut jwt = None;
+        for _ in 0..max_attempts {
+            tokio::time::sleep(poll_interval).await;
+            print!(".");
+            std::io::stdout().flush()?;
+
+            let poll_response = client
+                .request(Request::PollIdentityProvisioning {
+                    request_id: request_id.clone(),
+                })
+                .await;
+
+            match poll_response {
+                Ok(Response::Ok { data }) => {
+                    let poll_status = data["status"].as_str().unwrap_or("unknown");
+                    if poll_status == "complete" {
+                        jwt = data["identity_jwt"].as_str().map(|s| s.to_string());
+                        break;
+                    } else if poll_status == "expired" {
+                        println!();
+                        eprintln!("Error: Authentication request expired");
+                        std::process::exit(1);
+                    }
+                    // Still pending, continue polling
+                }
+                Ok(Response::Error { message }) => {
+                    println!();
+                    eprintln!("Error polling: {}", message);
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    println!();
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        println!();
+
+        match jwt {
+            Some(j) => {
+                println!("  ✓ Authentication complete");
+                j
+            }
+            None => {
+                eprintln!("Error: Timed out waiting for authentication");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        eprintln!("Error: Unexpected status from identity provisioning: {}", status);
+        std::process::exit(1);
+    };
+
+    println!("  ✓ Received identity JWT from domain");
+
+    // Now we need to:
+    // 1. Resolve the domain's SBO URI (from DNS)
+    // 2. Wrap the identity JWT in an SBO message
+    // 3. Submit to /sys/names/{local_part}
+
+    // Resolve the domain's SBO URI
+    print!("  Resolving {}...", domain);
+    std::io::stdout().flush()?;
+
+    let dns_record = sbo_core::dns::resolve(domain).await
+        .map_err(|e| anyhow::anyhow!("Failed to resolve domain SBO URI: {}", e))?;
+
+    if dns_record.repository_uri.is_empty() {
+        println!();
+        eprintln!("Error: Domain {} has no SBO repository configured", domain);
+        std::process::exit(1);
+    }
+
+    let chain_uri = dns_record.repository_uri.trim_end_matches('/');
+    println!(" {}", chain_uri);
+
+    // Build the identity message with the domain-signed JWT as payload
+    // The identity JWT IS the payload - we wrap it in an SBO message
+    let jwt_bytes = identity_jwt.as_bytes().to_vec();
+
+    // Create identity message wrapping the JWT
+    use sbo_core::crypto::{ContentHash, Signature};
+    use sbo_core::message::{Action, Id, Message, ObjectType, Path};
+
+    let placeholder_sig = Signature::parse(&"0".repeat(128))?;
+    let mut msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/names/")?,
+        id: Id::new(local_part)?,
+        object_type: ObjectType::Object,
+        signing_key: public_key.clone(),
+        signature: placeholder_sig,
+        content_type: Some("application/jwt".to_string()),
+        content_hash: Some(ContentHash::sha256(&jwt_bytes)),
+        content_schema: Some("identity.v1".to_string()),
+        payload: Some(jwt_bytes),
+        owner: None,
+        creator: None,
+        content_encoding: None,
+        policy_ref: None,
+        related: None,
+    };
+    msg.sign(&signing_key);
+
+    let wire_bytes = sbo_core::wire::serialize(&msg);
+
+    // Submit to chain
+    let identity_uri = format!("{}/sys/names/{}", chain_uri, local_part);
+    println!("  Submitting identity to {}...", identity_uri);
+
+    match client
+        .request(Request::SubmitIdentity {
+            uri: chain_uri.to_string(),
+            name: local_part.to_string(),
+            data: wire_bytes,
+            wait: !no_wait,
+        })
+        .await
+    {
+        Ok(Response::Ok { data }) => {
+            let status = data["status"].as_str().unwrap_or("unknown");
+
+            match status {
+                "verified" => {
+                    println!("\n✓ Domain-certified identity created and verified on-chain");
+                    println!("  URI:   {}", identity_uri);
+                    println!("  Email: {}", email);
+
+                    // Add identity to keyring
+                    if let Err(e) = keyring.add_identity(&alias, &identity_uri) {
+                        eprintln!("Warning: failed to update keyring: {}", e);
+                    }
+
+                    // Store email → SBO URI mapping
+                    if let Err(e) = keyring.add_email(email, &identity_uri) {
+                        eprintln!("Warning: failed to store email association: {}", e);
+                    }
+                }
+                "unverified" => {
+                    println!("\n○ Identity submitted (unverified)");
+                    println!("  URI:   {}", identity_uri);
+                    println!("  Email: {}", email);
+                    if let Some(id) = data["submission_id"].as_str() {
+                        println!("  Submission ID: {}", id);
+                    }
+                    println!("\n  Note: Running in light mode or --no-wait.");
+                    println!("  Check status with: sbo id show {}", local_part);
+
+                    // Add identity to keyring (unverified - will check later)
+                    if let Err(e) = keyring.add_identity(&alias, &identity_uri) {
+                        eprintln!("Warning: failed to update keyring: {}", e);
+                    }
+                    if let Err(e) = keyring.add_email(email, &identity_uri) {
+                        eprintln!("Warning: failed to store email association: {}", e);
+                    }
+                }
+                "pending" => {
+                    println!("\n○ Identity submitted but verification timed out");
+                    println!("  URI:   {}", identity_uri);
+                    if let Some(msg) = data["message"].as_str() {
+                        println!("  {}", msg);
+                    }
+
+                    // Add identity to keyring anyway
+                    if let Err(e) = keyring.add_identity(&alias, &identity_uri) {
+                        eprintln!("Warning: failed to update keyring: {}", e);
+                    }
+                    if let Err(e) = keyring.add_email(email, &identity_uri) {
+                        eprintln!("Warning: failed to store email association: {}", e);
+                    }
+                }
+                _ => {
+                    println!("\n? Unknown status: {}", status);
+                    println!("{}", serde_json::to_string_pretty(&data)?);
+                }
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("Error: {}", message);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to connect to daemon: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
 /// Resolve an email address to its SBO identity URI
 pub async fn resolve(email: &str) -> Result<()> {
     // Validate email format

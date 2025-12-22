@@ -106,12 +106,33 @@ impl DebugFlags {
 
 /// In-flight session binding request (while waiting for user verification)
 #[derive(Clone)]
+#[allow(dead_code)]
 struct SessionBindingRequest {
-    /// Request ID (from domain's provisioning endpoint)
+    /// Request ID (from domain's session endpoint)
     request_id: String,
     /// Email address
     email: String,
     /// Domain for this session
+    domain: String,
+    /// Discovery document for this domain
+    discovery: dns::DiscoveryDocument,
+    /// When this request was created
+    created_at: u64,
+    /// When this request expires
+    expires_at: u64,
+}
+
+/// In-flight identity provisioning request (while waiting for user verification)
+#[derive(Clone)]
+#[allow(dead_code)]
+struct IdentityProvisioningRequest {
+    /// Request ID (from domain's identity endpoint)
+    request_id: String,
+    /// Email address
+    email: String,
+    /// Public key being registered
+    public_key: String,
+    /// Domain for this identity
     domain: String,
     /// Discovery document for this domain
     discovery: dns::DiscoveryDocument,
@@ -133,6 +154,8 @@ struct DaemonState {
     sign_requests: HashMap<String, IpcSignRequest>,
     /// In-flight session binding requests (keyed by request_id)
     session_binding_requests: HashMap<String, SessionBindingRequest>,
+    /// In-flight identity provisioning requests (keyed by request_id)
+    identity_provisioning_requests: HashMap<String, IdentityProvisioningRequest>,
 }
 
 impl DaemonState {
@@ -155,6 +178,7 @@ impl DaemonState {
             turbo,
             sign_requests: HashMap::new(),
             session_binding_requests: HashMap::new(),
+            identity_provisioning_requests: HashMap::new(),
         })
     }
 }
@@ -778,8 +802,16 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             let light_mode = state_read.config.light.enabled;
 
             // Find repo matching the URI (check both display_uri and resolved uri)
+            // Normalize by trimming trailing slashes for comparison
+            let uri_normalized = uri.trim_end_matches('/');
             let repo = state_read.repos.list().find(|r| {
-                uri.starts_with(&r.uri.to_string()) || uri.starts_with(&r.display_uri)
+                let repo_uri = r.uri.to_string();
+                let repo_uri_normalized = repo_uri.trim_end_matches('/');
+                let display_uri_normalized = r.display_uri.trim_end_matches('/');
+                uri_normalized.starts_with(repo_uri_normalized)
+                    || repo_uri_normalized.starts_with(uri_normalized)
+                    || uri_normalized.starts_with(display_uri_normalized)
+                    || display_uri_normalized.starts_with(uri_normalized)
             });
 
             let (repo_uri, identity_uri) = match repo {
@@ -1428,14 +1460,14 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 Err(e) => return Response::error(format!("Failed to fetch discovery document: {}", e)),
             };
 
-            // Get provisioning endpoint
-            let provisioning = match &discovery.provisioning {
+            // Get session endpoint
+            let session_endpoint = match &discovery.session {
                 Some(p) => p,
-                None => return Response::error("Domain does not support session provisioning"),
+                None => return Response::error("Domain does not support session binding"),
             };
 
-            // POST to provisioning endpoint
-            let provision_url = format!("{}{}?domain={}", discovery_host, provisioning, domain);
+            // POST to session endpoint
+            let session_url = format!("https://{}{}?domain={}", discovery_host, session_endpoint, domain);
 
             let client = reqwest::Client::new();
             let body = serde_json::json!({
@@ -1444,29 +1476,29 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 "user_delegation": user_delegation_jwt,
             });
 
-            let response = match client.post(&provision_url).json(&body).send().await {
+            let response = match client.post(&session_url).json(&body).send().await {
                 Ok(r) => r,
-                Err(e) => return Response::error(format!("Failed to contact provisioning endpoint: {}", e)),
+                Err(e) => return Response::error(format!("Failed to contact session endpoint: {}", e)),
             };
 
             if !response.status().is_success() {
                 return Response::error(format!(
-                    "Provisioning endpoint returned {}: {}",
+                    "Session endpoint returned {}: {}",
                     response.status(),
                     response.text().await.unwrap_or_default()
                 ));
             }
 
             #[derive(serde::Deserialize)]
-            struct ProvisionResponse {
+            struct SessionResponse {
                 request_id: String,
                 verification_uri: String,
                 expires_in: u64,
             }
 
-            let provision_response: ProvisionResponse = match response.json().await {
+            let session_response: SessionResponse = match response.json().await {
                 Ok(r) => r,
-                Err(e) => return Response::error(format!("Invalid provisioning response: {}", e)),
+                Err(e) => return Response::error(format!("Invalid session response: {}", e)),
             };
 
             let now = std::time::SystemTime::now()
@@ -1476,31 +1508,31 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
             // Store the request for polling
             let session_request = SessionBindingRequest {
-                request_id: provision_response.request_id.clone(),
+                request_id: session_response.request_id.clone(),
                 email,
                 domain,
                 discovery,
                 created_at: now,
-                expires_at: now + provision_response.expires_in,
+                expires_at: now + session_response.expires_in,
             };
 
             {
                 let mut state_write = state.write().await;
                 state_write.session_binding_requests.insert(
-                    provision_response.request_id.clone(),
+                    session_response.request_id.clone(),
                     session_request,
                 );
             }
 
             tracing::info!(
                 "Session binding request initiated: {}",
-                provision_response.request_id
+                session_response.request_id
             );
 
             Response::ok(serde_json::json!({
-                "request_id": provision_response.request_id,
-                "verification_uri": provision_response.verification_uri,
-                "expires_in": provision_response.expires_in,
+                "request_id": session_response.request_id,
+                "verification_uri": session_response.verification_uri,
+                "expires_in": session_response.expires_in,
             }))
         }
 
@@ -1534,12 +1566,12 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 }));
             }
 
-            // Get poll endpoint from discovery (or fall back to provisioning + /poll)
-            let poll_path = match &session_request.discovery.provisioning_poll {
+            // Get poll endpoint from discovery (or fall back to session + /poll)
+            let poll_path = match &session_request.discovery.session_poll {
                 Some(p) => p.clone(),
                 None => {
-                    // Fallback: append /poll to provisioning endpoint
-                    match &session_request.discovery.provisioning {
+                    // Fallback: append /poll to session endpoint
+                    match &session_request.discovery.session {
                         Some(p) => format!("{}/poll", p),
                         None => return Response::error("Session has no poll endpoint"),
                     }
@@ -1555,7 +1587,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
             // POST to poll endpoint
             let poll_url = format!(
-                "{}{}?domain={}",
+                "https://{}{}?domain={}",
                 discovery_host, poll_path, session_request.domain
             );
 
@@ -1566,7 +1598,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
             let response = match client.post(&poll_url).json(&body).send().await {
                 Ok(r) => r,
-                Err(e) => return Response::error(format!("Failed to poll provisioning endpoint: {}", e)),
+                Err(e) => return Response::error(format!("Failed to poll session endpoint: {}", e)),
             };
 
             if !response.status().is_success() {
@@ -1598,6 +1630,235 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             Response::ok(serde_json::json!({
                 "status": poll_response.status,
                 "session_binding": poll_response.session_binding,
+            }))
+        }
+
+        // Identity provisioning requests
+        Request::RequestIdentityProvisioning { email, public_key } => {
+            // Extract domain from email
+            let domain = match dns::parse_email(&email) {
+                Some((_, d)) => d.to_string(),
+                None => return Response::error(format!("Invalid email address: {}", email)),
+            };
+
+            // Resolve discovery host from DNS
+            let dns_record = match dns::resolve(&domain).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Failed to resolve DNS for {}: {}", domain, e);
+                    // Fall back to domain itself as discovery host
+                    dns::SboRecord {
+                        repository_uri: String::new(),
+                        discovery_host: None,
+                    }
+                }
+            };
+
+            let discovery_host = dns::get_discovery_host(&dns_record, &domain);
+
+            // Fetch discovery document
+            let discovery = match dns::fetch_discovery(&discovery_host, &domain).await {
+                Ok(d) => d,
+                Err(e) => return Response::error(format!("Failed to fetch discovery document: {}", e)),
+            };
+
+            // Get identity endpoint
+            let identity_endpoint = match &discovery.identity {
+                Some(p) => p,
+                None => return Response::error("Domain does not support identity provisioning"),
+            };
+
+            // POST to identity endpoint
+            let identity_url = format!("https://{}{}?domain={}", discovery_host, identity_endpoint, domain);
+
+            let client = reqwest::Client::new();
+            let body = serde_json::json!({
+                "email": email,
+                "public_key": public_key,
+            });
+
+            let response = match client.post(&identity_url).json(&body).send().await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Failed to contact identity endpoint: {}", e)),
+            };
+
+            if !response.status().is_success() {
+                return Response::error(format!(
+                    "Identity endpoint returned {}: {}",
+                    response.status(),
+                    response.text().await.unwrap_or_default()
+                ));
+            }
+
+            #[derive(serde::Deserialize)]
+            struct IdentityResponse {
+                status: String,
+                #[serde(default)]
+                request_id: Option<String>,
+                #[serde(default)]
+                verification_uri: Option<String>,
+                #[serde(default)]
+                expires_in: Option<u64>,
+                #[serde(default)]
+                identity_jwt: Option<String>,
+            }
+
+            let identity_response: IdentityResponse = match response.json().await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Invalid identity response: {}", e)),
+            };
+
+            // If complete immediately (user already authenticated), return the JWT
+            if identity_response.status == "complete" {
+                tracing::info!("Identity provisioning completed immediately for {}", email);
+                return Response::ok(serde_json::json!({
+                    "status": "complete",
+                    "request_id": null,
+                    "verification_uri": null,
+                    "expires_in": null,
+                    "identity_jwt": identity_response.identity_jwt,
+                }));
+            }
+
+            // Otherwise, store request for polling
+            let request_id = match &identity_response.request_id {
+                Some(id) => id.clone(),
+                None => return Response::error("Identity endpoint returned pending but no request_id"),
+            };
+
+            let expires_in = identity_response.expires_in.unwrap_or(300);
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let identity_request = IdentityProvisioningRequest {
+                request_id: request_id.clone(),
+                email,
+                public_key,
+                domain,
+                discovery,
+                created_at: now,
+                expires_at: now + expires_in,
+            };
+
+            {
+                let mut state_write = state.write().await;
+                state_write.identity_provisioning_requests.insert(
+                    request_id.clone(),
+                    identity_request,
+                );
+            }
+
+            tracing::info!(
+                "Identity provisioning request initiated: {}",
+                request_id
+            );
+
+            Response::ok(serde_json::json!({
+                "status": "pending",
+                "request_id": request_id,
+                "verification_uri": identity_response.verification_uri,
+                "expires_in": expires_in,
+                "identity_jwt": null,
+            }))
+        }
+
+        Request::PollIdentityProvisioning { request_id } => {
+            // Find the stored request
+            let identity_request = {
+                let state_read = state.read().await;
+                match state_read.identity_provisioning_requests.get(&request_id) {
+                    Some(r) => r.clone(),
+                    None => return Response::error(format!(
+                        "Identity provisioning request '{}' not found",
+                        request_id
+                    )),
+                }
+            };
+
+            // Check if expired
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            if now > identity_request.expires_at {
+                // Clean up expired request
+                let mut state_write = state.write().await;
+                state_write.identity_provisioning_requests.remove(&request_id);
+
+                return Response::ok(serde_json::json!({
+                    "status": "expired",
+                    "identity_jwt": null,
+                }));
+            }
+
+            // Get poll endpoint from discovery (or fall back to identity + /poll)
+            let poll_path = match &identity_request.discovery.identity_poll {
+                Some(p) => p.clone(),
+                None => {
+                    // Fallback: append /poll to identity endpoint
+                    match &identity_request.discovery.identity {
+                        Some(p) => format!("{}/poll", p),
+                        None => return Response::error("Identity has no poll endpoint"),
+                    }
+                }
+            };
+
+            // Determine discovery host
+            let dns_record = dns::SboRecord {
+                repository_uri: String::new(),
+                discovery_host: identity_request.discovery.authority.clone(),
+            };
+            let discovery_host = dns::get_discovery_host(&dns_record, &identity_request.domain);
+
+            // POST to poll endpoint
+            let poll_url = format!(
+                "https://{}{}?domain={}",
+                discovery_host, poll_path, identity_request.domain
+            );
+
+            let client = reqwest::Client::new();
+            let body = serde_json::json!({
+                "request_id": request_id,
+            });
+
+            let response = match client.post(&poll_url).json(&body).send().await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Failed to poll identity endpoint: {}", e)),
+            };
+
+            if !response.status().is_success() {
+                return Response::error(format!(
+                    "Poll endpoint returned {}: {}",
+                    response.status(),
+                    response.text().await.unwrap_or_default()
+                ));
+            }
+
+            #[derive(serde::Deserialize)]
+            struct PollResponse {
+                status: String,
+                identity_jwt: Option<String>,
+            }
+
+            let poll_response: PollResponse = match response.json().await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Invalid poll response: {}", e)),
+            };
+
+            // If complete, clean up the stored request
+            if poll_response.status == "complete" {
+                let mut state_write = state.write().await;
+                state_write.identity_provisioning_requests.remove(&request_id);
+                tracing::info!("Identity provisioning completed: {}", request_id);
+            }
+
+            Response::ok(serde_json::json!({
+                "status": poll_response.status,
+                "identity_jwt": poll_response.identity_jwt,
             }))
         }
     }

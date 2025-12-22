@@ -33,3 +33,4 @@ avail-rust = { package = "avail-rust-client", git = "https://github.com/availpro
 ed25519-dalek.workspace = true
 rand.workspace = true
 dirs = "5"
+open = "5"

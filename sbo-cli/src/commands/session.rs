@@ -96,6 +96,7 @@ pub fn is_session_valid(session: &Session) -> bool {
 }
 
 /// Delete a stored session
+#[allow(dead_code)]
 pub fn delete_session(email: &str) -> Result<()> {
     let path = session_path(email);
 
@@ -108,6 +109,7 @@ pub fn delete_session(email: &str) -> Result<()> {
 }
 
 /// List all stored sessions
+#[allow(dead_code)]
 pub fn list_sessions() -> Result<Vec<(String, Session)>> {
     let dir = sessions_dir();
 

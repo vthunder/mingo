@@ -181,10 +181,16 @@ pub struct DiscoveryDocument {
     pub authentication: Option<String>,
     /// Path to session binding initiation endpoint (e.g., "/sbo/session")
     #[serde(default)]
-    pub provisioning: Option<String>,
+    pub session: Option<String>,
     /// Path to session binding poll endpoint (e.g., "/sbo/session/poll")
     #[serde(default)]
-    pub provisioning_poll: Option<String>,
+    pub session_poll: Option<String>,
+    /// Path to identity provisioning endpoint (e.g., "/sbo/identity")
+    #[serde(default)]
+    pub identity: Option<String>,
+    /// Path to identity provisioning poll endpoint (e.g., "/sbo/identity/poll")
+    #[serde(default)]
+    pub identity_poll: Option<String>,
     /// Delegation to another host (if present, fetch discovery from there instead)
     #[serde(default)]
     pub authority: Option<String>,
@@ -243,11 +249,12 @@ fn fetch_discovery_with_depth<'a>(
 /// Get the discovery host for a domain
 ///
 /// Returns the h= field from DNS if present, otherwise the domain itself.
+/// Returns just the hostname - callers add the scheme.
 pub fn get_discovery_host(record: &SboRecord, domain: &str) -> String {
     record
         .discovery_host
         .clone()
-        .unwrap_or_else(|| format!("https://{}", domain))
+        .unwrap_or_else(|| domain.to_string())
 }
 
 // ============================================================================
