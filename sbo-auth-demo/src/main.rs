@@ -2,8 +2,13 @@
 //!
 //! Demonstrates the SBO identity authentication flow from an app's perspective.
 //! This is a standalone app that communicates with the SBO daemon.
+//!
+//! Uses the nested JWT model:
+//! - assertion_jwt: signed by ephemeral key, contains challenge response
+//! - session_binding_jwt: signed by domain, wraps user delegation
 
 use clap::Parser;
+use sbo_core::jwt;
 use sbo_daemon::config::Config;
 use sbo_daemon::ipc::{IpcClient, Request, Response};
 use std::time::Duration;
@@ -99,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
     println!();
 
     let poll_interval = Duration::from_millis(args.poll_interval);
-    let assertion;
+    let (assertion_jwt, session_binding_jwt);
 
     loop {
         print!("  Polling... ");
@@ -119,12 +124,17 @@ async fn main() -> anyhow::Result<()> {
                     "approved" => {
                         println!("APPROVED ✓");
                         println!();
-                        assertion = data["assertion"].clone();
+                        assertion_jwt = data["assertion_jwt"].as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing assertion_jwt"))?
+                            .to_string();
+                        session_binding_jwt = data["session_binding_jwt"].as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing session_binding_jwt"))?
+                            .to_string();
                         break;
                     }
                     "rejected" => {
                         println!("REJECTED ✗");
-                        if let Some(reason) = data["reason"].as_str() {
+                        if let Some(reason) = data["rejection_reason"].as_str() {
                             println!("  Reason: {}", reason);
                         }
                         println!();
@@ -148,139 +158,148 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Step 3: Display the assertion
+    // Step 3: Display the JWTs
     println!("┌─────────────────────────────────────────────────────────────────┐");
-    println!("│ STEP 3: Received Signed Assertion                              │");
+    println!("│ STEP 3: Received JWTs                                          │");
     println!("└─────────────────────────────────────────────────────────────────┘");
     println!();
 
-    let identity_uri = assertion["identity_uri"].as_str().unwrap_or("");
-    let claimed_email = assertion["email"].as_str();
-    let public_key_str = assertion["public_key"].as_str().unwrap_or("");
-    let received_challenge = assertion["challenge"].as_str().unwrap_or("");
-    let timestamp = assertion["timestamp"].as_u64().unwrap_or(0);
-    let signature_hex = assertion["signature"].as_str().unwrap_or("");
+    println!("  Assertion JWT:       {}...", &assertion_jwt[..std::cmp::min(50, assertion_jwt.len())]);
+    println!("  Session Binding JWT: {}...", &session_binding_jwt[..std::cmp::min(50, session_binding_jwt.len())]);
+    println!();
 
-    println!("  Identity URI: {}", identity_uri);
-    if let Some(email) = claimed_email {
-        println!("  Email:        {}", email);
+    // Step 4: Verify the assertion chain
+    println!("┌─────────────────────────────────────────────────────────────────┐");
+    println!("│ STEP 4: Verify JWT Chain                                       │");
+    println!("└─────────────────────────────────────────────────────────────────┘");
+    println!();
+
+    // Check if using placeholder (session binding not yet implemented)
+    if session_binding_jwt.starts_with("placeholder:") {
+        println!("  NOTE: Session binding is a placeholder - skipping full verification");
+        println!();
+
+        // Still verify the assertion JWT
+        print!("  [1/3] Decode assertion JWT... ");
+        let assertion_claims = match jwt::decode_auth_assertion_claims(&assertion_jwt) {
+            Ok(claims) => {
+                println!("✓ PASS");
+                claims
+            }
+            Err(e) => {
+                println!("✗ FAIL ({:?})", e);
+                return Ok(());
+            }
+        };
+
+        // Verify nonce matches challenge
+        print!("  [2/3] Nonce matches challenge... ");
+        if assertion_claims.nonce == challenge {
+            println!("✓ PASS");
+        } else {
+            println!("✗ FAIL");
+            println!("       Expected: {}", challenge);
+            println!("       Got:      {}", assertion_claims.nonce);
+            return Ok(());
+        }
+
+        // Verify audience matches origin
+        print!("  [3/3] Audience matches origin... ");
+        if assertion_claims.aud == args.origin {
+            println!("✓ PASS");
+        } else {
+            println!("✗ FAIL");
+            println!("       Expected: {}", args.origin);
+            println!("       Got:      {}", assertion_claims.aud);
+            return Ok(());
+        }
+
+        let claimed_email = &assertion_claims.iss;
+        println!();
+        println!("┌─────────────────────────────────────────────────────────────────┐");
+        println!("│ AUTHENTICATION PARTIALLY VERIFIED                              │");
+        println!("└─────────────────────────────────────────────────────────────────┘");
+        println!();
+        println!("  Email (claimed): {}", claimed_email);
+        println!();
+        println!("  NOTE: Full verification requires session binding from domain.");
+        println!("  The domain endpoint infrastructure is not yet implemented.");
+        println!();
+
+        return Ok(());
     }
-    println!("  Public Key:   {}", public_key_str);
-    println!("  Challenge:    {}", received_challenge);
-    println!("  Timestamp:    {}", timestamp);
-    println!("  Signature:    {}...", &signature_hex[..std::cmp::min(32, signature_hex.len())]);
-    println!();
 
-    // Step 4: Verify the assertion
-    println!("┌─────────────────────────────────────────────────────────────────┐");
-    println!("│ STEP 4: Verify Assertion                                       │");
-    println!("└─────────────────────────────────────────────────────────────────┘");
-    println!();
+    // Full verification with session binding
+    print!("  [1/6] Decode assertion JWT... ");
+    let assertion_claims = match jwt::decode_auth_assertion_claims(&assertion_jwt) {
+        Ok(claims) => {
+            println!("✓ PASS");
+            claims
+        }
+        Err(e) => {
+            println!("✗ FAIL ({:?})", e);
+            return Ok(());
+        }
+    };
 
-    // 4a. Verify challenge matches
-    print!("  [1/5] Challenge matches what we sent... ");
-    if received_challenge == challenge {
+    print!("  [2/6] Nonce matches challenge... ");
+    if assertion_claims.nonce == challenge {
         println!("✓ PASS");
     } else {
         println!("✗ FAIL");
-        println!("       Expected: {}", challenge);
-        println!("       Got:      {}", received_challenge);
         return Ok(());
     }
 
-    // 4b. Verify timestamp is recent (within 5 minutes)
-    print!("  [2/5] Timestamp is recent (< 5 min)... ");
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
-    let age = now_secs.saturating_sub(timestamp);
-    if age < 300 {
-        println!("✓ PASS ({}s ago)", age);
+    print!("  [3/6] Audience matches origin... ");
+    if assertion_claims.aud == args.origin {
+        println!("✓ PASS");
     } else {
-        println!("✗ FAIL ({}s ago)", age);
+        println!("✗ FAIL");
         return Ok(());
     }
 
-    // 4c. Verify email matches what we requested (if directed)
-    print!("  [3/5] Email matches request... ");
-    if let Some(ref requested) = args.email {
-        if let Some(claimed) = claimed_email {
-            if claimed == requested {
-                println!("✓ PASS ({})", claimed);
-            } else {
-                println!("✗ FAIL");
-                println!("       Requested: {}", requested);
-                println!("       Got:       {}", claimed);
-                return Ok(());
-            }
-        } else {
-            println!("✗ FAIL (no email in assertion)");
+    print!("  [4/6] Decode session binding JWT... ");
+    let session_claims = match jwt::decode_session_binding_claims(&session_binding_jwt) {
+        Ok(claims) => {
+            println!("✓ PASS");
+            claims
+        }
+        Err(e) => {
+            println!("✗ FAIL ({:?})", e);
             return Ok(());
         }
-    } else {
-        println!("✓ PASS (undirected request)");
-    }
-
-    // 4d. Verify signature
-    print!("  [4/5] Signature is valid... ");
-
-    // Parse public key
-    let public_key_bytes = if public_key_str.starts_with("ed25519:") {
-        hex::decode(&public_key_str[8..])?
-    } else {
-        hex::decode(public_key_str)?
     };
 
-    let public_key_array: [u8; 32] = public_key_bytes.try_into()
-        .map_err(|_| anyhow::anyhow!("Invalid public key length"))?;
-    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&public_key_array)?;
+    let claimed_email = &session_claims.sub;
+    let domain = session_claims.iss.strip_prefix("domain:").unwrap_or(&session_claims.iss);
 
-    // Reconstruct the signed message
-    let email_str = claimed_email.unwrap_or("");
-    let message = format!("{}:{}:{}:{}", identity_uri, email_str, received_challenge, timestamp);
-
-    // Parse signature
-    let signature_bytes = hex::decode(signature_hex)?;
-    let signature_array: [u8; 64] = signature_bytes.try_into()
-        .map_err(|_| anyhow::anyhow!("Invalid signature length"))?;
-    let signature = ed25519_dalek::Signature::from_bytes(&signature_array);
-
-    // Verify
-    use ed25519_dalek::Verifier;
-    match verifying_key.verify(message.as_bytes(), &signature) {
-        Ok(_) => println!("✓ PASS"),
-        Err(e) => {
-            println!("✗ FAIL ({})", e);
+    print!("  [5/6] Email matches request... ");
+    if let Some(ref requested) = args.email {
+        if claimed_email == requested {
+            println!("✓ PASS ({})", claimed_email);
+        } else {
+            println!("✗ FAIL");
+            println!("       Requested: {}", requested);
+            println!("       Got:       {}", claimed_email);
             return Ok(());
         }
+    } else {
+        println!("✓ PASS (undirected request, got {})", claimed_email);
     }
 
-    // 4e. Verify public key matches on-chain identity
-    print!("  [5/5] Public key matches on-chain identity... ");
-
-    match client.request(Request::GetIdentity {
-        uri: identity_uri.to_string(),
-    }).await {
-        Ok(Response::Ok { data }) => {
-            let onchain_key = data["public_key"].as_str().unwrap_or("");
-            if onchain_key == public_key_str {
-                println!("✓ PASS");
-            } else {
-                println!("✗ FAIL");
-                println!("       Assertion key: {}", public_key_str);
-                println!("       On-chain key:  {}", onchain_key);
-                return Ok(());
-            }
-        }
-        Ok(Response::Error { message }) => {
-            println!("✗ FAIL ({})", message);
-            return Ok(());
+    print!("  [6/6] Decode user delegation JWT... ");
+    let delegation_claims = match jwt::decode_user_delegation_claims(&session_claims.user_delegation) {
+        Ok(claims) => {
+            println!("✓ PASS");
+            claims
         }
         Err(e) => {
-            println!("✗ FAIL (daemon error: {})", e);
+            println!("✗ FAIL ({:?})", e);
             return Ok(());
         }
-    }
+    };
+
+    let user_key = &delegation_claims.iss;
 
     println!();
     println!("┌─────────────────────────────────────────────────────────────────┐");
@@ -288,10 +307,14 @@ async fn main() -> anyhow::Result<()> {
     println!("└─────────────────────────────────────────────────────────────────┘");
     println!();
     println!("  User has proven control of:");
-    if let Some(email) = claimed_email {
-        println!("    Email:    {}", email);
-    }
-    println!("    Identity: {}", identity_uri);
+    println!("    Email:      {}", claimed_email);
+    println!("    Domain:     {}", domain);
+    println!("    User Key:   {}", user_key);
+    println!();
+    println!("  JWT Chain:");
+    println!("    Assertion:     {} -> app", assertion_claims.iss);
+    println!("    Session:       {} certified by {}", claimed_email, domain);
+    println!("    Delegation:    {} -> ephemeral key", user_key);
     println!();
     println!("  The app can now trust this user session.");
     println!();

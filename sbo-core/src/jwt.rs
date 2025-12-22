@@ -147,6 +147,62 @@ pub struct DomainClaims {
     pub iat: i64,
 }
 
+// ============================================================================
+// Auth JWT Claims (SBO Auth Specification v0.1)
+// ============================================================================
+
+/// User delegation JWT claims - user authorizes an ephemeral key
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserDelegationClaims {
+    /// User's public key: "ed25519:<hex>"
+    pub iss: String,
+    /// Ephemeral key being delegated to: "ed25519:<hex>"
+    pub delegate_to: String,
+    /// Issued-at timestamp (Unix seconds)
+    pub iat: u64,
+    /// Expiration timestamp (Unix seconds)
+    pub exp: u64,
+}
+
+/// Session binding JWT claims - domain wraps user delegation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionBindingClaims {
+    /// Domain issuer: "domain:<domain>"
+    pub iss: String,
+    /// User's email address
+    pub sub: String,
+    /// Nested user delegation JWT (complete, signed)
+    pub user_delegation: String,
+    /// Issued-at timestamp (Unix seconds)
+    pub iat: u64,
+    /// Expiration timestamp (Unix seconds)
+    pub exp: u64,
+}
+
+/// Auth assertion JWT claims - ephemeral key proves identity to app
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthAssertionClaims {
+    /// User's email address
+    pub iss: String,
+    /// Application origin (audience)
+    pub aud: String,
+    /// Challenge from application
+    pub nonce: String,
+    /// Issued-at timestamp (Unix seconds)
+    pub iat: u64,
+}
+
+/// Result of successful auth verification
+#[derive(Debug, Clone)]
+pub struct VerifiedAuth {
+    /// User's email address
+    pub email: String,
+    /// User's public key (from delegation chain)
+    pub user_key: PublicKey,
+    /// Domain that issued the session binding
+    pub domain: String,
+}
+
 /// Profile data (profile.v1) - NOT a JWT, just JSON
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Profile {
@@ -381,6 +437,210 @@ pub fn verify_domain(token: &str) -> JwtResult<DomainClaims> {
     decode_and_verify(token, &public_key)
 }
 
+// ============================================================================
+// Auth JWT Functions (SBO Auth Specification v0.1)
+// ============================================================================
+
+/// Create a user delegation JWT (user key delegates to ephemeral key)
+pub fn create_user_delegation(
+    user_signing_key: &SigningKey,
+    ephemeral_public_key: &PublicKey,
+    expires_in_secs: u64,
+) -> JwtResult<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let claims = UserDelegationClaims {
+        iss: user_signing_key.public_key().to_string(),
+        delegate_to: ephemeral_public_key.to_string(),
+        iat: now,
+        exp: now + expires_in_secs,
+    };
+
+    encode_jwt(&claims, user_signing_key)
+}
+
+/// Create an auth assertion JWT (ephemeral key signs for app)
+pub fn create_auth_assertion(
+    ephemeral_signing_key: &SigningKey,
+    email: &str,
+    audience: &str,
+    nonce: &str,
+) -> JwtResult<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let claims = AuthAssertionClaims {
+        iss: email.to_string(),
+        aud: audience.to_string(),
+        nonce: nonce.to_string(),
+        iat: now,
+    };
+
+    encode_jwt(&claims, ephemeral_signing_key)
+}
+
+/// Decode user delegation claims without verification
+pub fn decode_user_delegation_claims(token: &str) -> JwtResult<UserDelegationClaims> {
+    decode_claims(token)
+}
+
+/// Decode session binding claims without verification
+pub fn decode_session_binding_claims(token: &str) -> JwtResult<SessionBindingClaims> {
+    decode_claims(token)
+}
+
+/// Decode auth assertion claims without verification
+pub fn decode_auth_assertion_claims(token: &str) -> JwtResult<AuthAssertionClaims> {
+    decode_claims(token)
+}
+
+/// Verify a session binding JWT and extract the nested user delegation
+///
+/// Returns the session binding claims if valid.
+/// Does NOT verify the nested user delegation - call verify_user_delegation for that.
+pub fn verify_session_binding(
+    token: &str,
+    domain_key: &PublicKey,
+) -> JwtResult<SessionBindingClaims> {
+    let claims: SessionBindingClaims = decode_and_verify(token, domain_key)?;
+
+    // Verify issuer is domain type
+    if !claims.iss.starts_with("domain:") {
+        return Err(JwtError::InvalidIssuer(format!(
+            "expected 'domain:*', got '{}'",
+            claims.iss
+        )));
+    }
+
+    Ok(claims)
+}
+
+/// Verify a user delegation JWT
+pub fn verify_user_delegation(
+    token: &str,
+    user_key: &PublicKey,
+) -> JwtResult<UserDelegationClaims> {
+    let claims: UserDelegationClaims = decode_and_verify(token, user_key)?;
+
+    // Verify issuer matches the provided key
+    if claims.iss != user_key.to_string() {
+        return Err(JwtError::InvalidIssuer(format!(
+            "issuer '{}' doesn't match provided key '{}'",
+            claims.iss,
+            user_key.to_string()
+        )));
+    }
+
+    // Check expiration
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    if claims.exp <= now {
+        return Err(JwtError::InvalidFormat("user delegation expired".into()));
+    }
+
+    Ok(claims)
+}
+
+/// Verify an auth assertion JWT
+pub fn verify_auth_assertion(
+    token: &str,
+    ephemeral_key: &PublicKey,
+) -> JwtResult<AuthAssertionClaims> {
+    let claims: AuthAssertionClaims = decode_and_verify(token, ephemeral_key)?;
+
+    // Check iat is recent (within 5 minutes)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    if claims.iat + 300 < now {
+        return Err(JwtError::InvalidFormat("assertion too old".into()));
+    }
+
+    Ok(claims)
+}
+
+/// Full verification of auth assertion + session binding chain
+///
+/// This verifies the complete chain:
+/// 1. Session binding signature (domain key)
+/// 2. User delegation signature (user key from iss)
+/// 3. Assertion signature (ephemeral key from delegate_to)
+/// 4. Email matches across all JWTs
+/// 5. Ephemeral key in assertion matches delegate_to in user delegation
+pub fn verify_auth_chain(
+    assertion_jwt: &str,
+    session_binding_jwt: &str,
+    domain_key: &PublicKey,
+    expected_aud: &str,
+    expected_nonce: &str,
+) -> JwtResult<VerifiedAuth> {
+    // 1. Verify session binding
+    let session_binding = verify_session_binding(session_binding_jwt, domain_key)?;
+
+    // Extract domain from issuer
+    let domain = session_binding
+        .iss
+        .strip_prefix("domain:")
+        .ok_or_else(|| JwtError::InvalidIssuer("missing domain: prefix".into()))?
+        .to_string();
+
+    // 2. Decode and verify user delegation (nested JWT)
+    let user_delegation_claims: UserDelegationClaims =
+        decode_claims(&session_binding.user_delegation)?;
+
+    let user_key = PublicKey::parse(&user_delegation_claims.iss)
+        .map_err(|e| JwtError::InvalidPublicKey(format!("{}", e)))?;
+
+    let user_delegation =
+        verify_user_delegation(&session_binding.user_delegation, &user_key)?;
+
+    // 3. Get ephemeral key from delegation
+    let ephemeral_key = PublicKey::parse(&user_delegation.delegate_to)
+        .map_err(|e| JwtError::InvalidPublicKey(format!("{}", e)))?;
+
+    // 4. Verify assertion with ephemeral key
+    let assertion = verify_auth_assertion(assertion_jwt, &ephemeral_key)?;
+
+    // 5. Verify audience and nonce
+    if assertion.aud != expected_aud {
+        return Err(JwtError::InvalidFormat(format!(
+            "audience mismatch: expected '{}', got '{}'",
+            expected_aud, assertion.aud
+        )));
+    }
+
+    if assertion.nonce != expected_nonce {
+        return Err(JwtError::InvalidFormat(format!(
+            "nonce mismatch: expected '{}', got '{}'",
+            expected_nonce, assertion.nonce
+        )));
+    }
+
+    // 6. Verify email matches between assertion and session binding
+    if assertion.iss != session_binding.sub {
+        return Err(JwtError::InvalidFormat(format!(
+            "email mismatch: assertion '{}', session binding '{}'",
+            assertion.iss, session_binding.sub
+        )));
+    }
+
+    Ok(VerifiedAuth {
+        email: assertion.iss,
+        user_key,
+        domain,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +748,183 @@ mod tests {
         // Verification should fail
         let result = verify_self_signed_identity(&tampered);
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Auth JWT Tests
+    // ========================================================================
+
+    #[test]
+    fn test_user_delegation() {
+        let user_key = SigningKey::generate();
+        let ephemeral_key = SigningKey::generate();
+
+        let jwt = create_user_delegation(&user_key, &ephemeral_key.public_key(), 3600).unwrap();
+
+        // Should have 3 parts
+        assert_eq!(jwt.split('.').count(), 3);
+
+        // Verify with correct key
+        let claims = verify_user_delegation(&jwt, &user_key.public_key()).unwrap();
+        assert_eq!(claims.iss, user_key.public_key().to_string());
+        assert_eq!(claims.delegate_to, ephemeral_key.public_key().to_string());
+        assert!(claims.exp > claims.iat);
+    }
+
+    #[test]
+    fn test_auth_assertion() {
+        let ephemeral_key = SigningKey::generate();
+
+        let jwt = create_auth_assertion(
+            &ephemeral_key,
+            "alice@example.com",
+            "https://app.example.com",
+            "test-nonce-123",
+        )
+        .unwrap();
+
+        let claims = verify_auth_assertion(&jwt, &ephemeral_key.public_key()).unwrap();
+        assert_eq!(claims.iss, "alice@example.com");
+        assert_eq!(claims.aud, "https://app.example.com");
+        assert_eq!(claims.nonce, "test-nonce-123");
+    }
+
+    #[test]
+    fn test_full_auth_chain() {
+        // Setup keys
+        let domain_key = SigningKey::generate();
+        let user_key = SigningKey::generate();
+        let ephemeral_key = SigningKey::generate();
+
+        // 1. Create user delegation (user -> ephemeral)
+        let user_delegation_jwt =
+            create_user_delegation(&user_key, &ephemeral_key.public_key(), 3600).unwrap();
+
+        // 2. Create session binding (domain wraps user delegation)
+        // Note: In real usage, domain creates this. We simulate it here.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let session_binding_claims = SessionBindingClaims {
+            iss: "domain:example.com".to_string(),
+            sub: "alice@example.com".to_string(),
+            user_delegation: user_delegation_jwt,
+            iat: now,
+            exp: now + 3600,
+        };
+        let session_binding_jwt = encode_jwt(&session_binding_claims, &domain_key).unwrap();
+
+        // 3. Create auth assertion (ephemeral signs for app)
+        let assertion_jwt = create_auth_assertion(
+            &ephemeral_key,
+            "alice@example.com",
+            "https://app.example.com",
+            "challenge-xyz",
+        )
+        .unwrap();
+
+        // 4. Verify the full chain
+        let result = verify_auth_chain(
+            &assertion_jwt,
+            &session_binding_jwt,
+            &domain_key.public_key(),
+            "https://app.example.com",
+            "challenge-xyz",
+        )
+        .unwrap();
+
+        assert_eq!(result.email, "alice@example.com");
+        assert_eq!(result.domain, "example.com");
+        assert_eq!(result.user_key, user_key.public_key());
+    }
+
+    #[test]
+    fn test_auth_chain_wrong_nonce() {
+        let domain_key = SigningKey::generate();
+        let user_key = SigningKey::generate();
+        let ephemeral_key = SigningKey::generate();
+
+        let user_delegation_jwt =
+            create_user_delegation(&user_key, &ephemeral_key.public_key(), 3600).unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let session_binding_claims = SessionBindingClaims {
+            iss: "domain:example.com".to_string(),
+            sub: "alice@example.com".to_string(),
+            user_delegation: user_delegation_jwt,
+            iat: now,
+            exp: now + 3600,
+        };
+        let session_binding_jwt = encode_jwt(&session_binding_claims, &domain_key).unwrap();
+
+        let assertion_jwt = create_auth_assertion(
+            &ephemeral_key,
+            "alice@example.com",
+            "https://app.example.com",
+            "actual-nonce",
+        )
+        .unwrap();
+
+        // Should fail with wrong nonce
+        let result = verify_auth_chain(
+            &assertion_jwt,
+            &session_binding_jwt,
+            &domain_key.public_key(),
+            "https://app.example.com",
+            "expected-nonce",
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonce mismatch"));
+    }
+
+    #[test]
+    fn test_auth_chain_email_mismatch() {
+        let domain_key = SigningKey::generate();
+        let user_key = SigningKey::generate();
+        let ephemeral_key = SigningKey::generate();
+
+        let user_delegation_jwt =
+            create_user_delegation(&user_key, &ephemeral_key.public_key(), 3600).unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let session_binding_claims = SessionBindingClaims {
+            iss: "domain:example.com".to_string(),
+            sub: "alice@example.com".to_string(),
+            user_delegation: user_delegation_jwt,
+            iat: now,
+            exp: now + 3600,
+        };
+        let session_binding_jwt = encode_jwt(&session_binding_claims, &domain_key).unwrap();
+
+        // Assertion with different email
+        let assertion_jwt = create_auth_assertion(
+            &ephemeral_key,
+            "bob@example.com", // Different email!
+            "https://app.example.com",
+            "test-nonce",
+        )
+        .unwrap();
+
+        let result = verify_auth_chain(
+            &assertion_jwt,
+            &session_binding_jwt,
+            &domain_key.public_key(),
+            "https://app.example.com",
+            "test-nonce",
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("email mismatch"));
     }
 }

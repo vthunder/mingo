@@ -7,21 +7,37 @@ use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-/// A signed assertion from the user (created by CLI, returned to app via daemon)
+/// Result of a sign request poll - returned to app
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignedAssertion {
-    /// The SBO identity URI (e.g., sbo://sandmill.org/sys/names/danmills)
-    pub identity_uri: String,
-    /// The email address claimed by this assertion (if directed auth)
-    pub email: Option<String>,
-    /// The public key that signed this assertion
-    pub public_key: String,
-    /// The original challenge that was signed
-    pub challenge: String,
-    /// Timestamp when the assertion was created (Unix epoch seconds)
-    pub timestamp: u64,
-    /// The signature over: identity_uri + email + challenge + timestamp
-    pub signature: String,
+pub struct SignRequestResult {
+    /// Status: "pending", "approved", "rejected", "expired"
+    pub status: String,
+    /// Auth assertion JWT (present if approved) - signed by ephemeral key
+    pub assertion_jwt: Option<String>,
+    /// Session binding JWT (present if approved) - signed by domain, wraps user delegation
+    pub session_binding_jwt: Option<String>,
+    /// Rejection reason (present if rejected)
+    pub rejection_reason: Option<String>,
+}
+
+/// Response from RequestSessionBinding - returns verification URI for device flow
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionBindingResponse {
+    /// Request ID for polling
+    pub request_id: String,
+    /// URI to direct user to for verification
+    pub verification_uri: String,
+    /// Seconds until request expires
+    pub expires_in: u64,
+}
+
+/// Response from PollSessionBinding
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PollSessionBindingResponse {
+    /// Status: "pending", "complete", "expired"
+    pub status: String,
+    /// Session binding JWT (present when complete)
+    pub session_binding: Option<String>,
 }
 
 /// Sign request status
@@ -48,8 +64,10 @@ pub struct SignRequest {
     pub purpose: Option<String>,
     pub status: SignRequestStatus,
     pub created_at: u64,
-    /// Signed assertion (present if status == Approved)
-    pub signed_assertion: Option<SignedAssertion>,
+    /// Auth assertion JWT (present if status == Approved)
+    pub assertion_jwt: Option<String>,
+    /// Session binding JWT (present if status == Approved)
+    pub session_binding_jwt: Option<String>,
     /// Rejection reason (present if status == Rejected)
     pub rejection_reason: Option<String>,
 }
@@ -164,11 +182,13 @@ pub enum Request {
         request_id: String,
     },
 
-    /// Approve a sign request (from CLI) - includes signed assertion
+    /// Approve a sign request (from CLI) - includes JWTs
     ApproveSignRequest {
         request_id: String,
-        /// The signed assertion (created by CLI with keyring)
-        signed_assertion: SignedAssertion,
+        /// Auth assertion JWT (signed by ephemeral key)
+        assertion_jwt: String,
+        /// Session binding JWT (signed by domain, wraps user delegation)
+        session_binding_jwt: String,
     },
 
     /// Reject a sign request (from CLI)
@@ -180,6 +200,26 @@ pub enum Request {
 
     /// Poll for sign request result (from app)
     GetSignRequestResult {
+        request_id: String,
+    },
+
+    // ========================================================================
+    // Session Binding Flow (daemon proxies to domain endpoints)
+    // ========================================================================
+
+    /// Request a session binding from a domain (CLI → daemon → domain)
+    RequestSessionBinding {
+        /// Email address for the session
+        email: String,
+        /// Ephemeral public key (ed25519:<hex>)
+        ephemeral_public_key: String,
+        /// User delegation JWT (optional - domain may have custodied key)
+        user_delegation_jwt: Option<String>,
+    },
+
+    /// Poll for session binding result
+    PollSessionBinding {
+        /// Request ID from RequestSessionBinding response
         request_id: String,
     },
 }

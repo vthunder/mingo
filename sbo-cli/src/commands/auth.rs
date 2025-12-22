@@ -1,10 +1,19 @@
 //! Auth command implementations (sign request approval flow)
+//!
+//! Implements the nested JWT model with session bindings:
+//! 1. User delegation: permanent key delegates to ephemeral key
+//! 2. Session binding: domain wraps user delegation with email claim
+//! 3. Auth assertion: ephemeral key signs challenge for app
 
 use anyhow::Result;
 use sbo_core::keyring::Keyring;
+use sbo_core::jwt;
 use sbo_daemon::config::Config;
-use sbo_daemon::ipc::{IpcClient, Request, Response, SignedAssertion};
+use sbo_daemon::ipc::{IpcClient, Request, Response};
 use std::io::Write;
+
+use super::session;
+use sbo_core::crypto::{PublicKey, SigningKey};
 
 /// List pending sign requests
 pub async fn pending() -> Result<()> {
@@ -124,6 +133,10 @@ pub async fn approve(request_id: &str, email: Option<&str>) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Missing challenge in request"))?;
     let requested_email = request_data["email"].as_str();
     let app_name = request_data["app_name"].as_str().unwrap_or("Unknown app");
+    let app_origin = request_data["app_origin"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
 
     // Open keyring
     let keyring = Keyring::open()?;
@@ -145,7 +158,7 @@ pub async fn approve(request_id: &str, email: Option<&str>) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("No key found for identity {}", uri))?
             .to_string();
 
-        (uri, alias, Some(em.to_string()))
+        (uri, alias, em.to_string())
     } else {
         // Undirected request - list available identities and let user choose
         let emails: Vec<_> = keyring.list_emails().iter().collect();
@@ -162,7 +175,7 @@ pub async fn approve(request_id: &str, email: Option<&str>) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("No key found for identity {}", uri))?
                 .to_string();
             println!("Using identity: {} ({})", em, uri);
-            (uri.clone(), alias, Some(em.clone()))
+            (uri.clone(), alias, em.clone())
         } else {
             // Multiple identities - user must specify
             eprintln!("Multiple identities available. Specify one with --as:");
@@ -173,38 +186,38 @@ pub async fn approve(request_id: &str, email: Option<&str>) -> Result<()> {
         }
     };
 
-    // Get signing key
+    // Get signing key (permanent user key)
     let signing_key = keyring.get_signing_key(&key_alias)?;
-    let public_key = signing_key.public_key();
 
-    // Create timestamp
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    // Create message to sign: identity_uri || email || challenge || timestamp
-    let email_str = claimed_email.as_deref().unwrap_or("");
-    let message = format!("{}:{}:{}:{}", identity_uri, email_str, challenge, timestamp);
-    let signature = signing_key.sign(message.as_bytes());
-
-    // Build signed assertion
-    let signed_assertion = SignedAssertion {
-        identity_uri: identity_uri.clone(),
-        email: claimed_email.clone(),
-        public_key: public_key.to_string(),
-        challenge: challenge.to_string(),
-        timestamp,
-        signature: hex::encode(signature.0),
+    // Step 1: Check local session storage
+    let (session_binding_jwt, ephemeral_signing_key) = match session::get_session(&claimed_email) {
+        Some(session) => {
+            // Valid session exists - reuse it
+            println!("Using existing session for {}", claimed_email);
+            let ephemeral_key = session::get_ephemeral_signing_key(&session)?;
+            (session.session_binding_jwt.clone(), ephemeral_key)
+        }
+        None => {
+            // Need to obtain new session binding
+            println!("No valid session found. Obtaining new session binding...");
+            obtain_session_binding(&client, &signing_key, &claimed_email).await?
+        }
     };
 
+    // Step 2: Sign auth assertion with ephemeral key
+    let assertion_jwt = jwt::create_auth_assertion(
+        &ephemeral_signing_key,
+        &claimed_email,
+        &app_origin,
+        challenge,
+    )?;
+
     // Confirm with user
+    println!();
     println!("Approving sign request:");
     println!("  Request:  {}", request_id);
     println!("  App:      {}", app_name);
-    if let Some(ref em) = claimed_email {
-        println!("  Email:    {}", em);
-    }
+    println!("  Email:    {}", claimed_email);
     println!("  Identity: {}", identity_uri);
     println!("  Key:      {}", key_alias);
     print!("Confirm? [y/N] ");
@@ -221,10 +234,11 @@ pub async fn approve(request_id: &str, email: Option<&str>) -> Result<()> {
     // Send approval to daemon
     match client.request(Request::ApproveSignRequest {
         request_id: request_id.to_string(),
-        signed_assertion,
+        assertion_jwt,
+        session_binding_jwt,
     }).await {
         Ok(Response::Ok { .. }) => {
-            println!("\n✓ Request approved. App will receive signed assertion.");
+            println!("\n✓ Request approved. App will receive JWTs.");
         }
         Ok(Response::Error { message }) => {
             eprintln!("Error: {}", message);
@@ -235,6 +249,134 @@ pub async fn approve(request_id: &str, email: Option<&str>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Obtain a new session binding from the domain
+async fn obtain_session_binding(
+    client: &IpcClient,
+    signing_key: &SigningKey,
+    email: &str,
+) -> Result<(String, SigningKey)> {
+    // Step 1: Generate ephemeral keypair
+    let (ephemeral_public_key_str, ephemeral_private_key) = session::generate_ephemeral_keypair();
+
+    // Parse public key string into PublicKey type
+    let ephemeral_public_key = PublicKey::parse(&ephemeral_public_key_str)
+        .map_err(|e| anyhow::anyhow!("Invalid ephemeral public key: {:?}", e))?;
+
+    // Step 2: Create user delegation JWT (permanent key -> ephemeral key)
+    // Default to 30 day session
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() + (30 * 24 * 60 * 60);
+
+    let user_delegation_jwt = jwt::create_user_delegation(
+        signing_key,
+        &ephemeral_public_key,
+        expiry,
+    )?;
+
+    // Step 3: Request session binding from domain via daemon
+    println!("Requesting session binding from domain...");
+
+    let response = client.request(Request::RequestSessionBinding {
+        email: email.to_string(),
+        ephemeral_public_key: ephemeral_public_key_str.clone(),
+        user_delegation_jwt: Some(user_delegation_jwt),
+    }).await?;
+
+    let (binding_request_id, verification_uri, expires_in) = match response {
+        Response::Ok { data } => {
+            let request_id = data["request_id"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing request_id in response"))?
+                .to_string();
+            let verification_uri = data["verification_uri"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing verification_uri in response"))?
+                .to_string();
+            let expires_in = data["expires_in"].as_u64()
+                .unwrap_or(300);
+            (request_id, verification_uri, expires_in)
+        }
+        Response::Error { message } => {
+            return Err(anyhow::anyhow!("Failed to request session binding: {}", message));
+        }
+    };
+
+    // Step 4: Print verification URL for user
+    println!();
+    println!("Please verify your identity at:");
+    println!("  {}", verification_uri);
+    println!();
+    println!("Waiting for verification (expires in {}s)...", expires_in);
+
+    // Step 5: Poll until complete or timeout
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(expires_in);
+    let poll_interval = std::time::Duration::from_secs(2);
+
+    loop {
+        if start.elapsed() > timeout {
+            return Err(anyhow::anyhow!("Session binding request timed out"));
+        }
+
+        tokio::time::sleep(poll_interval).await;
+
+        let poll_response = client.request(Request::PollSessionBinding {
+            request_id: binding_request_id.clone(),
+        }).await?;
+
+        match poll_response {
+            Response::Ok { data } => {
+                let status = data["status"].as_str().unwrap_or("unknown");
+
+                match status {
+                    "complete" => {
+                        let session_binding = data["session_binding"].as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing session_binding in response"))?
+                            .to_string();
+
+                        println!();
+                        println!("✓ Session binding obtained!");
+
+                        // Step 6: Store session locally
+                        let expires_at = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() + (30 * 24 * 60 * 60); // 30 days
+
+                        session::save_session(
+                            email,
+                            &session_binding,
+                            &ephemeral_private_key,
+                            expires_at,
+                        )?;
+
+                        // Return signing key
+                        let mut key_bytes = [0u8; 32];
+                        key_bytes.copy_from_slice(&ephemeral_private_key);
+                        let ephemeral_signing_key = SigningKey::from_bytes(&key_bytes);
+
+                        return Ok((session_binding, ephemeral_signing_key));
+                    }
+                    "pending" => {
+                        // Continue polling
+                        print!(".");
+                        std::io::stdout().flush()?;
+                    }
+                    "expired" => {
+                        return Err(anyhow::anyhow!("Session binding request expired"));
+                    }
+                    _ => {
+                        return Err(anyhow::anyhow!("Unknown status: {}", status));
+                    }
+                }
+            }
+            Response::Error { message } => {
+                return Err(anyhow::anyhow!("Poll failed: {}", message));
+            }
+        }
+    }
 }
 
 /// Reject a sign request

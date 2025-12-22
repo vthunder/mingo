@@ -19,6 +19,7 @@ use sbo_daemon::repo::{RepoManager, SboUri};
 use sbo_daemon::rpc::RpcClient;
 use sbo_daemon::sync::SyncEngine;
 use sbo_daemon::turbo::TurboDaClient;
+use sbo_core::dns;
 
 #[derive(Parser)]
 #[command(name = "sbo-daemon")]
@@ -103,6 +104,23 @@ impl DebugFlags {
     }
 }
 
+/// In-flight session binding request (while waiting for user verification)
+#[derive(Clone)]
+struct SessionBindingRequest {
+    /// Request ID (from domain's provisioning endpoint)
+    request_id: String,
+    /// Email address
+    email: String,
+    /// Domain for this session
+    domain: String,
+    /// Discovery document for this domain
+    discovery: dns::DiscoveryDocument,
+    /// When this request was created
+    created_at: u64,
+    /// When this request expires
+    expires_at: u64,
+}
+
 /// Shared daemon state
 struct DaemonState {
     config: Config,
@@ -113,6 +131,8 @@ struct DaemonState {
     turbo: TurboDaClient,
     /// Pending sign requests from apps (keyed by request_id)
     sign_requests: HashMap<String, IpcSignRequest>,
+    /// In-flight session binding requests (keyed by request_id)
+    session_binding_requests: HashMap<String, SessionBindingRequest>,
 }
 
 impl DaemonState {
@@ -134,6 +154,7 @@ impl DaemonState {
             rpc,
             turbo,
             sign_requests: HashMap::new(),
+            session_binding_requests: HashMap::new(),
         })
     }
 }
@@ -1242,7 +1263,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 purpose,
                 status: SignRequestStatus::Pending,
                 created_at: now,
-                signed_assertion: None,
+                assertion_jwt: None,
+                session_binding_jwt: None,
                 rejection_reason: None,
             };
 
@@ -1297,7 +1319,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
         Request::ApproveSignRequest {
             request_id,
-            signed_assertion,
+            assertion_jwt,
+            session_binding_jwt,
         } => {
             let mut state_write = state.write().await;
 
@@ -1311,7 +1334,8 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                     }
 
                     request.status = SignRequestStatus::Approved;
-                    request.signed_assertion = Some(signed_assertion);
+                    request.assertion_jwt = Some(assertion_jwt);
+                    request.session_binding_jwt = Some(session_binding_jwt);
 
                     tracing::info!("Sign request approved: {}", request_id);
 
@@ -1355,36 +1379,226 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
 
             match state_read.sign_requests.get(&request_id) {
                 Some(request) => {
-                    let mut response = serde_json::json!({
-                        "request_id": request.request_id,
-                        "status": format!("{:?}", request.status).to_lowercase(),
+                    let status = format!("{:?}", request.status).to_lowercase();
+
+                    // Return SignRequestResult format
+                    let result = serde_json::json!({
+                        "status": status,
+                        "assertion_jwt": request.assertion_jwt,
+                        "session_binding_jwt": request.session_binding_jwt,
+                        "rejection_reason": request.rejection_reason,
                     });
 
-                    match request.status {
-                        SignRequestStatus::Approved => {
-                            if let Some(ref assertion) = request.signed_assertion {
-                                response["assertion"] = serde_json::json!({
-                                    "identity_uri": assertion.identity_uri,
-                                    "email": assertion.email,
-                                    "public_key": assertion.public_key,
-                                    "challenge": assertion.challenge,
-                                    "timestamp": assertion.timestamp,
-                                    "signature": assertion.signature,
-                                });
-                            }
-                        }
-                        SignRequestStatus::Rejected => {
-                            if let Some(ref reason) = request.rejection_reason {
-                                response["reason"] = serde_json::json!(reason);
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    Response::ok(response)
+                    Response::ok(result)
                 }
                 None => Response::error(format!("Sign request '{}' not found", request_id)),
             }
+        }
+
+        // Session binding requests
+        Request::RequestSessionBinding {
+            email,
+            ephemeral_public_key,
+            user_delegation_jwt,
+        } => {
+            // Extract domain from email
+            let domain = match dns::parse_email(&email) {
+                Some((_, d)) => d.to_string(),
+                None => return Response::error(format!("Invalid email address: {}", email)),
+            };
+
+            // Resolve discovery host from DNS
+            let dns_record = match dns::resolve(&domain).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Failed to resolve DNS for {}: {}", domain, e);
+                    // Fall back to domain itself as discovery host
+                    dns::SboRecord {
+                        repository_uri: String::new(),
+                        discovery_host: None,
+                    }
+                }
+            };
+
+            let discovery_host = dns::get_discovery_host(&dns_record, &domain);
+
+            // Fetch discovery document
+            let discovery = match dns::fetch_discovery(&discovery_host, &domain).await {
+                Ok(d) => d,
+                Err(e) => return Response::error(format!("Failed to fetch discovery document: {}", e)),
+            };
+
+            // Get provisioning endpoint
+            let provisioning = match &discovery.provisioning {
+                Some(p) => p,
+                None => return Response::error("Domain does not support session provisioning"),
+            };
+
+            // POST to provisioning endpoint
+            let provision_url = format!("{}{}?domain={}", discovery_host, provisioning, domain);
+
+            let client = reqwest::Client::new();
+            let body = serde_json::json!({
+                "email": email,
+                "ephemeral_public_key": ephemeral_public_key,
+                "user_delegation": user_delegation_jwt,
+            });
+
+            let response = match client.post(&provision_url).json(&body).send().await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Failed to contact provisioning endpoint: {}", e)),
+            };
+
+            if !response.status().is_success() {
+                return Response::error(format!(
+                    "Provisioning endpoint returned {}: {}",
+                    response.status(),
+                    response.text().await.unwrap_or_default()
+                ));
+            }
+
+            #[derive(serde::Deserialize)]
+            struct ProvisionResponse {
+                request_id: String,
+                verification_uri: String,
+                expires_in: u64,
+            }
+
+            let provision_response: ProvisionResponse = match response.json().await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Invalid provisioning response: {}", e)),
+            };
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            // Store the request for polling
+            let session_request = SessionBindingRequest {
+                request_id: provision_response.request_id.clone(),
+                email,
+                domain,
+                discovery,
+                created_at: now,
+                expires_at: now + provision_response.expires_in,
+            };
+
+            {
+                let mut state_write = state.write().await;
+                state_write.session_binding_requests.insert(
+                    provision_response.request_id.clone(),
+                    session_request,
+                );
+            }
+
+            tracing::info!(
+                "Session binding request initiated: {}",
+                provision_response.request_id
+            );
+
+            Response::ok(serde_json::json!({
+                "request_id": provision_response.request_id,
+                "verification_uri": provision_response.verification_uri,
+                "expires_in": provision_response.expires_in,
+            }))
+        }
+
+        Request::PollSessionBinding { request_id } => {
+            // Find the stored request
+            let session_request = {
+                let state_read = state.read().await;
+                match state_read.session_binding_requests.get(&request_id) {
+                    Some(r) => r.clone(),
+                    None => return Response::error(format!(
+                        "Session binding request '{}' not found",
+                        request_id
+                    )),
+                }
+            };
+
+            // Check if expired
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            if now > session_request.expires_at {
+                // Clean up expired request
+                let mut state_write = state.write().await;
+                state_write.session_binding_requests.remove(&request_id);
+
+                return Response::ok(serde_json::json!({
+                    "status": "expired",
+                    "session_binding": null,
+                }));
+            }
+
+            // Get poll endpoint from discovery (or fall back to provisioning + /poll)
+            let poll_path = match &session_request.discovery.provisioning_poll {
+                Some(p) => p.clone(),
+                None => {
+                    // Fallback: append /poll to provisioning endpoint
+                    match &session_request.discovery.provisioning {
+                        Some(p) => format!("{}/poll", p),
+                        None => return Response::error("Session has no poll endpoint"),
+                    }
+                }
+            };
+
+            // Determine discovery host
+            let dns_record = dns::SboRecord {
+                repository_uri: String::new(),
+                discovery_host: session_request.discovery.authority.clone(),
+            };
+            let discovery_host = dns::get_discovery_host(&dns_record, &session_request.domain);
+
+            // POST to poll endpoint
+            let poll_url = format!(
+                "{}{}?domain={}",
+                discovery_host, poll_path, session_request.domain
+            );
+
+            let client = reqwest::Client::new();
+            let body = serde_json::json!({
+                "request_id": request_id,
+            });
+
+            let response = match client.post(&poll_url).json(&body).send().await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Failed to poll provisioning endpoint: {}", e)),
+            };
+
+            if !response.status().is_success() {
+                return Response::error(format!(
+                    "Poll endpoint returned {}: {}",
+                    response.status(),
+                    response.text().await.unwrap_or_default()
+                ));
+            }
+
+            #[derive(serde::Deserialize)]
+            struct PollResponse {
+                status: String,
+                session_binding: Option<String>,
+            }
+
+            let poll_response: PollResponse = match response.json().await {
+                Ok(r) => r,
+                Err(e) => return Response::error(format!("Invalid poll response: {}", e)),
+            };
+
+            // If complete, clean up the stored request
+            if poll_response.status == "complete" {
+                let mut state_write = state.write().await;
+                state_write.session_binding_requests.remove(&request_id);
+                tracing::info!("Session binding completed: {}", request_id);
+            }
+
+            Response::ok(serde_json::json!({
+                "status": poll_response.status,
+                "session_binding": poll_response.session_binding,
+            }))
         }
     }
 }

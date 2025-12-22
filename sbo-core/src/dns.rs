@@ -11,18 +11,10 @@ use serde::Deserialize;
 /// Parsed SBO DNS record
 #[derive(Debug, Clone, PartialEq)]
 pub struct SboRecord {
-    /// CAIP-2 chain identifier (e.g., "avail:mainnet")
-    pub chain: String,
-    /// Application ID on the chain
-    pub app_id: u32,
-    /// Genesis hash for verification (e.g., "sha256:abc123...")
-    pub genesis: Option<String>,
-    /// Block number containing genesis
-    pub first_block: Option<u64>,
-    /// URL for bootstrap checkpoint
-    pub checkpoint: Option<String>,
-    /// URL of full node for data fetching
-    pub node: Option<String>,
+    /// Repository URI (e.g., "sbo+raw://avail:turing:506/")
+    pub repository_uri: String,
+    /// Discovery host for .well-known/sbo (optional, defaults to domain itself)
+    pub discovery_host: Option<String>,
 }
 
 /// DNS resolution error
@@ -56,34 +48,18 @@ impl std::error::Error for DnsError {}
 
 /// Parse a DNS TXT record into an SboRecord
 ///
-/// Format: "sbo=v1 chain=avail:mainnet appId=13 genesis=sha256:abc..."
+/// Format: "v=sbo1 r=sbo+raw://avail:turing:506/ h=https://auth.example.com"
 pub fn parse_record(txt: &str) -> Result<SboRecord, DnsError> {
     let mut version: Option<&str> = None;
-    let mut chain: Option<&str> = None;
-    let mut app_id: Option<u32> = None;
-    let mut genesis: Option<String> = None;
-    let mut first_block: Option<u64> = None;
-    let mut checkpoint: Option<String> = None;
-    let mut node: Option<String> = None;
+    let mut repository_uri: Option<String> = None;
+    let mut discovery_host: Option<String> = None;
 
     for part in txt.split_whitespace() {
         if let Some((key, value)) = part.split_once('=') {
             match key {
-                "sbo" => version = Some(value),
-                "chain" => chain = Some(value),
-                "appId" => {
-                    app_id = Some(value.parse().map_err(|_| {
-                        DnsError::MalformedRecord(format!("invalid appId: {}", value))
-                    })?);
-                }
-                "genesis" => genesis = Some(value.to_string()),
-                "firstBlock" => {
-                    first_block = Some(value.parse().map_err(|_| {
-                        DnsError::MalformedRecord(format!("invalid firstBlock: {}", value))
-                    })?);
-                }
-                "checkpoint" => checkpoint = Some(value.to_string()),
-                "node" => node = Some(value.to_string()),
+                "v" => version = Some(value),
+                "r" => repository_uri = Some(value.to_string()),
+                "h" => discovery_host = Some(value.to_string()),
                 _ => {} // Ignore unknown fields for forward compatibility
             }
         }
@@ -91,25 +67,18 @@ pub fn parse_record(txt: &str) -> Result<SboRecord, DnsError> {
 
     // Validate version
     match version {
-        Some("v1") => {}
+        Some("sbo1") => {}
         Some(v) => return Err(DnsError::UnsupportedVersion(v.to_string())),
-        None => return Err(DnsError::MalformedRecord("missing sbo version".to_string())),
+        None => return Err(DnsError::MalformedRecord("missing v= version".to_string())),
     }
 
     // Validate required fields
-    let chain = chain
-        .ok_or_else(|| DnsError::MalformedRecord("missing chain".to_string()))?
-        .to_string();
-
-    let app_id = app_id.ok_or_else(|| DnsError::MalformedRecord("missing appId".to_string()))?;
+    let repository_uri = repository_uri
+        .ok_or_else(|| DnsError::MalformedRecord("missing r= repository URI".to_string()))?;
 
     Ok(SboRecord {
-        chain,
-        app_id,
-        genesis,
-        first_block,
-        checkpoint,
-        node,
+        repository_uri,
+        discovery_host,
     })
 }
 
@@ -150,7 +119,7 @@ pub async fn resolve(domain: &str) -> Result<SboRecord, DnsError> {
 
 /// Convert an sbo:// URI to sbo+raw:// using DNS resolution
 ///
-/// Example: sbo://myapp.com/alice/nft -> sbo+raw://avail:mainnet:13/alice/nft
+/// Example: sbo://myapp.com/alice/nft -> sbo+raw://avail:turing:506/alice/nft
 pub async fn resolve_uri(uri: &str) -> Result<String, DnsError> {
     let uri = uri.trim();
 
@@ -169,7 +138,9 @@ pub async fn resolve_uri(uri: &str) -> Result<String, DnsError> {
 
     let record = resolve(domain).await?;
 
-    Ok(format!("sbo+raw://{}:{}{}", record.chain, record.app_id, path))
+    // Combine repository URI with path
+    let base = record.repository_uri.trim_end_matches('/');
+    Ok(format!("{}{}", base, path))
 }
 
 /// Extract domain from an sbo:// URI
@@ -194,6 +165,89 @@ pub fn extract_domain(uri: &str) -> Option<String> {
 /// Check if a URI is a DNS-based sbo:// URI
 pub fn is_dns_uri(uri: &str) -> bool {
     uri.trim().starts_with("sbo://")
+}
+
+// ============================================================================
+// Service Discovery (/.well-known/sbo)
+// ============================================================================
+
+/// Discovery document from /.well-known/sbo
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoveryDocument {
+    /// Protocol version (e.g., "1")
+    pub version: String,
+    /// Path to user-visible login page (e.g., "/sbo/login")
+    #[serde(default)]
+    pub authentication: Option<String>,
+    /// Path to session binding initiation endpoint (e.g., "/sbo/session")
+    #[serde(default)]
+    pub provisioning: Option<String>,
+    /// Path to session binding poll endpoint (e.g., "/sbo/session/poll")
+    #[serde(default)]
+    pub provisioning_poll: Option<String>,
+    /// Delegation to another host (if present, fetch discovery from there instead)
+    #[serde(default)]
+    pub authority: Option<String>,
+}
+
+/// Fetch the discovery document from a host
+///
+/// Fetches GET https://{host}/.well-known/sbo?domain={domain}
+/// Follows delegation if `authority` is present.
+pub async fn fetch_discovery(host: &str, domain: &str) -> Result<DiscoveryDocument, DnsError> {
+    fetch_discovery_with_depth(host, domain, 0).await
+}
+
+/// Internal: fetch discovery with recursion depth limit
+fn fetch_discovery_with_depth<'a>(
+    host: &'a str,
+    domain: &'a str,
+    depth: u8,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<DiscoveryDocument, DnsError>> + Send + 'a>> {
+    Box::pin(async move {
+        if depth > 5 {
+            return Err(DnsError::LookupFailed("too many delegation hops".into()));
+        }
+
+        let url = format!("https://{}/.well-known/sbo?domain={}", host, domain);
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| DnsError::LookupFailed(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(DnsError::LookupFailed(format!(
+                "HTTP {} from {}",
+                response.status(),
+                url
+            )));
+        }
+
+        let doc: DiscoveryDocument = response
+            .json()
+            .await
+            .map_err(|e| DnsError::MalformedRecord(format!("invalid JSON response: {}", e)))?;
+
+        // Follow delegation if present
+        if let Some(ref authority) = doc.authority {
+            return fetch_discovery_with_depth(authority, domain, depth + 1).await;
+        }
+
+        Ok(doc)
+    })
+}
+
+/// Get the discovery host for a domain
+///
+/// Returns the h= field from DNS if present, otherwise the domain itself.
+pub fn get_discovery_host(record: &SboRecord, domain: &str) -> String {
+    record
+        .discovery_host
+        .clone()
+        .unwrap_or_else(|| format!("https://{}", domain))
 }
 
 // ============================================================================
@@ -354,61 +408,46 @@ mod tests {
 
     #[test]
     fn test_parse_minimal_record() {
-        let txt = "sbo=v1 chain=avail:mainnet appId=13";
+        let txt = "v=sbo1 r=sbo+raw://avail:turing:506/";
         let record = parse_record(txt).unwrap();
-        assert_eq!(record.chain, "avail:mainnet");
-        assert_eq!(record.app_id, 13);
-        assert_eq!(record.genesis, None);
-        assert_eq!(record.first_block, None);
-        assert_eq!(record.checkpoint, None);
-        assert_eq!(record.node, None);
+        assert_eq!(record.repository_uri, "sbo+raw://avail:turing:506/");
+        assert_eq!(record.discovery_host, None);
     }
 
     #[test]
     fn test_parse_full_record() {
-        let txt = "sbo=v1 chain=avail:mainnet appId=13 genesis=sha256:abc123 firstBlock=1000 checkpoint=https://example.com/cp.json node=https://sbo.example.com";
+        let txt = "v=sbo1 r=sbo+raw://avail:mainnet:13/ h=https://auth.example.com";
         let record = parse_record(txt).unwrap();
-        assert_eq!(record.chain, "avail:mainnet");
-        assert_eq!(record.app_id, 13);
-        assert_eq!(record.genesis, Some("sha256:abc123".to_string()));
-        assert_eq!(record.first_block, Some(1000));
-        assert_eq!(record.checkpoint, Some("https://example.com/cp.json".to_string()));
-        assert_eq!(record.node, Some("https://sbo.example.com".to_string()));
+        assert_eq!(record.repository_uri, "sbo+raw://avail:mainnet:13/");
+        assert_eq!(record.discovery_host, Some("https://auth.example.com".to_string()));
     }
 
     #[test]
     fn test_parse_missing_version() {
-        let txt = "chain=avail:mainnet appId=13";
+        let txt = "r=sbo+raw://avail:turing:506/";
         let err = parse_record(txt).unwrap_err();
         assert!(matches!(err, DnsError::MalformedRecord(_)));
     }
 
     #[test]
     fn test_parse_unsupported_version() {
-        let txt = "sbo=v2 chain=avail:mainnet appId=13";
+        let txt = "v=sbo2 r=sbo+raw://avail:turing:506/";
         let err = parse_record(txt).unwrap_err();
         assert!(matches!(err, DnsError::UnsupportedVersion(_)));
     }
 
     #[test]
-    fn test_parse_missing_chain() {
-        let txt = "sbo=v1 appId=13";
-        let err = parse_record(txt).unwrap_err();
-        assert!(matches!(err, DnsError::MalformedRecord(_)));
-    }
-
-    #[test]
-    fn test_parse_missing_app_id() {
-        let txt = "sbo=v1 chain=avail:mainnet";
+    fn test_parse_missing_repository_uri() {
+        let txt = "v=sbo1 h=https://auth.example.com";
         let err = parse_record(txt).unwrap_err();
         assert!(matches!(err, DnsError::MalformedRecord(_)));
     }
 
     #[test]
     fn test_parse_ignores_unknown_fields() {
-        let txt = "sbo=v1 chain=avail:mainnet appId=13 futureField=whatever";
+        let txt = "v=sbo1 r=sbo+raw://avail:turing:506/ futureField=whatever";
         let record = parse_record(txt).unwrap();
-        assert_eq!(record.app_id, 13);
+        assert_eq!(record.repository_uri, "sbo+raw://avail:turing:506/");
     }
 
     #[test]
