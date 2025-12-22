@@ -12,7 +12,6 @@ use tracing_subscriber::EnvFilter;
 
 use sbo_daemon::config::Config;
 use sbo_daemon::ipc::{IpcServer, Request, Response, SignRequestStatus, SignRequest as IpcSignRequest};
-use sbo_daemon::state_db_path_for_uri;
 use sbo_daemon::lc::LcManager;
 use sbo_daemon::prover::Prover;
 use sbo_daemon::repo::{RepoManager, SboUri};
@@ -794,12 +793,9 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             }
         }
 
-        Request::SubmitIdentity { uri, name, data, wait } => {
-            use sbo_core::message::{Path, Id};
-
-            // Get state for repo lookup and config
+        Request::SubmitIdentity { uri, name, data, wait: _ } => {
+            // Get state for repo lookup
             let state_read = state.read().await;
-            let light_mode = state_read.config.light.enabled;
 
             // Find repo matching the URI (check both display_uri and resolved uri)
             // Normalize by trimming trailing slashes for comparison
@@ -814,64 +810,21 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                     || display_uri_normalized.starts_with(uri_normalized)
             });
 
-            let (repo_uri, identity_uri) = match repo {
-                Some(r) => (r.uri.to_string(), format!("{}/sys/names/{}", r.uri.to_string().trim_end_matches('/'), name)),
+            let identity_uri = match repo {
+                Some(r) => format!("{}/sys/names/{}", r.uri.to_string().trim_end_matches('/'), name),
                 None => return Response::error(format!("No repo configured for URI: {}. Add with: sbo repo add {} <path>", uri, uri)),
             };
 
             // Submit via TurboDA
             match state_read.turbo.submit_raw(&data).await {
                 Ok(result) => {
-                    // Drop read lock before polling
-                    drop(state_read);
-
-                    if wait && !light_mode {
-                        // Poll for verification in full mode
-                        // State is stored in ~/.sbo/repos/<sanitized_uri>/state, not in the mountpoint
-                        let state_path = state_db_path_for_uri(&repo_uri);
-                        if let Ok(state_db) = sbo_core::state::StateDb::open(&state_path) {
-                            // Poll for up to 30 seconds
-                            let start = std::time::Instant::now();
-                            let timeout = std::time::Duration::from_secs(30);
-
-                            let path = match Path::parse("/sys/names/") {
-                                Ok(p) => p,
-                                Err(e) => return Response::error(format!("Invalid path: {}", e)),
-                            };
-                            let id = match Id::new(&name) {
-                                Ok(i) => i,
-                                Err(e) => return Response::error(format!("Invalid id: {}", e)),
-                            };
-
-                            loop {
-                                // Check if object exists
-                                if let Ok(Some(_)) = state_db.get_first_object_at_path_id(&path, &id) {
-                                    return Response::ok(serde_json::json!({
-                                        "status": "verified",
-                                        "uri": identity_uri,
-                                        "submission_id": result.submission_id,
-                                    }));
-                                }
-
-                                if start.elapsed() > timeout {
-                                    return Response::ok(serde_json::json!({
-                                        "status": "pending",
-                                        "uri": identity_uri,
-                                        "submission_id": result.submission_id,
-                                        "message": "Submitted but verification timed out. Check with 'sbo id show'",
-                                    }));
-                                }
-
-                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            }
-                        }
-                    }
-
-                    // No wait or light mode - return immediately
+                    // Return submitted status - verification happens asynchronously via sync thread
+                    // User can check status with 'sbo id show'
                     Response::ok(serde_json::json!({
-                        "status": "unverified",
+                        "status": "submitted",
                         "uri": identity_uri,
                         "submission_id": result.submission_id,
+                        "message": "Identity submitted to chain. Check verification with 'sbo id show'",
                     }))
                 }
                 Err(e) => Response::error(format!("Submission failed: {}", e)),

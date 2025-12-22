@@ -101,14 +101,18 @@ pub async fn create(
                             uri.trim_end_matches('/'), profile_path.as_ref().unwrap());
                     }
                 }
-                "unverified" => {
-                    println!("\n○ Identity submitted (unverified)");
+                "submitted" | "unverified" => {
+                    println!("\n○ Identity submitted");
                     println!("  URI: {}", identity_uri);
                     if let Some(id) = data["submission_id"].as_str() {
                         println!("  Submission ID: {}", id);
                     }
-                    println!("\n  Identity record submitted on chain.");
-                    println!("  Check status with: sbo id show {}", name);
+                    if let Some(msg) = data["message"].as_str() {
+                        println!("  {}", msg);
+                    } else {
+                        println!("\n  Identity record submitted on chain.");
+                        println!("  Check status with: sbo id show {}", name);
+                    }
 
                     // Add identity to keyring (unverified - will check later)
                     if let Err(e) = keyring.add_identity(&alias, &identity_uri) {
@@ -1067,32 +1071,21 @@ pub async fn create_domain_certified(
                         eprintln!("Warning: failed to store email association: {}", e);
                     }
                 }
-                "unverified" => {
-                    println!("\n○ Identity submitted (unverified)");
+                "submitted" | "unverified" | "pending" => {
+                    println!("\n○ Identity submitted");
                     println!("  URI:   {}", identity_uri);
                     println!("  Email: {}", email);
                     if let Some(id) = data["submission_id"].as_str() {
                         println!("  Submission ID: {}", id);
                     }
-                    println!("\n  Identity record submitted on chain.");
-                    println!("  Check status with: sbo id show {}", local_part);
-
-                    // Add identity to keyring (unverified - will check later)
-                    if let Err(e) = keyring.add_identity(&alias, &identity_uri) {
-                        eprintln!("Warning: failed to update keyring: {}", e);
-                    }
-                    if let Err(e) = keyring.add_email(email, &identity_uri) {
-                        eprintln!("Warning: failed to store email association: {}", e);
-                    }
-                }
-                "pending" => {
-                    println!("\n○ Identity submitted but verification timed out");
-                    println!("  URI:   {}", identity_uri);
                     if let Some(msg) = data["message"].as_str() {
                         println!("  {}", msg);
+                    } else {
+                        println!("\n  Identity record submitted on chain.");
+                        println!("  Check status with: sbo id show {}", local_part);
                     }
 
-                    // Add identity to keyring anyway
+                    // Add identity to keyring (unverified - will check later)
                     if let Err(e) = keyring.add_identity(&alias, &identity_uri) {
                         eprintln!("Warning: failed to update keyring: {}", e);
                     }
