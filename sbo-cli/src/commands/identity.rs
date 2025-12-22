@@ -107,7 +107,7 @@ pub async fn create(
                     if let Some(id) = data["submission_id"].as_str() {
                         println!("  Submission ID: {}", id);
                     }
-                    println!("\n  Note: Running in light mode or --no-wait.");
+                    println!("\n  Identity record submitted on chain.");
                     println!("  Check status with: sbo id show {}", name);
 
                     // Add identity to keyring (unverified - will check later)
@@ -1074,7 +1074,7 @@ pub async fn create_domain_certified(
                     if let Some(id) = data["submission_id"].as_str() {
                         println!("  Submission ID: {}", id);
                     }
-                    println!("\n  Note: Running in light mode or --no-wait.");
+                    println!("\n  Identity record submitted on chain.");
                     println!("  Check status with: sbo id show {}", local_part);
 
                     // Add identity to keyring (unverified - will check later)

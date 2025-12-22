@@ -212,7 +212,6 @@ pub async fn approve(request_id: &str, email: Option<&str>) -> Result<()> {
         challenge,
     )?;
 
-    // Confirm with user
     println!();
     println!("Approving sign request:");
     println!("  Request:  {}", request_id);
@@ -220,16 +219,6 @@ pub async fn approve(request_id: &str, email: Option<&str>) -> Result<()> {
     println!("  Email:    {}", claimed_email);
     println!("  Identity: {}", identity_uri);
     println!("  Key:      {}", key_alias);
-    print!("Confirm? [y/N] ");
-    std::io::stdout().flush()?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-
-    if !input.trim().eq_ignore_ascii_case("y") {
-        println!("Cancelled.");
-        return Ok(());
-    }
 
     // Send approval to daemon
     match client.request(Request::ApproveSignRequest {
@@ -303,11 +292,17 @@ async fn obtain_session_binding(
         }
     };
 
-    // Step 4: Print verification URL for user
+    // Step 4: Open browser and print verification URL
     println!();
     println!("Please verify your identity at:");
     println!("  {}", verification_uri);
     println!();
+
+    // Try to open browser automatically
+    if let Err(_) = open::that(&verification_uri) {
+        // Failed to open browser, user can manually visit
+    }
+
     println!("Waiting for verification (expires in {}s)...", expires_in);
 
     // Step 5: Poll until complete or timeout
