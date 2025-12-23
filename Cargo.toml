@@ -30,7 +30,7 @@ futures = "0.3"
 # HTTP
 reqwest = { version = "0.12", features = ["json"] }
 axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "set-header"] }
 base64 = "0.22"
 
 # Compression
