@@ -48,6 +48,10 @@ pub struct Message {
     pub content_schema: Option<String>,
     pub policy_ref: Option<String>,
     pub related: Option<Vec<Related>>,
+    pub hlc: Option<String>,
+    pub prev: Option<String>,
+    pub auth_cert: Option<String>,
+    pub auth_evidence: Option<String>,
 }
 
 impl Id {
@@ -161,9 +165,10 @@ impl Message {
         let order: &[&str] = &[
             "SBO-Version", "Action", "Path", "ID", "Type",
             "Content-Type", "Content-Encoding", "Content-Length", "Content-Hash",
-            "Attestation", "Content-Schema", "Creator", "New-ID", "New-Owner",
-            "New-Path", "Object-Path", "Origin", "Owner", "Policy-Ref",
-            "Proof", "Proof-Type", "Registry-Path", "Related", "Public-Key",
+            "Attestation", "Content-Schema", "Creator", "HLC", "New-ID", "New-Owner",
+            "New-Path", "Object-Path", "Origin", "Owner", "Policy-Ref", "Prev",
+            "Proof", "Proof-Type", "Registry-Path", "Related", "Auth-Cert",
+            "Auth-Evidence", "Public-Key",
             // NOTE: Signature is NOT included in signing content
         ];
 
@@ -202,6 +207,10 @@ impl Message {
         if let Some(ref pr) = self.policy_ref {
             headers.push(("Policy-Ref".to_string(), pr.clone()));
         }
+        if let Some(ref v) = self.hlc { headers.push(("HLC".to_string(), v.clone())); }
+        if let Some(ref v) = self.prev { headers.push(("Prev".to_string(), v.clone())); }
+        if let Some(ref v) = self.auth_cert { headers.push(("Auth-Cert".to_string(), v.clone())); }
+        if let Some(ref v) = self.auth_evidence { headers.push(("Auth-Evidence".to_string(), v.clone())); }
         headers.push(("Public-Key".to_string(), self.signing_key.to_string()));
         // NOTE: Signature is NOT included
 

@@ -440,6 +440,10 @@ pub async fn update(
         content_encoding: None,
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(&signing_key);
 
@@ -1034,6 +1038,10 @@ pub async fn create_domain_certified(
         content_encoding: None,
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(&signing_key);
 

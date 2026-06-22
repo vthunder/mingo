@@ -33,6 +33,10 @@ pub fn genesis(signing_key: &SigningKey) -> Vec<u8> {
         content_schema: Some("identity.v1".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     sys_msg.sign(signing_key);
 
@@ -63,6 +67,10 @@ pub fn genesis(signing_key: &SigningKey) -> Vec<u8> {
         content_schema: Some("policy.v2".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     policy_msg.sign(signing_key);
 
@@ -106,6 +114,10 @@ pub fn genesis_with_domain(
         content_schema: Some("domain.v1".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     domain_msg.sign(domain_signing_key);
 
@@ -138,6 +150,10 @@ pub fn genesis_with_domain(
         content_schema: Some("identity.v1".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     sys_msg.sign(sys_signing_key);
 
@@ -168,6 +184,10 @@ pub fn genesis_with_domain(
         content_schema: Some("policy.v2".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     policy_msg.sign(sys_signing_key);
 
@@ -214,6 +234,10 @@ pub fn genesis_with_domain_and_restriction(
         content_schema: Some("domain.v1".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     domain_msg.sign(domain_signing_key);
 
@@ -246,6 +270,10 @@ pub fn genesis_with_domain_and_restriction(
         content_schema: Some("identity.v1".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     sys_msg.sign(sys_signing_key);
 
@@ -285,6 +313,10 @@ pub fn genesis_with_domain_and_restriction(
         content_schema: Some("policy.v2".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     policy_msg.sign(sys_signing_key);
 
@@ -316,6 +348,10 @@ pub fn post(signing_key: &SigningKey, path: &str, id: &str, payload: &[u8]) -> V
         content_schema: None,
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(signing_key);
 
@@ -348,6 +384,10 @@ pub fn claim_name(signing_key: &SigningKey, name: &str) -> Vec<u8> {
         content_schema: Some("identity.v1".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(signing_key);
 
@@ -379,6 +419,10 @@ pub fn claim_name_with_profile(signing_key: &SigningKey, name: &str, profile_pat
         content_schema: Some("identity.v1".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(signing_key);
 
@@ -413,6 +457,10 @@ pub fn create_domain(signing_key: &SigningKey, domain_name: &str) -> Vec<u8> {
         content_schema: Some("domain.v1".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(signing_key);
 
@@ -445,6 +493,10 @@ pub fn post_to_own_namespace(signing_key: &SigningKey, name: &str, subpath: &str
         content_schema: None,
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(signing_key);
 
@@ -476,6 +528,10 @@ pub fn post_unauthorized(signing_key: &SigningKey, target_namespace: &str, id: &
         content_schema: None,
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(signing_key);
 
@@ -519,6 +575,10 @@ pub fn policy_with_restrictions(signing_key: &SigningKey, target_path: &str, max
         content_schema: Some("policy.v2".to_string()),
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
     msg.sign(signing_key);
 

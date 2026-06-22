@@ -25,6 +25,10 @@ fn test_sign_and_verify_message() {
         content_schema: None,
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
 
     // Sign the message
@@ -58,6 +62,10 @@ fn test_verify_fails_with_wrong_key() {
         content_schema: None,
         policy_ref: None,
         related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
     };
 
     msg.sign(&signing_key);

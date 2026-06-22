@@ -181,6 +181,10 @@ mod tests {
             content_schema: schema.map(|s| s.to_string()),
             policy_ref: None,
             related: None,
+            hlc: None,
+            prev: None,
+            auth_cert: None,
+            auth_evidence: None,
         };
         msg.sign(&key);
         msg
@@ -227,6 +231,10 @@ mod tests {
             content_schema: Some("identity.v1".to_string()),
             policy_ref: None,
             related: None,
+            hlc: None,
+            prev: None,
+            auth_cert: None,
+            auth_evidence: None,
         };
         msg.sign(&key);
 
@@ -264,6 +272,10 @@ mod tests {
             content_schema: Some("identity.v1".to_string()),
             policy_ref: None,
             related: None,
+            hlc: None,
+            prev: None,
+            auth_cert: None,
+            auth_evidence: None,
         };
         msg.sign(&signing_key);
 
@@ -298,6 +310,10 @@ mod tests {
             content_schema: Some("domain.v1".to_string()),
             policy_ref: None,
             related: None,
+            hlc: None,
+            prev: None,
+            auth_cert: None,
+            auth_evidence: None,
         };
         msg.sign(&key);
 
@@ -335,6 +351,10 @@ mod tests {
             content_schema: Some("profile.v1".to_string()),
             policy_ref: None,
             related: None,
+            hlc: None,
+            prev: None,
+            auth_cert: None,
+            auth_evidence: None,
         };
         msg.sign(&key);
 

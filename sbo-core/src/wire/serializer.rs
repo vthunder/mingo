@@ -16,6 +16,7 @@ const HEADER_ORDER: &[&str] = &[
     "Attestation",
     "Content-Schema",
     "Creator",
+    "HLC",
     "New-ID",
     "New-Owner",
     "New-Path",
@@ -23,10 +24,13 @@ const HEADER_ORDER: &[&str] = &[
     "Origin",
     "Owner",
     "Policy-Ref",
+    "Prev",
     "Proof",
     "Proof-Type",
     "Registry-Path",
     "Related",
+    "Auth-Cert",
+    "Auth-Evidence",
     "Public-Key",
     "Signature",
 ];
@@ -68,6 +72,10 @@ pub fn serialize(msg: &Message) -> Vec<u8> {
     if let Some(ref pr) = msg.policy_ref {
         headers.push(("Policy-Ref".to_string(), pr.clone()));
     }
+    if let Some(ref v) = msg.hlc { headers.push(("HLC".to_string(), v.clone())); }
+    if let Some(ref v) = msg.prev { headers.push(("Prev".to_string(), v.clone())); }
+    if let Some(ref v) = msg.auth_cert { headers.push(("Auth-Cert".to_string(), v.clone())); }
+    if let Some(ref v) = msg.auth_evidence { headers.push(("Auth-Evidence".to_string(), v.clone())); }
 
     headers.push(("Public-Key".to_string(), msg.signing_key.to_string()));
     headers.push(("Signature".to_string(), msg.signature.to_hex()));
