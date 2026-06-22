@@ -20,50 +20,6 @@ pub struct SignRequestResult {
     pub rejection_reason: Option<String>,
 }
 
-/// Response from RequestSessionBinding - returns verification URI for device flow
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionBindingResponse {
-    /// Request ID for polling
-    pub request_id: String,
-    /// URI to direct user to for verification
-    pub verification_uri: String,
-    /// Seconds until request expires
-    pub expires_in: u64,
-}
-
-/// Response from PollSessionBinding
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PollSessionBindingResponse {
-    /// Status: "pending", "complete", "expired"
-    pub status: String,
-    /// Session binding JWT (present when complete)
-    pub session_binding: Option<String>,
-}
-
-/// Response from RequestIdentityProvisioning
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdentityProvisioningResponse {
-    /// Status: "pending" (needs auth) or "complete" (already authenticated)
-    pub status: String,
-    /// Request ID for polling (present if pending)
-    pub request_id: Option<String>,
-    /// URI to direct user to for verification (present if pending)
-    pub verification_uri: Option<String>,
-    /// Seconds until request expires (present if pending)
-    pub expires_in: Option<u64>,
-    /// Identity JWT (present if complete)
-    pub identity_jwt: Option<String>,
-}
-
-/// Response from PollIdentityProvisioning
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PollIdentityProvisioningResponse {
-    /// Status: "pending", "complete", "expired"
-    pub status: String,
-    /// Identity JWT (present when complete)
-    pub identity_jwt: Option<String>,
-}
-
 /// Sign request status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SignRequestStatus {
@@ -227,39 +183,6 @@ pub enum Request {
         request_id: String,
     },
 
-    // ========================================================================
-    // Session Binding Flow (daemon proxies to domain endpoints)
-    // ========================================================================
-
-    /// Request a session binding from a domain (CLI → daemon → domain)
-    RequestSessionBinding {
-        /// Email address for the session
-        email: String,
-        /// Ephemeral public key (ed25519:<hex>)
-        ephemeral_public_key: String,
-        /// User delegation JWT (optional - domain may have custodied key)
-        user_delegation_jwt: Option<String>,
-    },
-
-    /// Poll for session binding result
-    PollSessionBinding {
-        /// Request ID from RequestSessionBinding response
-        request_id: String,
-    },
-
-    /// Request identity provisioning from a domain (CLI → daemon → domain)
-    RequestIdentityProvisioning {
-        /// Email address for the identity
-        email: String,
-        /// Public key for the identity (ed25519:<hex>)
-        public_key: String,
-    },
-
-    /// Poll for identity provisioning result
-    PollIdentityProvisioning {
-        /// Request ID from RequestIdentityProvisioning response
-        request_id: String,
-    },
 }
 
 /// IPC response to CLI
