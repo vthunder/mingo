@@ -22,6 +22,7 @@ pub mod schema;
 pub mod keyring;
 pub mod dns;
 pub mod jwt;
+pub mod attribution;
 
 mod genesis;
 mod indexer;
