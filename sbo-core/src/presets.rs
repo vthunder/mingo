@@ -477,6 +477,48 @@ pub fn claim_email_identity(
     wire::serialize(&msg)
 }
 
+/// Post the pinned authorized-broker list to `/sys/trust/brokers`.
+///
+/// This is the on-chain trust anchor consumed by the L2 attribution verifier:
+/// a browserid certificate whose issuer differs from the email's domain is only
+/// honored if the issuer is in this list. It MUST live on-chain (not in local
+/// config) so every replayer converges on the same authorization decisions.
+///
+/// Seed it during genesis (genesis mode permits the write before the root
+/// policy exists) or via an authorized key once policy governs `/sys/trust/`.
+/// The payload is a JSON array of provider domains, e.g. `["id.sandmill.org"]`.
+pub fn set_trust_brokers(signing_key: &SigningKey, brokers: &[&str]) -> Vec<u8> {
+    let public_key = signing_key.public_key();
+
+    let payload_bytes = serde_json::to_vec(&brokers).expect("broker list serialization");
+    let content_hash = ContentHash::sha256(&payload_bytes);
+
+    let mut msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/trust/").unwrap(),
+        id: Id::new("brokers").unwrap(),
+        object_type: ObjectType::Object,
+        signing_key: public_key,
+        signature: crate::crypto::Signature([0u8; 64]),
+        content_type: Some("application/json".to_string()),
+        content_hash: Some(content_hash),
+        payload: Some(payload_bytes),
+        owner: None,
+        creator: None,
+        content_encoding: None,
+        content_schema: Some("trust.brokers.v1".to_string()),
+        policy_ref: None,
+        related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
+    };
+    msg.sign(signing_key);
+
+    wire::serialize(&msg)
+}
+
 /// Create a domain object at /sys/domains/<domain_name>
 ///
 /// Domains are self-signed authority objects that can certify identities.

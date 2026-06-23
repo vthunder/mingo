@@ -290,7 +290,7 @@ fn validate_post(
     // Special handling for name claims: enforce uniqueness by (path, id)
     // Names under /sys/names/ and other name paths should only be claimed once
     if is_name_claim_path(&msg.path) {
-        return validate_name_claim(msg, state, root_policy_exists);
+        return validate_name_claim(msg, state, root_policy_exists, l2);
     }
 
     // Get the creator (use name resolution if available)
@@ -373,6 +373,7 @@ fn validate_name_claim(
     msg: &Message,
     state: &StateDb,
     _root_policy_exists: bool,
+    l2: &L2Context,
 ) -> ValidationResult {
     // Check if ANY object exists at this path/id (regardless of creator)
     // SECURITY: Fail closed - if we can't verify state, we must deny
@@ -391,9 +392,27 @@ fn validate_name_claim(
     let claimed_name = msg.id.as_str().to_string();
 
     if let Some(existing_obj) = existing {
-        // Name already claimed - verify signer matches owner
+        // Name already claimed - the updater must be the current controller.
         let signer_key = msg.signing_key.to_string();
         let owner_key = existing_obj.owner.as_str();
+
+        // Email-rooted name records have an ephemeral, rotating signer key, so
+        // re-authorize via L2 against the stored controller (the email) rather
+        // than a direct key match — otherwise a key rotation locks the owner out.
+        if let Some(owner_ref) = &existing_obj.owner_ref {
+            if existing_obj.content_schema.as_deref() == Some("identity.email.v1")
+                || owner_ref.contains('@')
+            {
+                if let Err(reason) = l2_authorize(msg, state, l2, owner_ref) {
+                    return ValidationResult::Invalid {
+                        stage: ValidationStage::Attribution,
+                        reason: format!("Name '{}' is controlled by {}: {}", msg.id.as_str(), owner_ref, reason),
+                    };
+                }
+                tracing::debug!("Email owner updating name claim: {}", msg.id.as_str());
+                return ValidationResult::Valid { creator: claimed_name };
+            }
+        }
 
         if !keys_match(&signer_key, owner_key) {
             return ValidationResult::Invalid {

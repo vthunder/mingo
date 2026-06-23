@@ -159,6 +159,98 @@ fn unresolvable_owner_is_filtered() {
     );
 }
 
+/// Store an email-rooted (identity.email.v1) name record at /sys/names/<name>,
+/// controlled by `email`, with an arbitrary (already-rotated) stored signer.
+fn put_email_rooted_name(db: &StateDb, name: &str, email: &str) {
+    let payload = serde_json::to_vec(&serde_json::json!({"iat": 1})).unwrap();
+    let obj = StoredObject {
+        path: Path::parse("/sys/names/").unwrap(),
+        id: Id::new(name).unwrap(),
+        creator: Id::new(name).unwrap(),
+        owner: Id::new("oldkey").unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(&payload),
+        payload,
+        policy_ref: None,
+        content_schema: Some("identity.email.v1".to_string()),
+        owner_ref: Some(email.to_string()),
+        block_number: 1,
+        object_hash: [0u8; 32],
+    };
+    db.put_object(&obj).unwrap();
+}
+
+// Regression: an email-rooted name record must re-authorize updates via L2
+// (the ephemeral signer key rotates), NOT via a direct key match — otherwise a
+// rotation locks the owner out. A rotated-key update without attribution must
+// be rejected at the *Attribution* stage (proving the L2 path), not "already
+// claimed" at the State stage.
+#[test]
+fn email_rooted_name_update_routes_through_l2() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    put_email_rooted_name(&db, "alice", "alice@example.com");
+
+    // A fresh (rotated) key re-asserts the name, no Owner header (so the top
+    // gate is skipped) and no attribution.
+    let rotated = SigningKey::generate();
+    let msg = signed_post(&rotated, "/sys/names/", "alice", None, None, None);
+    let result = validate_message(&msg, &db, dir.path(), &ctx(&db));
+    match result {
+        ValidationResult::Invalid { stage, .. } => assert_eq!(
+            stage,
+            ValidationStage::Attribution,
+            "email-rooted name update must be filtered by L2, not key-match"
+        ),
+        other => panic!("expected L2 rejection, got {other:?}"),
+    }
+}
+
+// The pinned /sys/trust/brokers object must be loaded into the L2 trust anchors
+// (on-chain, so replay converges). Without it, broker-path attribution can't
+// be authorized.
+#[test]
+fn trust_brokers_object_loads_into_anchors() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let payload = serde_json::to_vec(&vec!["id.sandmill.org"]).unwrap();
+    let obj = StoredObject {
+        path: Path::parse("/sys/trust/").unwrap(),
+        id: Id::new("brokers").unwrap(),
+        creator: Id::new("sys").unwrap(),
+        owner: Id::new("sys").unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(&payload),
+        payload,
+        policy_ref: None,
+        content_schema: Some("trust.brokers.v1".to_string()),
+        owner_ref: None,
+        block_number: 1,
+        object_hash: [0u8; 32],
+    };
+    db.put_object(&obj).unwrap();
+
+    let ctx = L2Context::for_block(None, &db);
+    assert!(
+        ctx.anchors.brokers.iter().any(|b| b == "id.sandmill.org"),
+        "expected /sys/trust/brokers to be loaded, got {:?}",
+        ctx.anchors.brokers
+    );
+}
+
+// Sanity: the preset that produces the /sys/trust/brokers object round-trips
+// into anchors the daemon can read.
+#[test]
+fn set_trust_brokers_preset_roundtrips() {
+    let key = SigningKey::generate();
+    let wire = sbo_core::presets::set_trust_brokers(&key, &["id.sandmill.org", "broker.example"]);
+    let msg = sbo_core::wire::parse(&wire).unwrap();
+    assert_eq!(msg.path.to_string(), "/sys/trust/");
+    assert_eq!(msg.id.as_str(), "brokers");
+    let brokers: Vec<String> = serde_json::from_slice(msg.payload.as_ref().unwrap()).unwrap();
+    assert_eq!(brokers, vec!["id.sandmill.org", "broker.example"]);
+}
+
 #[test]
 fn ownerless_write_bypasses_l2_gate() {
     let dir = tempdir().unwrap();
