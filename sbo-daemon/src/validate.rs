@@ -2,7 +2,7 @@
 //!
 //! Validates SBO messages before they are applied to the repo.
 
-use sbo_core::authorize::{authorize_message, encode_auth_evidence_inline, AuthzOutcome};
+use sbo_core::authorize::{authorize_message, encode_auth_evidence_inline, message_attribution, AuthzOutcome};
 use sbo_core::attribution::TrustAnchors;
 use sbo_core::message::{Message, Action, Id, Path as SboPath};
 use sbo_core::policy::{evaluate, ActionType, PolicyResult};
@@ -191,13 +191,42 @@ pub enum ValidationResult {
 const ROOT_POLICY_PATH: &str = "/sys/policies/";
 const ROOT_POLICY_ID: &str = "root";
 
-/// Resolve the creator ID for a message.
-/// If the message has an explicit creator, use it.
-/// Otherwise, look up the signer's claimed name, or fall back to truncated key hex.
-pub fn resolve_creator(msg: &Message, state: Option<&StateDb>) -> Id {
+/// The email the message's signer is *proven* to speak for at the block's
+/// inclusion time (valid `Auth-Cert` + DNSSEC evidence), or `None` if the
+/// signer carries no valid attribution. Deterministic given the message and
+/// chain state — the same inclusion-time-pinned check the L2 gate uses.
+fn attributed_email(msg: &Message, state: Option<&StateDb>, l2: &L2Context) -> Option<String> {
+    let signer = msg.signing_key.to_string();
+    // Evidence resolution (ref:/dnssec) needs state; inline works without it.
+    let evidence = state.and_then(|db| resolve_evidence(msg, db));
+    let inclusion_time = l2.inclusion_time.unwrap_or(0);
+    message_attribution(
+        &signer,
+        msg.auth_cert.as_deref(),
+        evidence.as_deref(),
+        inclusion_time,
+        &l2.anchors,
+    )
+    .map(|a| a.email)
+}
+
+/// Resolve the creator ID for a message — the durable identity of its author.
+///
+/// Order (Identity/State-Commitment specs): explicit `Creator` header → the
+/// **attributed email** (so an email author's writes share a stable creator
+/// across browserid key rotation, instead of fragmenting under each ephemeral
+/// key) → the signer's claimed name → truncated key hex.
+pub fn resolve_creator(msg: &Message, state: Option<&StateDb>, l2: &L2Context) -> Id {
     // If message has explicit creator, use it
     if let Some(creator) = &msg.creator {
         return creator.clone();
+    }
+
+    // An attributed email is the author's stable, rotation-independent identity.
+    if let Some(email) = attributed_email(msg, state, l2) {
+        if let Ok(id) = Id::new(&email) {
+            return id;
+        }
     }
 
     let pubkey = msg.signing_key.to_string();
@@ -354,7 +383,7 @@ fn validate_post(
     }
 
     // Get the creator (use name resolution if available)
-    let creator = resolve_creator(msg, Some(state));
+    let creator = resolve_creator(msg, Some(state), l2);
 
     // Check if object already exists
     // SECURITY: Fail closed - if we can't verify state, we must deny
@@ -471,7 +500,7 @@ fn validate_transfer(
     }
 
     // Get the creator (use name resolution if available)
-    let creator = resolve_creator(msg, Some(state));
+    let creator = resolve_creator(msg, Some(state), l2);
 
     // Object must exist for transfer
     let existing = match state.get_object(&msg.path, &creator, &msg.id) {
@@ -548,7 +577,7 @@ fn check_policy(
     };
 
     // Resolve the actor's identity (name if available, otherwise key-based)
-    let actor = resolve_creator(msg, Some(state));
+    let actor = resolve_creator(msg, Some(state), l2);
     let target_path = msg.path.to_string();
 
     // The owner reference the `owner` policy identity authorizes against: an
@@ -601,14 +630,16 @@ pub fn message_to_stored_object(
     block_number: u64,
     state: Option<&StateDb>,
     object_hash: [u8; 32],
+    l2: &L2Context,
 ) -> Option<StoredObject> {
     // Only objects with content can be stored
     let payload = msg.payload.as_ref()?;
     let content_hash = msg.content_hash.as_ref()?;
     let content_type = msg.content_type.as_ref()?;
 
-    // Use name resolution for creator if state is available
-    let creator = resolve_creator(msg, state);
+    // Resolve the author's durable identity (attributed email for email-rooted
+    // writes, so the creator segment is stable across browserid key rotation).
+    let creator = resolve_creator(msg, state, l2);
 
     // Legacy signer-key owner record (retained for objects/proofs that still
     // read it). Ownership checks key off `owner_ref` (the resolved controller).

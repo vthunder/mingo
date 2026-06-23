@@ -12,7 +12,8 @@ use sbo_core::crypto::{ContentHash, Signature, SigningKey};
 use sbo_core::message::{Action, Id, Message, ObjectType, Path};
 use sbo_core::state::{StateDb, StoredObject};
 use sbo_daemon::validate::{
-    message_to_stored_object, validate_message, L2Context, ValidationResult, ValidationStage,
+    message_to_stored_object, resolve_creator, validate_message, L2Context, ValidationResult,
+    ValidationStage,
 };
 use tempfile::tempdir;
 
@@ -155,7 +156,7 @@ fn same_key_owner_can_update_own_object_via_controller_check() {
     // Create then persist an object the way the daemon would (owner_ref records
     // the signer-key effective owner).
     let create = signed_post(&key, "/space/", "post1", None, None, None);
-    let stored = sbo_daemon::validate::message_to_stored_object(&create, 1, Some(&db), [0u8; 32])
+    let stored = sbo_daemon::validate::message_to_stored_object(&create, 1, Some(&db), [0u8; 32], &ctx(&db))
         .expect("create should produce a stored object");
     db.put_object(&stored).unwrap();
 
@@ -232,6 +233,31 @@ fn evidence_ref_resolves_to_inline_payload() {
         Some("inline:AAAA"),
     );
     assert_eq!(resolve_evidence(&inline, &db), Some("inline:AAAA".to_string()));
+}
+
+#[test]
+fn resolve_creator_prefers_explicit_creator_then_key_hex() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    // Explicit Creator header wins outright.
+    let mut with_creator = signed_post(&key, "/space/", "p1", None, None, None);
+    with_creator.creator = Some(Id::new("alice").unwrap());
+    with_creator.sign(&key);
+    assert_eq!(
+        resolve_creator(&with_creator, Some(&db), &ctx(&db)).as_str(),
+        "alice"
+    );
+
+    // No Creator, no valid attribution → key-hex fallback (the attributed-email
+    // tier is skipped because the signer carries no cert). The email tier is
+    // exercised only on the live DNSSEC path.
+    let bare = signed_post(&key, "/space/", "p1", None, None, None);
+    assert!(
+        resolve_creator(&bare, Some(&db), &ctx(&db)).as_str().starts_with("e_"),
+        "nameless keyed author should fall back to key-hex"
+    );
 }
 
 #[test]
@@ -356,7 +382,9 @@ fn message_to_stored_object_persists_owner_ref_and_schema() {
         1_700_000_000,
     );
     let msg = sbo_core::wire::parse(&wire).unwrap();
-    let stored = message_to_stored_object(&msg, 7, None, [0u8; 32])
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let stored = message_to_stored_object(&msg, 7, None, [0u8; 32], &ctx(&db))
         .expect("email-identity message should produce a stored object");
 
     assert_eq!(stored.content_schema.as_deref(), Some("identity.email.v1"));
@@ -376,7 +404,7 @@ fn key_rooted_name_registered_via_real_path_authorizes() {
     // Register /sys/names/alice (identity.v1) the way the daemon actually would.
     let wire = sbo_core::presets::claim_name(&key, "alice");
     let id_msg = sbo_core::wire::parse(&wire).unwrap();
-    let stored = message_to_stored_object(&id_msg, 1, Some(&db), [0u8; 32]).unwrap();
+    let stored = message_to_stored_object(&id_msg, 1, Some(&db), [0u8; 32], &ctx(&db)).unwrap();
     db.put_object(&stored).unwrap();
 
     // A write owned by "alice", signed by the same key, must be authorized.

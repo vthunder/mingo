@@ -743,8 +743,10 @@ impl SyncEngine {
                             }
                         }
 
-                        // Write to filesystem and update state
-                        self.write_object(repo, msg, block_number, &mut touched_objects)?;
+                        // Write to filesystem and update state. Pass the same
+                        // L2 context so creator derivation (attributed-email)
+                        // matches what validation used.
+                        self.write_object(repo, msg, block_number, &l2, &mut touched_objects)?;
                     }
                 }
             }
@@ -847,6 +849,7 @@ impl SyncEngine {
         repo: &Repo,
         msg: &sbo_core::message::Message,
         block_number: u64,
+        l2: &crate::validate::L2Context,
         touched: &mut TouchedObjects,
     ) -> crate::Result<()> {
         // Build path: repo_root / sbo_path / sbo_id
@@ -877,7 +880,7 @@ impl SyncEngine {
         if let Some(state_db) = self.state_dbs.get(&uri) {
             // Get the creator ID using the same resolution as message_to_stored_object
             // This ensures witness path segments match what gets stored in the database
-            let creator = resolve_creator(msg, Some(state_db));
+            let creator = resolve_creator(msg, Some(state_db), l2);
 
             // Build path segments for witness tracking
             let path_segments = StateDb::object_to_segments(&msg.path, &creator, &msg.id);
@@ -923,7 +926,7 @@ impl SyncEngine {
         // Update state DB (keyed by URI)
         let uri = repo.uri.to_string();
         let state_db = self.state_dbs.get(&uri);
-        if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_db, object_hash) {
+        if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_db, object_hash, l2) {
             if let Some(db) = state_db {
                 if let Err(e) = db.put_object(&stored_obj) {
                     tracing::warn!("Failed to update state DB: {}", e);
