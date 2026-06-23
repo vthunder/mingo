@@ -715,14 +715,10 @@ fn email_domain(email: &str) -> Option<&str> {
     email.split('@').nth(1).filter(|d| !d.is_empty())
 }
 
-/// A local name derived from an email's local part (sanitized to a valid `Id`).
-fn name_from_email(email: &str) -> String {
-    let local = email.split('@').next().unwrap_or(email);
-    let sanitized: String = local
-        .chars()
-        .map(|c| if matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~') { c } else { '_' })
-        .collect();
-    if sanitized.is_empty() { "user".to_string() } else { sanitized }
+/// The repository's own domain, if it is addressed by a DNS-based `sbo://` URI.
+/// Chain-addressed repos (`sbo+raw://avail:…`) have no domain → `None`.
+fn repo_domain(uri: Option<&str>) -> Option<String> {
+    uri.and_then(sbo_core::dns::extract_domain)
 }
 
 /// Resolve the broker base URL and password from env, with sensible defaults.
@@ -775,43 +771,79 @@ async fn capture_for(
     Ok((signing_key, captured))
 }
 
-/// Import an identity discovered via email address.
+/// Import an email identity into the local keyring.
 ///
-/// Captures fresh attribution for the email and records the email → SBO name
-/// association in the local keyring (the on-chain object is created with
-/// `sbo id create --email`).
+/// Captures attribution to *verify* the active key controls the email, then
+/// reports how to use it. Per the Identity spec a bare email owns objects
+/// directly — no `/sys/names/` record is required — so this does not fabricate
+/// a name; register one explicitly with `sbo id create --email` if wanted.
 pub async fn import_email(email: &str) -> Result<()> {
     let (_signing_key, captured) = capture_for(email, None).await?;
-    let name = name_from_email(email);
 
-    let mut keyring = Keyring::open()?;
-    let sbo_uri = format!("/sys/names/{name}");
-    keyring.add_email(email, &sbo_uri)?;
-
-    println!("\n✓ Imported email identity");
-    println!("  Email: {email}");
-    println!("  Name:  {name}");
+    println!("\n✓ Verified control of {email}");
     println!("  Cert issuer: {}", captured.issuer);
-    println!("\n  Create the on-chain record with: sbo id create --email {email}");
+    println!("  This key can now sign writes owned by {email} (header `Owner: {email}`).");
+    println!("  A local name is optional — register one with:");
+    println!("    sbo id create --email {email} <uri> [name]");
     Ok(())
 }
 
-/// Create an email-rooted identity (`identity.email.v1`).
+/// Register an email-rooted **name** (`identity.email.v1`) — the *optional*
+/// handle described by the Identity spec. A bare email already owns objects
+/// directly; this only registers a `/sys/names/<name>` record controlled by it.
 ///
-/// Captures a browserid certificate + DNSSEC evidence and assembles the signed
-/// SBO message (Owner = email, carrying Auth-Cert / Auth-Evidence). When `uri`
-/// is given the message is submitted there via the daemon (the raw wire bytes
-/// already carry the attribution headers); otherwise it is printed for manual
-/// posting.
+/// Name selection honors the T0/T1 distinction:
+/// - **T1** (email domain == the repo's own domain): the email's local part is
+///   the canonical name `<local>@<repo-domain>`; registering it is meaningful.
+/// - **T0** (external email, or a repo with no domain): no name is registered
+///   by default (the email owns directly). An explicit `name` may still be
+///   given to register a handle, with a warning that it publicly reveals the
+///   email.
 pub async fn create_domain_certified(
     email: &str,
     uri: Option<&str>,
+    name_override: Option<&str>,
     key_alias: Option<&str>,
     no_wait: bool,
 ) -> Result<()> {
-    let (signing_key, captured) = capture_for(email, key_alias).await?;
+    let (local_part, email_dom) = sbo_core::dns::parse_email(email)
+        .ok_or_else(|| anyhow::anyhow!("'{}' is not a valid email address", email))?;
 
-    let name = name_from_email(email);
+    let repo_dom = repo_domain(uri);
+    let domain_matches = repo_dom.as_deref() == Some(email_dom);
+
+    // Decide the name to register (if any).
+    let chosen: Option<String> = match name_override {
+        Some(n) => Some(n.to_string()),
+        None if domain_matches => Some(local_part.to_string()), // T1 canonical
+        None => None,                                            // T0: own directly
+    };
+
+    let Some(name) = chosen else {
+        // T0 with no explicit handle: nothing to register.
+        println!("'{email}' is an external identity for this repository.");
+        println!("  It owns objects directly as a bare email — sign writes with `Owner: {email}`");
+        println!("  (attribution is attached automatically; no name registration needed).");
+        println!();
+        println!("  To register an optional local handle anyway:");
+        println!("    sbo id create --email {email} <uri> <name>");
+        println!("  Note: a local handle publicly binds that name to {email}.");
+        return Ok(());
+    };
+
+    // The chosen name must be a valid SBO Id.
+    if sbo_core::message::Id::new(&name).is_err() {
+        anyhow::bail!(
+            "'{name}' is not a valid name (allowed characters: letters, digits, '-' '.' '_' '~')"
+        );
+    }
+    if !domain_matches {
+        eprintln!(
+            "Note: registering '{name}' as a local handle publicly binds it to the external email {email}."
+        );
+    }
+
+    let (signing_key, captured) = capture_for(email, key_alias).await?;
     let iat = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -826,11 +858,12 @@ pub async fn create_domain_certified(
         iat,
     );
 
-    println!("\n✓ Built identity.email.v1 for {email} (name '{name}')");
+    let tier = if domain_matches { "canonical name" } else { "external-email handle" };
+    println!("\n✓ Built identity.email.v1 '{name}' for {email} ({tier})");
 
     let Some(uri) = uri else {
         println!("\n  No target URI given — printing the message for manual posting.");
-        println!("  Submit on-chain with: sbo id create --email {email} <uri>");
+        println!("  Submit on-chain with: sbo id create --email {email} <uri> {name}");
         println!("\n--- SBO message (post to /sys/names/{name}) ---");
         println!("{}", String::from_utf8_lossy(&wire));
         return Ok(());

@@ -209,9 +209,11 @@ enum IdCommands {
         #[arg(required_unless_present = "email")]
         uri: Option<String>,
 
-        /// Name to claim (will post to /sys/names/<name>/)
-        /// Required for self-signed identities, not used for --email flow
-        #[arg(required_unless_present = "email", conflicts_with = "email")]
+        /// Name to claim (will post to /sys/names/<name>/).
+        /// Required for self-signed identities. Optional for --email: an explicit
+        /// local handle (needed to register a name for an external/T0 email; for
+        /// an email in the repo's own domain the canonical name is derived).
+        #[arg(required_unless_present = "email")]
         name: Option<String>,
 
         /// Email address for domain-certified identity (e.g., alice@sandmill.org)
@@ -1307,10 +1309,13 @@ async fn main() -> anyhow::Result<()> {
             match id_cmd {
                 IdCommands::Create { uri, name, email, key, display_name, description, avatar, website, binding, dry_run, no_wait } => {
                     if let Some(email_addr) = email {
-                        // Email-rooted (browserid + DNSSEC) identity flow
+                        // Email-rooted (browserid + DNSSEC) identity flow.
+                        // `name` is an optional explicit handle (required to
+                        // register a name for an external/T0 email).
                         commands::identity::create_domain_certified(
                             &email_addr,
                             uri.as_deref(),
+                            name.as_deref(),
                             key.as_deref(),
                             no_wait,
                         ).await?;
