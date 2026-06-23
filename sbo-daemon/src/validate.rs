@@ -335,7 +335,7 @@ fn validate_post(
             tracing::debug!("Controller updating object {}:{}", msg.path, msg.id);
         } else {
             // Signer is not the controller - must check policy for update.
-            if let Err(reason) = check_policy(state, msg, ActionType::Update, Some(owner_ref)) {
+            if let Err(reason) = check_policy(state, msg, ActionType::Update, Some(owner_ref), l2) {
                 return ValidationResult::Invalid {
                     stage: ValidationStage::Policy,
                     reason,
@@ -348,7 +348,7 @@ fn validate_post(
         tracing::debug!("Allowing post without root policy (genesis mode)");
     } else {
         // New object creation - must check policy
-        if let Err(reason) = check_policy(state, msg, ActionType::Create, None) {
+        if let Err(reason) = check_policy(state, msg, ActionType::Create, None, l2) {
             return ValidationResult::Invalid {
                 stage: ValidationStage::Policy,
                 reason,
@@ -486,6 +486,7 @@ fn check_policy(
     msg: &Message,
     action: ActionType,
     owner: Option<&str>,
+    l2: &L2Context,
 ) -> Result<(), String> {
     // Resolve the applicable policy by walking up the path hierarchy
     let policy = match state.resolve_policy(&msg.path) {
@@ -505,8 +506,26 @@ fn check_policy(
     let actor = resolve_creator(msg, Some(state));
     let target_path = msg.path.to_string();
 
+    // The owner reference the `owner` policy identity authorizes against: an
+    // explicit owner (the existing object's resolved controller, for updates),
+    // else the namespace owner derived from the target path (for creates).
+    let owner_ref: Option<String> = owner.map(|s| s.to_string()).or_else(|| {
+        if action == ActionType::Create {
+            sbo_core::policy::extract_namespace_owner(&target_path)
+        } else {
+            None
+        }
+    });
+    // Whether the signer speaks for that owner's resolved controller (a direct
+    // key match for key-rooted owners, browserid attribution for email-rooted
+    // owners). This is what satisfies a `to: owner` grant.
+    let signer_is_owner = owner_ref
+        .as_deref()
+        .map(|o| l2_authorize(msg, state, l2, o).is_ok())
+        .unwrap_or(false);
+
     // Evaluate the policy
-    match evaluate(&policy, &actor, action, &target_path, owner, msg) {
+    match evaluate(&policy, &actor, action, &target_path, owner, signer_is_owner, msg) {
         PolicyResult::Allowed => {
             tracing::debug!(
                 "Policy allowed {:?} on {} by {}",

@@ -21,6 +21,7 @@ pub fn evaluate(
     action: ActionType,
     target_path: &str,
     owner: Option<&str>,
+    signer_is_owner: bool,
     message: &Message,
 ) -> PolicyResult {
     // For CREATE actions without an owner, derive effective owner from path
@@ -55,7 +56,7 @@ pub fn evaluate(
         let path_parsed = crate::message::Path::parse(target_path).unwrap();
         let path_matches = grant.on.matches(&path_parsed, effective_owner_ref);
         let action_matches = grant.can.contains(&action) || grant.can.contains(&ActionType::All);
-        let identity_match = identity_matches(&grant.to, actor, &actor_key, effective_owner_ref, &policy.roles);
+        let identity_match = identity_matches(&grant.to, actor, &actor_key, effective_owner_ref, signer_is_owner, &policy.roles);
 
         grant_debug.push(format!(
             "  grant to={:?} can={:?} on={:?} -> path:{} action:{} identity:{}",
@@ -85,7 +86,7 @@ pub fn evaluate(
 
 /// Extract namespace owner from path (first component)
 /// e.g., "/alice/nfts/" -> Some("alice"), "/sys/names/" -> Some("sys")
-fn extract_namespace_owner(path: &str) -> Option<String> {
+pub fn extract_namespace_owner(path: &str) -> Option<String> {
     path.trim_start_matches('/')
         .split('/')
         .next()
@@ -228,13 +229,19 @@ fn identity_matches(
     actor: &Id,
     actor_key: &str,
     owner: Option<&str>,
+    signer_is_owner: bool,
     roles: &std::collections::HashMap<String, Vec<Identity>>,
 ) -> bool {
     match identity {
         Identity::Name(name) => {
             match name.as_str() {
                 "*" => true,
-                "owner" => owner.map_or(false, |o| o == actor.as_str()),
+                // The `owner` identity is satisfied when the signer speaks for
+                // the object's resolved controller (key match for key-rooted
+                // owners, browserid attribution for email-rooted owners),
+                // computed by the caller via L2 — not a creator-name string
+                // compare, which would never match an email-rooted owner.
+                "owner" => signer_is_owner,
                 _ => name == actor.as_str(),
             }
         }
@@ -246,13 +253,96 @@ fn identity_matches(
         }
         Identity::Role { role } => {
             if let Some(members) = roles.get(role) {
-                members.iter().any(|m| identity_matches(m, actor, actor_key, owner, roles))
+                members.iter().any(|m| identity_matches(m, actor, actor_key, owner, signer_is_owner, roles))
             } else {
                 false
             }
         }
         Identity::Any { any } => {
-            any.iter().any(|id| identity_matches(id, actor, actor_key, owner, roles))
+            any.iter().any(|id| identity_matches(id, actor, actor_key, owner, signer_is_owner, roles))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::{ContentHash, Signature, SigningKey};
+    use crate::message::{Action, ObjectType, Path};
+
+    fn signed_msg() -> Message {
+        let key = SigningKey::generate();
+        let payload = b"{}".to_vec();
+        let mut msg = Message {
+            action: Action::Post,
+            path: Path::parse("/alice/posts/").unwrap(),
+            id: Id::new("p1").unwrap(),
+            object_type: ObjectType::Object,
+            signing_key: key.public_key(),
+            signature: Signature::parse(&"0".repeat(128)).unwrap(),
+            content_type: Some("application/json".to_string()),
+            content_hash: Some(ContentHash::sha256(&payload)),
+            payload: Some(payload),
+            owner: None,
+            creator: None,
+            content_encoding: None,
+            content_schema: None,
+            policy_ref: None,
+            related: None,
+            hlc: None,
+            prev: None,
+            auth_cert: None,
+            auth_evidence: None,
+        };
+        msg.sign(&key);
+        msg
+    }
+
+    fn owner_grant_policy() -> Policy {
+        serde_json::from_value(serde_json::json!({
+            "grants": [{"to": "owner", "can": ["*"], "on": "/$owner/**"}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn owner_grant_honors_signer_is_owner_not_actor_string() {
+        let policy = owner_grant_policy();
+        let msg = signed_msg();
+        // The actor (a key-hex creator id) never string-equals the owner
+        // "alice"; authorization must come from signer_is_owner.
+        let actor = Id::new("e_deadbeef").unwrap();
+
+        // signer_is_owner = true → the `owner` grant applies → allowed.
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice"), true, &msg),
+            PolicyResult::Allowed
+        ));
+        // signer_is_owner = false → no matching grant → denied.
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice"), false, &msg),
+            PolicyResult::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn owner_grant_works_for_email_owner_via_signer_is_owner() {
+        // An email-rooted owner: `$owner` substitutes the email into the path
+        // pattern, and signer_is_owner carries the attribution result. The old
+        // `owner == actor` compare could never match an email owner.
+        let policy: Policy = serde_json::from_value(serde_json::json!({
+            "grants": [{"to": "owner", "can": ["*"], "on": "/**"}]
+        }))
+        .unwrap();
+        let msg = signed_msg();
+        let actor = Id::new("e_ephemeral").unwrap();
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice@example.com"), true, &msg),
+            PolicyResult::Allowed
+        ));
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice@example.com"), false, &msg),
+            PolicyResult::Denied(_)
+        ));
     }
 }
