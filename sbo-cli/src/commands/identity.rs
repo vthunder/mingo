@@ -799,15 +799,16 @@ pub async fn import_email(email: &str) -> Result<()> {
 /// Create an email-rooted identity (`identity.email.v1`).
 ///
 /// Captures a browserid certificate + DNSSEC evidence and assembles the signed
-/// SBO message (Owner = email, carrying Auth-Cert / Auth-Evidence). The message
-/// is printed; on-chain submission of attributed writes is not yet plumbed
-/// through the daemon IPC (TODO), so post it via the wire interface for now.
+/// SBO message (Owner = email, carrying Auth-Cert / Auth-Evidence). When `uri`
+/// is given the message is submitted there via the daemon (the raw wire bytes
+/// already carry the attribution headers); otherwise it is printed for manual
+/// posting.
 pub async fn create_domain_certified(
     email: &str,
+    uri: Option<&str>,
     key_alias: Option<&str>,
     no_wait: bool,
 ) -> Result<()> {
-    let _ = no_wait; // submission not yet wired; see TODO above.
     let (signing_key, captured) = capture_for(email, key_alias).await?;
 
     let name = name_from_email(email);
@@ -826,9 +827,59 @@ pub async fn create_domain_certified(
     );
 
     println!("\n✓ Built identity.email.v1 for {email} (name '{name}')");
-    println!("\n--- SBO message (post to /sys/names/{name}) ---");
-    println!("{}", String::from_utf8_lossy(&wire));
+
+    let Some(uri) = uri else {
+        println!("\n  No target URI given — printing the message for manual posting.");
+        println!("  Submit on-chain with: sbo id create --email {email} <uri>");
+        println!("\n--- SBO message (post to /sys/names/{name}) ---");
+        println!("{}", String::from_utf8_lossy(&wire));
+        return Ok(());
+    };
+
+    // Submit the raw wire bytes (which carry Owner/Auth-Cert/Auth-Evidence) via
+    // the same IPC path as key-rooted identities.
+    let config = Config::load(&Config::config_path())?;
+    let client = IpcClient::new(config.daemon.socket_path);
+    let identity_uri = format!("{}/sys/names/{}", uri.trim_end_matches('/'), name);
+
+    println!("  Submitting to {uri} …");
+    match client
+        .request(Request::SubmitIdentity {
+            uri: uri.to_string(),
+            name: name.clone(),
+            data: wire,
+            wait: !no_wait,
+        })
+        .await
+    {
+        Ok(Response::Ok { data }) => {
+            let status = data["status"].as_str().unwrap_or("unknown");
+            println!("\n  {} {}", status_glyph(status), status);
+            println!("  URI: {identity_uri}");
+            if let Some(msg) = data["message"].as_str() {
+                println!("  {msg}");
+            }
+            let mut keyring = Keyring::open()?;
+            if let Err(e) = keyring.add_email(email, &identity_uri) {
+                eprintln!("Warning: failed to update keyring: {e}");
+            }
+        }
+        Ok(Response::Error { message }) => {
+            anyhow::bail!("submission failed: {message}");
+        }
+        Err(e) => {
+            anyhow::bail!("failed to connect to daemon: {e}. Is it running? Try: sbo daemon start");
+        }
+    }
     Ok(())
+}
+
+fn status_glyph(status: &str) -> &'static str {
+    match status {
+        "verified" => "✓",
+        "submitted" | "unverified" | "pending" => "○",
+        _ => "?",
+    }
 }
 
 /// Resolve an email address to its controlling party.

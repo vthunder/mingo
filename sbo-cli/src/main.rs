@@ -203,8 +203,10 @@ enum IdCommands {
     ///   sbo id create --email alice@sandmill.org
     Create {
         /// SBO URI of the chain/app (e.g., sbo+raw://avail:turing:506/)
-        /// Required for self-signed identities, not used for --email flow
-        #[arg(required_unless_present = "email", conflicts_with = "email")]
+        /// Required for self-signed identities. Optional for --email: when given,
+        /// the captured identity.email.v1 is submitted there; when omitted, the
+        /// message is printed for manual posting.
+        #[arg(required_unless_present = "email")]
         uri: Option<String>,
 
         /// Name to claim (will post to /sys/names/<name>/)
@@ -1305,9 +1307,10 @@ async fn main() -> anyhow::Result<()> {
             match id_cmd {
                 IdCommands::Create { uri, name, email, key, display_name, description, avatar, website, binding, dry_run, no_wait } => {
                     if let Some(email_addr) = email {
-                        // Domain-certified identity flow
+                        // Email-rooted (browserid + DNSSEC) identity flow
                         commands::identity::create_domain_certified(
                             &email_addr,
+                            uri.as_deref(),
                             key.as_deref(),
                             no_wait,
                         ).await?;
