@@ -167,6 +167,7 @@ impl RpcClient {
             return Ok(BlockData {
                 block_number,
                 transactions: Vec::new(),
+                timestamp: None,
             });
         }
 
@@ -188,6 +189,7 @@ impl RpcClient {
             return Ok(BlockData {
                 block_number,
                 transactions: Vec::new(),
+                timestamp: None,
             });
         }
 
@@ -246,6 +248,7 @@ impl RpcClient {
         Ok(BlockData {
             block_number,
             transactions,
+            timestamp: None,
         })
     }
 }

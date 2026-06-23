@@ -32,6 +32,9 @@ pub use error::{Error, Result};
 pub struct BlockData {
     pub block_number: u64,
     pub transactions: Vec<AppTransaction>,
+    /// The block's DA inclusion time (UNIX seconds), from its `timestamp.set`
+    /// inherent. `None` if unavailable. Used as the L2 attribution time.
+    pub timestamp: Option<i64>,
 }
 
 /// A transaction for a specific app_id

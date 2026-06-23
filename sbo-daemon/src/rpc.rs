@@ -170,6 +170,7 @@ impl RpcClient {
             return Ok(BlockData {
                 block_number,
                 transactions: Vec::new(),
+                timestamp: None,
             });
         }
 
@@ -202,6 +203,7 @@ impl RpcClient {
             return Ok(BlockData {
                 block_number,
                 transactions: Vec::new(),
+                timestamp: None,
             });
         }
 
@@ -394,9 +396,22 @@ impl RpcClient {
             transactions.len()
         );
 
+        // Fetch the block's DA inclusion time from its `timestamp.set` inherent
+        // (the SDK returns UNIX millis). This is the time L2 attribution windows
+        // are checked against. A missing timestamp is non-fatal — we proceed with
+        // None (email-rooted owners then fail closed for this block).
+        let timestamp = match block.timestamp().await {
+            Ok(ms) => Some((ms / 1000) as i64),
+            Err(e) => {
+                tracing::warn!("Block {} timestamp unavailable: {}", block_number, e);
+                None
+            }
+        };
+
         Ok(BlockData {
             block_number,
             transactions,
+            timestamp,
         })
     }
 
@@ -428,6 +443,7 @@ impl RpcClient {
             results.push(BlockData {
                 block_number,
                 transactions: txs,
+                timestamp: data.timestamp,
             });
         }
 

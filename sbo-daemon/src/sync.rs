@@ -502,6 +502,8 @@ impl SyncEngine {
         // 4. Process each transaction
         for data in rpc_block_data {
             tx_count += data.transactions.len();
+            // The block's DA inclusion time, used by the L2 attribution layer.
+            let block_timestamp = data.timestamp;
             for tx in data.transactions {
                 // Collect raw transaction data for prover
                 raw_block_data.extend_from_slice(&tx.data);
@@ -687,11 +689,9 @@ impl SyncEngine {
                         };
 
                         // Validate message against state. The L2 attribution
-                        // layer needs the DA block's inclusion time; the Avail
-                        // block timestamp is not yet plumbed through (TODO:
-                        // populate `Block.timestamp` from pallet_timestamp), so
-                        // email-rooted owners fail closed until it is.
-                        let l2 = crate::validate::L2Context::for_block(None, state_db);
+                        // layer checks attribution windows against the DA block's
+                        // inclusion time (from its `timestamp.set` inherent).
+                        let l2 = crate::validate::L2Context::for_block(block_timestamp, state_db);
                         match validate_message(msg, state_db, &repo.path, &l2) {
                             ValidationResult::Valid { creator } => {
                                 // Condensed success log: [block/tx] Action path/id by creator → sig:✓ state:✓ applied
