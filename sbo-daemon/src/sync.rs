@@ -686,8 +686,13 @@ impl SyncEngine {
                             }
                         };
 
-                        // Validate message against state
-                        match validate_message(msg, state_db, &repo.path) {
+                        // Validate message against state. The L2 attribution
+                        // layer needs the DA block's inclusion time; the Avail
+                        // block timestamp is not yet plumbed through (TODO:
+                        // populate `Block.timestamp` from pallet_timestamp), so
+                        // email-rooted owners fail closed until it is.
+                        let l2 = crate::validate::L2Context::for_block(None, state_db);
+                        match validate_message(msg, state_db, &repo.path, &l2) {
                             ValidationResult::Valid { creator } => {
                                 // Condensed success log: [block/tx] Action path/id by creator → sig:✓ state:✓ applied
                                 tracing::info!(

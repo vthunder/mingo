@@ -15,6 +15,17 @@ pub struct StoredObject {
     pub content_hash: ContentHash,
     pub payload: Vec<u8>,
     pub policy_ref: Option<String>,
+    /// The object's `Content-Schema` header, if any. Persisted so the resolver
+    /// can distinguish a key-rooted `identity.v1` name record from an
+    /// email-rooted `identity.email.v1` one without re-parsing the payload blind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_schema: Option<String>,
+    /// The object's `Owner` header (the controller reference: a bare email or a
+    /// local name), if any. Distinct from `owner` (the signer's public key under
+    /// the legacy key-rooted model). This is what L2 attribution authorizes
+    /// against for email-rooted objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_ref: Option<String>,
     pub block_number: u64,
     /// SHA-256 hash of the complete raw SBO object bytes (headers + payload)
     /// Used for merkle tree leaf computation in the proof system

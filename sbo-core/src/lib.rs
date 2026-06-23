@@ -24,6 +24,7 @@ pub mod dns;
 pub mod jwt;
 pub mod attribution;
 pub mod resolve;
+pub mod authorize;
 
 mod genesis;
 mod indexer;

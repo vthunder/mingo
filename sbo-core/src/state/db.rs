@@ -114,9 +114,10 @@ impl StateDb {
     ) -> Result<bool, DbError> {
         let cf = self.db.cf_handle(CF_OBJECTS).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
 
-        // Prefix is "path:" to find all objects at this path
-        let prefix = format!("{}:", path);
-        let suffix = format!(":{}", id);
+        // Prefix is "path\x1f" to find all objects at this path. The delimiter
+        // is the ASCII Unit Separator (0x1F), matching `encode_object_key`.
+        let prefix = format!("{}\x1f", path);
+        let suffix = format!("\x1f{}", id);
 
         let iter = self.db.prefix_iterator_cf(&cf, prefix.as_bytes());
         for item in iter {
@@ -148,8 +149,9 @@ impl StateDb {
     ) -> Result<Option<StoredObject>, DbError> {
         let cf = self.db.cf_handle(CF_OBJECTS).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
 
-        let prefix = format!("{}:", path);
-        let suffix = format!(":{}", id);
+        // Delimiter is the ASCII Unit Separator (0x1F), matching `encode_object_key`.
+        let prefix = format!("{}\x1f", path);
+        let suffix = format!("\x1f{}", id);
 
         let iter = self.db.prefix_iterator_cf(&cf, prefix.as_bytes());
         for item in iter {

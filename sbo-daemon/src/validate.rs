@@ -2,8 +2,11 @@
 //!
 //! Validates SBO messages before they are applied to the repo.
 
+use sbo_core::authorize::{authorize_message, AuthzOutcome};
+use sbo_core::attribution::TrustAnchors;
 use sbo_core::message::{Message, Action, Id, Path as SboPath};
 use sbo_core::policy::{evaluate, ActionType, PolicyResult};
+use sbo_core::resolve::{NameRecord, DEFAULT_HOP_LIMIT};
 use sbo_core::schema::{validate_schema, SchemaError};
 use sbo_core::state::{StateDb, StoredObject};
 use std::path::Path;
@@ -13,6 +16,8 @@ use std::path::Path;
 pub enum ValidationStage {
     Signature,
     Schema,
+    /// L2 attribution: the signer does not speak for the object's owner.
+    Attribution,
     State,
     Policy,
 }
@@ -22,9 +27,103 @@ impl std::fmt::Display for ValidationStage {
         match self {
             ValidationStage::Signature => write!(f, "sig"),
             ValidationStage::Schema => write!(f, "schema"),
+            ValidationStage::Attribution => write!(f, "attr"),
             ValidationStage::State => write!(f, "state"),
             ValidationStage::Policy => write!(f, "policy"),
         }
+    }
+}
+
+/// Context for the L2 attribution layer: the write's DA inclusion time and the
+/// pinned trust anchors. Threaded from the block being replayed.
+pub struct L2Context {
+    /// The DA block's inclusion time (UNIX seconds), if known. `None` means the
+    /// block carried no usable timestamp — email-rooted owners then cannot be
+    /// attributed and their writes are carried-but-filtered.
+    pub inclusion_time: Option<i64>,
+    /// Pinned trust anchors (authorized brokers + informational root KSK).
+    pub anchors: TrustAnchors,
+}
+
+impl L2Context {
+    /// Build the L2 context for a block, sourcing trust anchors from state.
+    pub fn for_block(inclusion_time: Option<i64>, state: &StateDb) -> Self {
+        Self {
+            inclusion_time,
+            anchors: load_trust_anchors(state),
+        }
+    }
+}
+
+/// Trust-anchor path: the pinned authorized-broker list.
+const TRUST_BROKERS_PATH: &str = "/sys/trust/";
+const TRUST_BROKERS_ID: &str = "brokers";
+
+/// Load the pinned trust anchors from `/sys/trust/brokers`.
+///
+/// The object payload is expected to be a JSON array of authorized broker
+/// provider domains. Absent or unparseable → an empty broker set (only
+/// primary-IdP attribution will succeed). The DNS root KSK is hardcoded inside
+/// `dnssec-prover`, so `/sys/trust/dns-root` is not consulted here.
+fn load_trust_anchors(state: &StateDb) -> TrustAnchors {
+    let brokers = (|| {
+        let path = SboPath::parse(TRUST_BROKERS_PATH).ok()?;
+        let id = Id::new(TRUST_BROKERS_ID).ok()?;
+        let obj = state.get_first_object_at_path_id(&path, &id).ok()??;
+        serde_json::from_slice::<Vec<String>>(&obj.payload).ok()
+    })()
+    .unwrap_or_default();
+    // TODO: also surface /sys/trust/dns-root for out-of-band auditing.
+    TrustAnchors::with_brokers(brokers)
+}
+
+/// Build a `/sys/names/<name>` resolver closure over the state DB, mapping each
+/// name record to its [`NameRecord`] kind (key-rooted `identity.v1` vs
+/// email-rooted `identity.email.v1`) for [`resolve_controller`] indirection.
+fn name_lookup(state: &StateDb) -> impl Fn(&str) -> Option<NameRecord> + '_ {
+    move |name: &str| {
+        let path = SboPath::parse("/sys/names/").ok()?;
+        let id = Id::new(name).ok()?;
+        let obj = state.get_first_object_at_path_id(&path, &id).ok()??;
+        match obj.content_schema.as_deref() {
+            Some("identity.email.v1") => {
+                // Email-rooted: recurse on the stored Owner reference.
+                obj.owner_ref.map(NameRecord::EmailRooted)
+            }
+            Some("identity.v1") => {
+                // Key-rooted: the durable public key lives in the identity JWT
+                // payload (it carries ':' and cannot be an `Id`/`owner`).
+                let token = std::str::from_utf8(&obj.payload).ok()?;
+                let claims = sbo_core::jwt::decode_identity_claims(token).ok()?;
+                Some(NameRecord::KeyRooted(claims.public_key))
+            }
+            // Unknown/legacy name records are not resolvable controllers.
+            _ => None,
+        }
+    }
+}
+
+/// Run the L2 attribution check: does the message's signer speak for
+/// `owner_ref` at the block's inclusion time? Returns `Ok(())` if authorized,
+/// `Err(reason)` if the write must be carried-but-filtered.
+fn l2_authorize(msg: &Message, state: &StateDb, l2: &L2Context, owner_ref: &str) -> Result<(), String> {
+    let signer = msg.signing_key.to_string();
+    let lookup = name_lookup(state);
+    // An unknown block time cannot satisfy any cert/RRSig window, so email-rooted
+    // owners fail closed; key-rooted owners are time-independent.
+    let inclusion_time = l2.inclusion_time.unwrap_or(0);
+    match authorize_message(
+        owner_ref,
+        &signer,
+        msg.auth_cert.as_deref(),
+        msg.auth_evidence.as_deref(),
+        inclusion_time,
+        &l2.anchors,
+        &lookup,
+        DEFAULT_HOP_LIMIT,
+    ) {
+        AuthzOutcome::Authorized => Ok(()),
+        AuthzOutcome::Unauthorized(reason) => Err(reason),
     }
 }
 
@@ -92,6 +191,7 @@ pub fn validate_message(
     msg: &Message,
     state: &StateDb,
     _repo_path: &Path,
+    l2: &L2Context,
 ) -> ValidationResult {
     // 1. Verify cryptographic signature
     if let Err(e) = sbo_core::message::verify_message(msg) {
@@ -109,6 +209,20 @@ pub fn validate_message(
         };
     }
 
+    // 2.5. L2 attribution gate. When a write declares an Owner controller
+    // reference, the signer must speak for it (direct key match for key-rooted
+    // owners, valid browserid+DNSSEC attribution for email-rooted owners) at the
+    // block's inclusion time. L1-valid but L2-unauthorized writes are carried by
+    // the DA layer but disregarded here — they never reach state mutation.
+    if let Some(owner) = &msg.owner {
+        if let Err(reason) = l2_authorize(msg, state, l2, owner.as_str()) {
+            return ValidationResult::Invalid {
+                stage: ValidationStage::Attribution,
+                reason,
+            };
+        }
+    }
+
     // 3. Check if root policy exists (genesis check)
     // SECURITY: Fail closed if we can't determine root policy state
     let root_policy_status = check_root_policy_exists(state);
@@ -123,9 +237,9 @@ pub fn validate_message(
 
     // 4. Handle based on action
     match &msg.action {
-        Action::Post => validate_post(msg, state, root_policy_exists),
-        Action::Transfer { .. } => validate_transfer(msg, state, root_policy_exists),
-        Action::Delete => validate_delete(msg, state, root_policy_exists),
+        Action::Post => validate_post(msg, state, root_policy_exists, l2),
+        Action::Transfer { .. } => validate_transfer(msg, state, root_policy_exists, l2),
+        Action::Delete => validate_delete(msg, state, root_policy_exists, l2),
         Action::Import { .. } => {
             ValidationResult::Invalid {
                 stage: ValidationStage::State,
@@ -171,6 +285,7 @@ fn validate_post(
     msg: &Message,
     state: &StateDb,
     root_policy_exists: bool,
+    l2: &L2Context,
 ) -> ValidationResult {
     // Special handling for name claims: enforce uniqueness by (path, id)
     // Names under /sys/names/ and other name paths should only be claimed once
@@ -198,6 +313,23 @@ fn validate_post(
         // Object exists - this is an update
         let signer_key = msg.signing_key.to_string();
         let owner_key = existing_obj.owner.as_str();
+
+        // Email-rooted objects carry a controller reference in `owner_ref`; the
+        // signer's durable key rotates, so authorize via L2 against the stored
+        // controller rather than a direct key match.
+        if let Some(owner_ref) = &existing_obj.owner_ref {
+            if existing_obj.content_schema.as_deref() == Some("identity.email.v1")
+                || owner_ref.contains('@')
+            {
+                if let Err(reason) = l2_authorize(msg, state, l2, owner_ref) {
+                    return ValidationResult::Invalid {
+                        stage: ValidationStage::Attribution,
+                        reason,
+                    };
+                }
+                return ValidationResult::Valid { creator: creator.to_string() };
+            }
+        }
 
         // Check if signer is the owner (owners can always update their objects)
         if keys_match(&signer_key, owner_key) {
@@ -284,6 +416,7 @@ fn validate_transfer(
     msg: &Message,
     state: &StateDb,
     root_policy_exists: bool,
+    _l2: &L2Context,
 ) -> ValidationResult {
     if !root_policy_exists {
         return ValidationResult::Invalid {
@@ -331,9 +464,10 @@ fn validate_delete(
     msg: &Message,
     state: &StateDb,
     root_policy_exists: bool,
+    l2: &L2Context,
 ) -> ValidationResult {
     // Same rules as transfer
-    validate_transfer(msg, state, root_policy_exists)
+    validate_transfer(msg, state, root_policy_exists, l2)
 }
 
 /// Compare keys, handling different formats
@@ -425,6 +559,8 @@ pub fn message_to_stored_object(
         content_hash: content_hash.clone(),
         payload: payload.clone(),
         policy_ref: msg.policy_ref.clone(),
+        content_schema: msg.content_schema.clone(),
+        owner_ref: msg.owner.as_ref().map(|o| o.as_str().to_string()),
         block_number,
         object_hash,
     })
