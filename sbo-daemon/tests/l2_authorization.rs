@@ -322,6 +322,48 @@ fn email_rooted_name_update_routes_through_l2() {
     }
 }
 
+// Carry-but-filter on canonical state: an L1-valid but L2-failing write is
+// disregarded on replay — it must not mutate state. This mirrors the daemon's
+// validate→(continue|write) decision and asserts the trie state root is
+// unchanged by the filtered write, while a valid write does change it.
+#[test]
+fn filtered_write_does_not_mutate_canonical_state() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    // Helper: apply a message exactly as the sync loop does — store only on Valid.
+    let apply = |db: &StateDb, msg: &Message| -> bool {
+        match validate_message(msg, db, dir.path(), &ctx(db)) {
+            ValidationResult::Valid { .. } => {
+                let obj = message_to_stored_object(msg, 1, Some(db), [1u8; 32], &ctx(db))
+                    .expect("content message produces a stored object");
+                db.put_object(&obj).unwrap();
+                true
+            }
+            ValidationResult::Invalid { .. } => false,
+        }
+    };
+
+    let root_empty = db.compute_trie_state_root().unwrap();
+
+    // A valid (ownerless, key-controller) write is applied and changes the root.
+    let valid = signed_post(&key, "/space/", "p1", None, None, None);
+    assert!(apply(&db, &valid), "ownerless key write should be valid");
+    let root_after_valid = db.compute_trie_state_root().unwrap();
+    assert_ne!(root_after_valid, root_empty, "valid write must change the state root");
+
+    // An L2-failing write (email owner, no attribution) is filtered: the daemon
+    // would `continue` without storing. The canonical state root is unchanged.
+    let filtered = signed_post(&key, "/space/", "p2", Some("alice@example.com"), None, None);
+    assert!(!apply(&db, &filtered), "email owner without attribution must be filtered");
+    let root_after_filtered = db.compute_trie_state_root().unwrap();
+    assert_eq!(
+        root_after_filtered, root_after_valid,
+        "a carried-but-filtered write must not mutate canonical state"
+    );
+}
+
 // The pinned /sys/trust/brokers object must be loaded into the L2 trust anchors
 // (on-chain, so replay converges). Without it, broker-path attribution can't
 // be authorized.
