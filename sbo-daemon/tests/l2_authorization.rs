@@ -147,6 +147,29 @@ fn email_rooted_owner_with_malformed_attribution_is_filtered() {
 }
 
 #[test]
+fn same_key_owner_can_update_own_object_via_controller_check() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    // Create then persist an object the way the daemon would (owner_ref records
+    // the signer-key effective owner).
+    let create = signed_post(&key, "/space/", "post1", None, None, None);
+    let stored = sbo_daemon::validate::message_to_stored_object(&create, 1, Some(&db), [0u8; 32])
+        .expect("create should produce a stored object");
+    db.put_object(&stored).unwrap();
+
+    // The same key updates it — reaches the update branch (same resolved
+    // creator) and authorizes against the stored key controller.
+    let update = signed_post(&key, "/space/", "post1", None, None, None);
+    let result = validate_message(&update, &db, dir.path(), &ctx(&db));
+    assert!(
+        matches!(result, ValidationResult::Valid { .. }),
+        "owner updating own key-rooted object should be allowed, got {result:?}"
+    );
+}
+
+#[test]
 fn unresolvable_owner_is_filtered() {
     let dir = tempdir().unwrap();
     let db = StateDb::open(dir.path()).unwrap();

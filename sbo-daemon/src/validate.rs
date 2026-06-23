@@ -325,34 +325,17 @@ fn validate_post(
     };
 
     if let Some(existing_obj) = existing {
-        // Object exists - this is an update
-        let signer_key = msg.signing_key.to_string();
-        let owner_key = existing_obj.owner.as_str();
-
-        // Email-rooted objects carry a controller reference in `owner_ref`; the
-        // signer's durable key rotates, so authorize via L2 against the stored
-        // controller rather than a direct key match.
-        if let Some(owner_ref) = &existing_obj.owner_ref {
-            if existing_obj.content_schema.as_deref() == Some("identity.email.v1")
-                || owner_ref.contains('@')
-            {
-                if let Err(reason) = l2_authorize(msg, state, l2, owner_ref) {
-                    return ValidationResult::Invalid {
-                        stage: ValidationStage::Attribution,
-                        reason,
-                    };
-                }
-                return ValidationResult::Valid { creator: creator.to_string() };
-            }
-        }
-
-        // Check if signer is the owner (owners can always update their objects)
-        if keys_match(&signer_key, owner_key) {
-            // Owner updating their own object - allowed
-            tracing::debug!("Owner updating object {}:{}", msg.path, msg.id);
+        // Object exists - this is an update. Authorize the signer against the
+        // object's *resolved controller* (its stored `owner_ref`), not the
+        // legacy signer-key `owner`: a direct key match for key-rooted owners,
+        // browserid attribution for email-rooted owners. The controller can
+        // always update their own object.
+        let owner_ref = stored_owner_ref(&existing_obj);
+        if l2_authorize(msg, state, l2, owner_ref).is_ok() {
+            tracing::debug!("Controller updating object {}:{}", msg.path, msg.id);
         } else {
-            // Not the owner - must check policy for update permission
-            if let Err(reason) = check_policy(state, msg, ActionType::Update, Some(owner_key)) {
+            // Signer is not the controller - must check policy for update.
+            if let Err(reason) = check_policy(state, msg, ActionType::Update, Some(owner_ref)) {
                 return ValidationResult::Invalid {
                     stage: ValidationStage::Policy,
                     reason,
@@ -408,35 +391,18 @@ fn validate_name_claim(
 
     if let Some(existing_obj) = existing {
         // Name already claimed - the updater must be the current controller.
-        let signer_key = msg.signing_key.to_string();
-        let owner_key = existing_obj.owner.as_str();
-
-        // Email-rooted name records have an ephemeral, rotating signer key, so
-        // re-authorize via L2 against the stored controller (the email) rather
-        // than a direct key match — otherwise a key rotation locks the owner out.
-        if let Some(owner_ref) = &existing_obj.owner_ref {
-            if existing_obj.content_schema.as_deref() == Some("identity.email.v1")
-                || owner_ref.contains('@')
-            {
-                if let Err(reason) = l2_authorize(msg, state, l2, owner_ref) {
-                    return ValidationResult::Invalid {
-                        stage: ValidationStage::Attribution,
-                        reason: format!("Name '{}' is controlled by {}: {}", msg.id.as_str(), owner_ref, reason),
-                    };
-                }
-                tracing::debug!("Email owner updating name claim: {}", msg.id.as_str());
-                return ValidationResult::Valid { creator: claimed_name };
-            }
-        }
-
-        if !keys_match(&signer_key, owner_key) {
+        // Authorize against the stored controller (`owner_ref`): a direct key
+        // match for key-rooted name records, browserid attribution for
+        // email-rooted ones (whose ephemeral signer key rotates, so a direct
+        // key match would lock the owner out after a cert rotation).
+        let owner_ref = stored_owner_ref(&existing_obj);
+        if let Err(reason) = l2_authorize(msg, state, l2, owner_ref) {
             return ValidationResult::Invalid {
-                stage: ValidationStage::State,
-                reason: format!("Name '{}' already claimed by {}", msg.id.as_str(), owner_key),
+                stage: ValidationStage::Attribution,
+                reason: format!("Name '{}' already claimed by {}: {}", msg.id.as_str(), owner_ref, reason),
             };
         }
-        // Same owner can update their name claim
-        tracing::debug!("Owner updating name claim: {}", msg.id.as_str());
+        tracing::debug!("Controller updating name claim: {}", msg.id.as_str());
     } else {
         // New name claim - allowed
         tracing::debug!("New name claim: {}", msg.id.as_str());
@@ -450,7 +416,7 @@ fn validate_transfer(
     msg: &Message,
     state: &StateDb,
     root_policy_exists: bool,
-    _l2: &L2Context,
+    l2: &L2Context,
 ) -> ValidationResult {
     if !root_policy_exists {
         return ValidationResult::Invalid {
@@ -475,11 +441,12 @@ fn validate_transfer(
 
     match existing {
         Some(obj) => {
-            let signer_key = msg.signing_key.to_string();
-            if !keys_match(&signer_key, obj.owner.as_str()) {
+            // Only the object's resolved controller may transfer/delete it.
+            let owner_ref = stored_owner_ref(&obj);
+            if let Err(reason) = l2_authorize(msg, state, l2, owner_ref) {
                 return ValidationResult::Invalid {
-                    stage: ValidationStage::State,
-                    reason: format!("Signer {} does not match owner {}", signer_key, obj.owner),
+                    stage: ValidationStage::Attribution,
+                    reason: format!("Signer does not control owner {}: {}", owner_ref, reason),
                 };
             }
             ValidationResult::Valid { creator: creator.to_string() }
@@ -504,13 +471,12 @@ fn validate_delete(
     validate_transfer(msg, state, root_policy_exists, l2)
 }
 
-/// Compare keys, handling different formats
-fn keys_match(signer_key: &str, stored_owner: &str) -> bool {
-    // Strip algorithm prefix if present
-    let signer_clean = signer_key.strip_prefix("ed25519:").unwrap_or(signer_key);
-    let owner_clean = stored_owner.strip_prefix("ed25519:").unwrap_or(stored_owner);
-
-    signer_clean == owner_clean
+/// The controller reference an existing object is owned by: its stored
+/// `owner_ref` (the resolved effective owner recorded at write time), falling
+/// back to the legacy signer-key `owner` for objects written before `owner_ref`
+/// was recorded. This is what ownership checks authorize the signer against.
+fn stored_owner_ref(obj: &StoredObject) -> &str {
+    obj.owner_ref.as_deref().unwrap_or_else(|| obj.owner.as_str())
 }
 
 /// Check if an action is allowed by policy
@@ -580,7 +546,8 @@ pub fn message_to_stored_object(
     // Use name resolution for creator if state is available
     let creator = resolve_creator(msg, state);
 
-    // Owner is the signing key (used for ownership verification)
+    // Legacy signer-key owner record (retained for objects/proofs that still
+    // read it). Ownership checks key off `owner_ref` (the resolved controller).
     let owner = Id::new(&msg.signing_key.to_string())
         .unwrap_or_else(|_| Id::new("unknown").unwrap());
 
@@ -594,7 +561,10 @@ pub fn message_to_stored_object(
         payload: payload.clone(),
         policy_ref: msg.policy_ref.clone(),
         content_schema: msg.content_schema.clone(),
-        owner_ref: msg.owner.as_ref().map(|o| o.as_str().to_string()),
+        // Record the resolved effective owner (Owner → else Creator → else
+        // signer) so later ownership checks authorize against the controller,
+        // not the ephemeral signer key. Always set (never None for new writes).
+        owner_ref: Some(effective_owner_ref(msg)),
         block_number,
         object_hash,
     })
