@@ -1,0 +1,19 @@
+[package]
+name = "sbo-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Client-side capture of browserid certificates + DNSSEC evidence (SBO Auth-Cert / Auth-Evidence)"
+
+[dependencies]
+sbo-core.workspace = true
+browserid-core = { version = "0.1.0", path = "../../../browserid-ng/browserid-core" }
+dnssec-prover = { version = "0.6.8", features = ["tokio"] }
+reqwest = { version = "0.12", features = ["json", "cookies"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

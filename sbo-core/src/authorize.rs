@@ -72,6 +72,12 @@ pub fn parse_auth_evidence(value: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Encode raw RFC 9102 proof bytes as an inline `Auth-Evidence` header value
+/// (`inline:<base64url>`), the form [`parse_auth_evidence`] round-trips.
+pub fn encode_auth_evidence_inline(proof: &[u8]) -> String {
+    format!("inline:{}", URL_SAFE_NO_PAD.encode(proof))
+}
+
 /// Compute the [`Attribution`] for a message's signing key, if it carries a
 /// valid `Auth-Cert` + `Auth-Evidence` pair verifying at `inclusion_time`.
 ///
