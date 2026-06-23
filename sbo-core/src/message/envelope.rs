@@ -17,7 +17,8 @@ pub struct Related {
     pub reference: String,
 }
 
-/// Validated identifier (1-256 chars, RFC 3986 unreserved)
+/// Validated identifier (1-256 chars, RFC 3986 unreserved plus `@`
+/// for email-rooted identity references, e.g. `alice@gmail.com`)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Id(String);
 
@@ -67,8 +68,9 @@ impl Id {
         }
 
         // Character check: RFC 3986 unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
+        // plus "@" to allow email-rooted identity references (e.g. alice@gmail.com).
         for c in s.chars() {
-            if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~') {
+            if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' | '@') {
                 return Err(crate::error::ParseError::InvalidIdentifier(
                     format!("Invalid character: {}", c)
                 ));
@@ -235,5 +237,18 @@ impl Message {
     pub fn sign(&mut self, signing_key: &crate::crypto::SigningKey) {
         let content = self.canonical_signing_content();
         self.signature = signing_key.sign(&content);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn id_allows_email() {
+        assert!(Id::new("alice@gmail.com").is_ok());
+        assert!(Id::new("alice").is_ok());
+        // ':' remains disallowed
+        assert!(Id::new("a:b").is_err());
     }
 }

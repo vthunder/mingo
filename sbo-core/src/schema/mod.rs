@@ -4,6 +4,7 @@
 //!
 //! Supported schemas:
 //! - `identity.v1` - User identity objects (JWT format)
+//! - `identity.email.v1` - Email-rooted identity (controller is the Owner header)
 //! - `domain.v1` - Domain objects (JWT format, always self-signed)
 //! - `profile.v1` - Profile data (JSON format)
 
@@ -129,6 +130,23 @@ pub fn validate_schema(msg: &Message) -> SchemaResult<()> {
 
             Ok(())
         }
+        "identity.email.v1" => {
+            // Email-rooted identity: controller is the Owner header (no durable key on chain).
+            #[derive(serde::Deserialize)]
+            #[allow(dead_code)]
+            struct EmailIdentity {
+                #[serde(default)]
+                profile: Option<String>,
+                iat: i64,
+            }
+            let _ident: EmailIdentity = serde_json::from_slice(payload)?;   // iat required; profile optional; lenient on unknown fields
+            // The controlling email is the Owner header (attribution that the signer
+            // speaks for Owner is checked at the L2 attribution layer, not here).
+            if msg.owner.is_none() {
+                return Err(SchemaError::MissingField("Owner".into()));
+            }
+            Ok(())
+        }
         "profile.v1" => {
             // Profile is plain JSON, not JWT
             let _profile: crate::jwt::Profile = serde_json::from_slice(payload)?;
@@ -201,6 +219,68 @@ mod tests {
         // Unknown schemas pass through - enforcement happens at higher layers
         let msg = make_test_message(Some("unknown.v99"), b"{}");
         assert!(validate_schema(&msg).is_ok());
+    }
+
+    fn make_email_message(schema: Option<&str>, payload: &[u8], owner: Option<&str>) -> Message {
+        use crate::message::{Message, Action, ObjectType, Id, Path};
+        use crate::crypto::{SigningKey, ContentHash, Signature};
+
+        let key = SigningKey::generate();
+        let placeholder_sig = Signature::parse(&"0".repeat(128)).unwrap();
+
+        let mut msg = Message {
+            action: Action::Post,
+            path: Path::parse("/test/").unwrap(),
+            id: Id::new("test").unwrap(),
+            object_type: ObjectType::Object,
+            signing_key: key.public_key(),
+            signature: placeholder_sig,
+            content_type: Some("application/json".to_string()),
+            content_hash: Some(ContentHash::sha256(payload)),
+            payload: Some(payload.to_vec()),
+            owner: owner.map(|o| Id::new(o).unwrap()),
+            creator: None,
+            content_encoding: None,
+            content_schema: schema.map(|s| s.to_string()),
+            policy_ref: None,
+            related: None,
+            hlc: None,
+            prev: None,
+            auth_cert: None,
+            auth_evidence: None,
+        };
+        msg.sign(&key);
+        msg
+    }
+
+    #[test]
+    fn test_identity_email_v1_valid() {
+        let msg = make_email_message(
+            Some("identity.email.v1"),
+            br#"{"profile":"/alice/profile","iat":1703001234}"#,
+            Some("alice@gmail.com"),
+        );
+        assert!(validate_schema(&msg).is_ok());
+    }
+
+    #[test]
+    fn test_identity_email_v1_missing_iat() {
+        let msg = make_email_message(
+            Some("identity.email.v1"),
+            br#"{"profile":"/alice/profile"}"#,
+            Some("alice@gmail.com"),
+        );
+        assert!(matches!(validate_schema(&msg), Err(SchemaError::InvalidJson(_))));
+    }
+
+    #[test]
+    fn test_identity_email_v1_missing_owner() {
+        let msg = make_email_message(
+            Some("identity.email.v1"),
+            br#"{"iat":1703001234}"#,
+            None,
+        );
+        assert!(matches!(validate_schema(&msg), Err(SchemaError::MissingField(_))));
     }
 
     #[test]

@@ -521,5 +521,7 @@ fn encode_object_key(
     creator: &crate::message::Id,
     id: &crate::message::Id,
 ) -> Vec<u8> {
-    format!("{}:{}:{}", path, creator, id).into_bytes()
+    // Delimiter is ASCII Unit Separator (0x1F): outside the Id/Path charset
+    // (which now includes '@' and '/'), so keys stay unambiguous.
+    format!("{}\x1f{}\x1f{}", path, creator, id).into_bytes()
 }
