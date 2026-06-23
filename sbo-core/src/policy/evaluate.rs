@@ -1,7 +1,14 @@
 //! Policy evaluation
 
 use crate::message::{Message, Id};
-use super::types::{Policy, ActionType, Identity};
+use super::types::{Policy, ActionType, AttestedSource, Identity};
+
+/// Resolves an [`AttestedSource`] against on-chain attestations for the acting
+/// user: returns `true` when an in-force `attestation.v1` of `type` (by `by`,
+/// when given) exists whose subject resolves to the requester's controller.
+/// Supplied by the caller (the daemon, with state + inclusion time); pure
+/// tests pass a stub.
+pub type AttestedCheck<'a> = dyn Fn(&AttestedSource) -> bool + 'a;
 
 /// Result of policy evaluation
 #[derive(Debug)]
@@ -15,6 +22,7 @@ pub enum PolicyResult {
 /// For CREATE actions, `owner` is None (no existing object). In this case,
 /// we derive the "effective owner" from the target path's first component
 /// (the namespace owner) for `$owner` variable resolution and identity matching.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate(
     policy: &Policy,
     actor: &Id,
@@ -22,6 +30,7 @@ pub fn evaluate(
     target_path: &str,
     owner: Option<&str>,
     signer_is_owner: bool,
+    is_attested: &AttestedCheck,
     message: &Message,
 ) -> PolicyResult {
     // For CREATE actions without an owner, derive effective owner from path
@@ -56,7 +65,7 @@ pub fn evaluate(
         let path_parsed = crate::message::Path::parse(target_path).unwrap();
         let path_matches = grant.on.matches(&path_parsed, effective_owner_ref);
         let action_matches = grant.can.contains(&action) || grant.can.contains(&ActionType::All);
-        let identity_match = identity_matches(&grant.to, actor, &actor_key, effective_owner_ref, signer_is_owner, &policy.roles);
+        let identity_match = identity_matches(&grant.to, actor, &actor_key, effective_owner_ref, signer_is_owner, is_attested, &policy.roles);
 
         grant_debug.push(format!(
             "  grant to={:?} can={:?} on={:?} -> path:{} action:{} identity:{}",
@@ -75,7 +84,7 @@ pub fn evaluate(
     // 3. Check restrictions
     for restriction in &policy.restrictions {
         if restriction.on.matches(&crate::message::Path::parse(target_path).unwrap(), effective_owner_ref) {
-            if let Some(reason) = check_requirements(&restriction.require, message) {
+            if let Some(reason) = check_requirements(&restriction.require, message, is_attested) {
                 return PolicyResult::Denied(reason);
             }
         }
@@ -98,7 +107,29 @@ pub fn extract_namespace_owner(path: &str) -> Option<String> {
 fn check_requirements(
     require: &super::types::Requirements,
     message: &Message,
+    is_attested: &AttestedCheck,
 ) -> Option<String> {
+    // Attestation conditions: the acting user must (not) be the in-force
+    // subject of the named attestation.
+    if let Some(source) = &require.attested {
+        if !is_attested(source) {
+            return Some(format!(
+                "Acting user is not the in-force subject of attestation '{}'{}",
+                source.type_,
+                source.by.as_deref().map(|b| format!(" by {b}")).unwrap_or_default()
+            ));
+        }
+    }
+    if let Some(source) = &require.not_attested {
+        if is_attested(source) {
+            return Some(format!(
+                "Acting user is the in-force subject of disallowed attestation '{}'{}",
+                source.type_,
+                source.by.as_deref().map(|b| format!(" by {b}")).unwrap_or_default()
+            ));
+        }
+    }
+
     // Check max_size
     if let Some(max_size) = require.max_size {
         if let Some(ref payload) = message.payload {
@@ -224,12 +255,14 @@ fn issuer_to_path(issuer: &str) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn identity_matches(
     identity: &Identity,
     actor: &Id,
     actor_key: &str,
     owner: Option<&str>,
     signer_is_owner: bool,
+    is_attested: &AttestedCheck,
     roles: &std::collections::HashMap<String, Vec<Identity>>,
 ) -> bool {
     match identity {
@@ -253,13 +286,14 @@ fn identity_matches(
         }
         Identity::Role { role } => {
             if let Some(members) = roles.get(role) {
-                members.iter().any(|m| identity_matches(m, actor, actor_key, owner, signer_is_owner, roles))
+                members.iter().any(|m| identity_matches(m, actor, actor_key, owner, signer_is_owner, is_attested, roles))
             } else {
                 false
             }
         }
+        Identity::Attested { attested } => is_attested(attested),
         Identity::Any { any } => {
-            any.iter().any(|id| identity_matches(id, actor, actor_key, owner, signer_is_owner, roles))
+            any.iter().any(|id| identity_matches(id, actor, actor_key, owner, signer_is_owner, is_attested, roles))
         }
     }
 }
@@ -312,15 +346,16 @@ mod tests {
         // The actor (a key-hex creator id) never string-equals the owner
         // "alice"; authorization must come from signer_is_owner.
         let actor = Id::new("e_deadbeef").unwrap();
+        let no_attest = |_: &AttestedSource| false;
 
         // signer_is_owner = true → the `owner` grant applies → allowed.
         assert!(matches!(
-            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice"), true, &msg),
+            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice"), true, &no_attest, &msg),
             PolicyResult::Allowed
         ));
         // signer_is_owner = false → no matching grant → denied.
         assert!(matches!(
-            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice"), false, &msg),
+            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice"), false, &no_attest, &msg),
             PolicyResult::Denied(_)
         ));
     }
@@ -336,12 +371,47 @@ mod tests {
         .unwrap();
         let msg = signed_msg();
         let actor = Id::new("e_ephemeral").unwrap();
+        let no_attest = |_: &AttestedSource| false;
         assert!(matches!(
-            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice@example.com"), true, &msg),
+            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice@example.com"), true, &no_attest, &msg),
             PolicyResult::Allowed
         ));
         assert!(matches!(
-            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice@example.com"), false, &msg),
+            evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice@example.com"), false, &no_attest, &msg),
+            PolicyResult::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn attested_role_and_conditions_use_the_closure() {
+        // A grant to an attestation-defined role.
+        let policy: Policy = serde_json::from_value(serde_json::json!({
+            "roles": { "mod": [{"attested": {"type": "role:moderator", "by": "c@x.org"}}] },
+            "grants": [{"to": {"role": "mod"}, "can": ["post"], "on": "/**"}],
+            "restrictions": [{"on": "/**", "require": {"not_attested": {"type": "ban"}}}]
+        }))
+        .unwrap();
+        let msg = signed_msg();
+        let actor = Id::new("e_x").unwrap();
+
+        // Attested as a moderator and not banned → allowed.
+        let mod_not_banned = |s: &AttestedSource| s.type_ == "role:moderator";
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Post, "/space/", None, false, &mod_not_banned, &msg),
+            PolicyResult::Allowed
+        ));
+
+        // Not attested as a moderator → no grant matches → denied.
+        let none = |_: &AttestedSource| false;
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Post, "/space/", None, false, &none, &msg),
+            PolicyResult::Denied(_)
+        ));
+
+        // Moderator but banned → grant matches but the not_attested restriction blocks.
+        let mod_and_banned = |_: &AttestedSource| true;
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Post, "/space/", None, false, &mod_and_banned, &msg),
             PolicyResult::Denied(_)
         ));
     }

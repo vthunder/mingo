@@ -174,6 +174,44 @@ impl StateDb {
         Ok(None)
     }
 
+    /// Collect all stored objects whose encoded key begins with `path_prefix`
+    /// (a path-string prefix, e.g. `/alice/attestations/`). Used to enumerate
+    /// attestations under an issuer's namespace for policy evaluation.
+    pub fn list_objects_by_path_prefix(&self, path_prefix: &str) -> Result<Vec<StoredObject>, DbError> {
+        let cf = self.db.cf_handle(CF_OBJECTS).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+        let mut out = Vec::new();
+        let iter = self.db.prefix_iterator_cf(&cf, path_prefix.as_bytes());
+        for item in iter {
+            let (key, value) = item.map_err(|e| DbError::RocksDb(e.to_string()))?;
+            // prefix_iterator may overscan past the prefix; stop when it does.
+            if !key.starts_with(path_prefix.as_bytes()) {
+                break;
+            }
+            let obj: StoredObject = serde_json::from_slice(&value)
+                .map_err(|e| DbError::Serialization(e.to_string()))?;
+            out.push(obj);
+        }
+        Ok(out)
+    }
+
+    /// Collect all stored objects with the given `content_schema` (a full scan).
+    /// Used to enumerate attestations across all issuers when a policy's
+    /// `attested` source omits `by`.
+    pub fn list_objects_by_schema(&self, schema: &str) -> Result<Vec<StoredObject>, DbError> {
+        let cf = self.db.cf_handle(CF_OBJECTS).ok_or_else(|| DbError::RocksDb("Missing CF".to_string()))?;
+        let mut out = Vec::new();
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_key, value) = item.map_err(|e| DbError::RocksDb(e.to_string()))?;
+            let obj: StoredObject = serde_json::from_slice(&value)
+                .map_err(|e| DbError::Serialization(e.to_string()))?;
+            if obj.content_schema.as_deref() == Some(schema) {
+                out.push(obj);
+            }
+        }
+        Ok(out)
+    }
+
     /// Store a policy at a path
     /// The policy applies to the given path and all descendants
     pub fn put_policy(&self, path: &crate::message::Path, policy: &Policy) -> Result<(), DbError> {

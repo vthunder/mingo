@@ -293,6 +293,91 @@ fn attestation_schema_gated_in_validate_message() {
     );
 }
 
+// End-to-end attestation-defined role: a root policy grants `create` on
+// /space/** to anyone holding an in-force `role:moderator` attestation by a
+// given issuer. A key-rooted subject who holds it may post; one who doesn't is
+// denied. Exercises the daemon's attestation enumeration + subject resolution.
+#[test]
+fn attestation_defined_role_gates_policy() {
+    use sbo_core::schema::storage_path;
+
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+
+    let issuer = SigningKey::generate();
+    let moderator = SigningKey::generate();
+    let stranger = SigningKey::generate();
+    // Issuer and subject are registered key-rooted names (raw keys aren't valid
+    // path segments; real subjects/issuers are names or emails).
+    put_key_rooted_name(&db, "mods", &issuer);
+    put_key_rooted_name(&db, "alice", &moderator);
+    let issuer_ref = "mods";
+    let subject_ref = "alice";
+
+    // Root policy: only the moderator role may create under /space/**.
+    let policy: sbo_core::policy::Policy = serde_json::from_value(serde_json::json!({
+        "roles": { "mod": [{"attested": {"type": "role:moderator", "by": issuer_ref}}] },
+        "grants": [{"to": {"role": "mod"}, "can": ["create"], "on": "/space/**"}]
+    }))
+    .unwrap();
+    db.put_policy(&Path::parse("/sys/policies/").unwrap(), &policy).unwrap();
+    // The genesis check looks for the root-policy object itself.
+    db.put_object(&StoredObject {
+        path: Path::parse("/sys/policies/").unwrap(),
+        id: Id::new("root").unwrap(),
+        creator: Id::new("sys").unwrap(),
+        owner: Id::new("sys").unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(b"{}"),
+        payload: b"{}".to_vec(),
+        policy_ref: None,
+        content_schema: Some("policy.v2".to_string()),
+        owner_ref: None,
+        block_number: 1,
+        object_hash: [0u8; 32],
+    }).unwrap();
+
+    // An in-force role:moderator attestation by the issuer about the moderator.
+    let att_payload = serde_json::json!({
+        "subject": subject_ref,
+        "type": "role:moderator",
+        "value": true,
+        "issued_at": 0
+    });
+    let att_bytes = serde_json::to_vec(&att_payload).unwrap();
+    db.put_object(&StoredObject {
+        path: Path::parse(&storage_path(issuer_ref, subject_ref)).unwrap(),
+        id: Id::new("role:moderator").unwrap(),
+        creator: Id::new(issuer_ref).unwrap(),
+        owner: Id::new(issuer_ref).unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(&att_bytes),
+        payload: att_bytes,
+        policy_ref: None,
+        content_schema: Some("attestation.v1".to_string()),
+        owner_ref: Some(issuer_ref.to_string()),
+        block_number: 1,
+        object_hash: [0u8; 32],
+    }).unwrap();
+
+    // The attested moderator may create under /space/**.
+    let post = signed_post(&moderator, "/space/posts/", "p1", None, None, None);
+    assert!(
+        matches!(validate_message(&post, &db, dir.path(), &ctx(&db)), ValidationResult::Valid { .. }),
+        "attested moderator should be granted create"
+    );
+
+    // A stranger (no attestation) is denied at the policy stage.
+    let denied = signed_post(&stranger, "/space/posts/", "p2", None, None, None);
+    assert!(
+        matches!(
+            validate_message(&denied, &db, dir.path(), &ctx(&db)),
+            ValidationResult::Invalid { stage: ValidationStage::Policy, .. }
+        ),
+        "non-attested stranger should be denied"
+    );
+}
+
 #[test]
 fn unresolvable_owner_is_filtered() {
     let dir = tempdir().unwrap();

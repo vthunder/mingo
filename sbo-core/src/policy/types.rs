@@ -45,8 +45,26 @@ pub enum Identity {
     Key { key: String },
     /// Role reference
     Role { role: String },
+    /// Attestation-defined membership: matches a requester who is the in-force
+    /// subject of an attestation of `type` (optionally by issuer `by`).
+    Attested { attested: AttestedSource },
     /// Any of these identities
     Any { any: Vec<Identity> },
+}
+
+/// An attestation source: binds a role member or restriction condition to
+/// on-chain attestations rather than a static identity. A requester matches
+/// when an in-force `attestation.v1` exists whose `type` equals `type`, whose
+/// issuer matches `by` (when given), and whose `subject` resolves to the
+/// requester's controller (Policy Spec §Attestation-Defined Roles).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttestedSource {
+    #[serde(rename = "type")]
+    pub type_: String,
+    /// Issuer (attestation `Owner`) whose claims count. Omit to accept any
+    /// issuer, including the subject's own self-attestation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 /// Action types for grants
@@ -78,6 +96,15 @@ pub struct Requirements {
     /// Require the payload to be signed by an object at the specified path pattern
     #[serde(skip_serializing_if = "Option::is_none")]
     pub require_payload_signed_by: Option<RequirePayloadSignedBy>,
+
+    /// The acting user MUST be the in-force subject of this attestation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attested: Option<AttestedSource>,
+
+    /// The acting user MUST NOT be the in-force subject of this attestation
+    /// (e.g. a ban). Absent claim ⇒ condition satisfied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_attested: Option<AttestedSource>,
 }
 
 /// Requirement that an object's payload (JWT) must be signed by another object

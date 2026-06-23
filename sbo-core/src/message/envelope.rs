@@ -68,9 +68,12 @@ impl Id {
         }
 
         // Character check: RFC 3986 unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
-        // plus "@" to allow email-rooted identity references (e.g. alice@gmail.com).
+        // plus "@" for email-rooted identity references (e.g. alice@gmail.com) and
+        // ":" for namespaced identifiers — attestation type IDs (`role:moderator`)
+        // and algorithm-prefixed key references (`ed25519:…`). Both are safe since
+        // the state-key delimiter is the Unit Separator (0x1F), not ":".
         for c in s.chars() {
-            if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' | '@') {
+            if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' | '@' | ':') {
                 return Err(crate::error::ParseError::InvalidIdentifier(
                     format!("Invalid character: {}", c)
                 ));
@@ -245,10 +248,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn id_allows_email() {
+    fn id_allows_email_and_namespaced_ids() {
         assert!(Id::new("alice@gmail.com").is_ok());
         assert!(Id::new("alice").is_ok());
-        // ':' remains disallowed
-        assert!(Id::new("a:b").is_err());
+        // ':' is allowed for attestation type IDs and key references.
+        assert!(Id::new("role:moderator").is_ok());
+        assert!(Id::new("ed25519:abc").is_ok());
+        // '/' and whitespace remain disallowed.
+        assert!(Id::new("a/b").is_err());
+        assert!(Id::new("a b").is_err());
     }
 }

@@ -5,9 +5,9 @@
 use sbo_core::authorize::{authorize_message, encode_auth_evidence_inline, message_attribution, AuthzOutcome};
 use sbo_core::attribution::TrustAnchors;
 use sbo_core::message::{Message, Action, Id, Path as SboPath};
-use sbo_core::policy::{evaluate, ActionType, PolicyResult};
-use sbo_core::resolve::{NameRecord, DEFAULT_HOP_LIMIT};
-use sbo_core::schema::{validate_schema, SchemaError};
+use sbo_core::policy::{evaluate, ActionType, AttestedSource, PolicyResult};
+use sbo_core::resolve::{resolve_controller, Controller, NameRecord, DEFAULT_HOP_LIMIT};
+use sbo_core::schema::{parse_attestation, validate_schema, SchemaError};
 use sbo_core::state::{StateDb, StoredObject};
 use std::path::Path;
 
@@ -598,8 +598,17 @@ fn check_policy(
         .map(|o| l2_authorize(msg, state, l2, o).is_ok())
         .unwrap_or(false);
 
+    // The acting user's controller, for attestation-defined roles/conditions:
+    // the attributed email if the signer carries valid attribution, else the
+    // signing key. Matches an `attested` source whose subject resolves to it.
+    let requester = match attributed_email(msg, Some(state), l2) {
+        Some(email) => Controller::Email(email),
+        None => Controller::Key(msg.signing_key.to_string()),
+    };
+    let is_attested = |source: &AttestedSource| attested_subject_matches(state, l2, &requester, source);
+
     // Evaluate the policy
-    match evaluate(&policy, &actor, action, &target_path, owner, signer_is_owner, msg) {
+    match evaluate(&policy, &actor, action, &target_path, owner, signer_is_owner, &is_attested, msg) {
         PolicyResult::Allowed => {
             tracing::debug!(
                 "Policy allowed {:?} on {} by {}",
@@ -620,6 +629,60 @@ fn check_policy(
             Err(reason)
         }
     }
+}
+
+/// Whether an in-force `attestation.v1` exists matching `source` whose subject
+/// resolves to `requester` (the acting user's controller), per the Policy Spec
+/// §Attestation-Defined Roles: `type` equals `source.type_`, the issuer matches
+/// `source.by` (when given), and the attestation is in force at the block's
+/// inclusion time.
+///
+/// When `by` is given we prefix-scan that issuer's namespace
+/// (`/<by>/attestations/`); otherwise we scan all `attestation.v1` objects (any
+/// issuer, including a self-attestation). All inputs are on-chain and
+/// inclusion-time-pinned, so the decision is deterministic on replay.
+fn attested_subject_matches(
+    state: &StateDb,
+    l2: &L2Context,
+    requester: &Controller,
+    source: &AttestedSource,
+) -> bool {
+    let lookup = name_lookup(state);
+    let t = l2.inclusion_time.unwrap_or(0);
+    let candidates = match &source.by {
+        Some(by) => state
+            .list_objects_by_path_prefix(&format!("/{by}/attestations/"))
+            .unwrap_or_default(),
+        None => state
+            .list_objects_by_schema("attestation.v1")
+            .unwrap_or_default(),
+    };
+    candidates.into_iter().any(|obj| {
+        if obj.content_schema.as_deref() != Some("attestation.v1") {
+            return false;
+        }
+        let att = match parse_attestation(&obj.payload) {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        if att.type_ != source.type_ || !att.is_in_force(t) {
+            return false;
+        }
+        // When `by` is given, confirm the issuer (the attestation's controller)
+        // resolves to the same party — the prefix is just the writer's literal
+        // issuer string.
+        if let Some(by) = &source.by {
+            let issuer_ctrl = resolve_controller(stored_owner_ref(&obj), &lookup, DEFAULT_HOP_LIMIT);
+            // Must resolve to the same, *grounded* controller — two unresolvable
+            // references must not match each other.
+            if matches!(issuer_ctrl, Controller::Unresolved | Controller::None)
+                || issuer_ctrl != resolve_controller(by, &lookup, DEFAULT_HOP_LIMIT)
+            {
+                return false;
+            }
+        }
+        resolve_controller(&att.subject, &lookup, DEFAULT_HOP_LIMIT) == *requester
+    })
 }
 
 /// Create a StoredObject from a Message
