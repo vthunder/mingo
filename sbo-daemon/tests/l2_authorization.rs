@@ -11,7 +11,9 @@
 use sbo_core::crypto::{ContentHash, Signature, SigningKey};
 use sbo_core::message::{Action, Id, Message, ObjectType, Path};
 use sbo_core::state::{StateDb, StoredObject};
-use sbo_daemon::validate::{validate_message, L2Context, ValidationResult, ValidationStage};
+use sbo_daemon::validate::{
+    message_to_stored_object, validate_message, L2Context, ValidationResult, ValidationStage,
+};
 use tempfile::tempdir;
 
 /// Build and sign a Post message with the given owner / auth fields.
@@ -249,6 +251,53 @@ fn set_trust_brokers_preset_roundtrips() {
     assert_eq!(msg.id.as_str(), "brokers");
     let brokers: Vec<String> = serde_json::from_slice(msg.payload.as_ref().unwrap()).unwrap();
     assert_eq!(brokers, vec!["id.sandmill.org", "broker.example"]);
+}
+
+// The production write-path (message -> StoredObject) must persist the
+// Owner-header controller reference and schema, since L2 resolution depends on
+// them. The other tests hand-seed StoredObjects and bypass this population.
+#[test]
+fn message_to_stored_object_persists_owner_ref_and_schema() {
+    let key = SigningKey::generate();
+    let wire = sbo_core::presets::claim_email_identity(
+        &key,
+        "alice",
+        "alice@example.com",
+        "CERT.JWT.SIG",
+        "inline:AAAA",
+        1_700_000_000,
+    );
+    let msg = sbo_core::wire::parse(&wire).unwrap();
+    let stored = message_to_stored_object(&msg, 7, None, [0u8; 32])
+        .expect("email-identity message should produce a stored object");
+
+    assert_eq!(stored.content_schema.as_deref(), Some("identity.email.v1"));
+    assert_eq!(stored.owner_ref.as_deref(), Some("alice@example.com"));
+}
+
+// End-to-end through the *real* production path: a key-rooted name registered
+// via the preset -> message_to_stored_object -> put_object, then resolved by
+// the L2 gate's name_lookup (decoding the public key from the stored JWT). This
+// exercises population + lookup together, not hand-seeded objects.
+#[test]
+fn key_rooted_name_registered_via_real_path_authorizes() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    // Register /sys/names/alice (identity.v1) the way the daemon actually would.
+    let wire = sbo_core::presets::claim_name(&key, "alice");
+    let id_msg = sbo_core::wire::parse(&wire).unwrap();
+    let stored = message_to_stored_object(&id_msg, 1, Some(&db), [0u8; 32]).unwrap();
+    db.put_object(&stored).unwrap();
+
+    // A write owned by "alice", signed by the same key, must be authorized.
+    let post = signed_post(&key, "/space/", "p1", Some("alice"), None, None);
+    let result = validate_message(&post, &db, dir.path(), &ctx(&db));
+    assert!(
+        matches!(result, ValidationResult::Valid { .. }),
+        "name registered via the real write-path should resolve + authorize, got {result:?}"
+    );
 }
 
 #[test]
