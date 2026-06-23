@@ -710,26 +710,143 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
-/// Import an identity discovered via email address
-pub async fn import_email(email: &str) -> Result<()> {
-    let _ = email;
-    anyhow::bail!("email-identity flows are being migrated to cert+DNSSEC attribution (Phase 1, not yet implemented)")
+/// The domain part of an email (after `@`).
+fn email_domain(email: &str) -> Option<&str> {
+    email.split('@').nth(1).filter(|d| !d.is_empty())
 }
 
-/// Create a domain-certified identity
+/// A local name derived from an email's local part (sanitized to a valid `Id`).
+fn name_from_email(email: &str) -> String {
+    let local = email.split('@').next().unwrap_or(email);
+    let sanitized: String = local
+        .chars()
+        .map(|c| if matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~') { c } else { '_' })
+        .collect();
+    if sanitized.is_empty() { "user".to_string() } else { sanitized }
+}
+
+/// Resolve the broker base URL and password from env, with sensible defaults.
+/// `SBO_BROKER_URL` overrides the default `https://id.<email-domain>`;
+/// `SBO_BROKER_PASSWORD` is required (no interactive prompt yet).
+fn broker_config(email: &str) -> Result<(String, String)> {
+    let domain = email_domain(email)
+        .ok_or_else(|| anyhow::anyhow!("'{}' is not a valid email address", email))?;
+    let broker_url = std::env::var("SBO_BROKER_URL")
+        .unwrap_or_else(|_| format!("https://id.{}", domain));
+    let password = std::env::var("SBO_BROKER_PASSWORD").map_err(|_| {
+        anyhow::anyhow!(
+            "set SBO_BROKER_PASSWORD (the broker account password for {email}); \
+             optionally SBO_BROKER_URL (default https://id.{domain}) and \
+             SBO_DNS_RESOLVER (default {})",
+            sbo_capture::DEFAULT_RESOLVER
+        )
+    })?;
+    Ok((broker_url, password))
+}
+
+fn dns_resolver() -> Result<std::net::SocketAddr> {
+    let s = std::env::var("SBO_DNS_RESOLVER")
+        .unwrap_or_else(|_| sbo_capture::DEFAULT_RESOLVER.to_string());
+    s.parse()
+        .map_err(|e| anyhow::anyhow!("invalid SBO_DNS_RESOLVER '{}': {}", s, e))
+}
+
+/// Capture browserid + DNSSEC attribution for `email` using the signer key
+/// behind `key_alias`. Returns the captured material plus the signing key.
+async fn capture_for(
+    email: &str,
+    key_alias: Option<&str>,
+) -> Result<(sbo_core::crypto::SigningKey, sbo_capture::CapturedAttribution)> {
+    let keyring = Keyring::open()?;
+    let alias = keyring.resolve_alias(key_alias)?;
+    let signing_key = keyring.get_signing_key(&alias)?;
+
+    let (broker_url, password) = broker_config(email)?;
+    let resolver = dns_resolver()?;
+    let user_pubkey = browserid_core::PublicKey::from_bytes(&signing_key.public_key().bytes)
+        .map_err(|e| anyhow::anyhow!("could not convert signing key: {}", e))?;
+
+    println!("Capturing attribution for {email} via {broker_url} …");
+    let captured =
+        sbo_capture::capture_attribution(&broker_url, email, &password, &user_pubkey, resolver)
+            .await
+            .map_err(|e| anyhow::anyhow!("capture failed: {}", e))?;
+    println!("  ✓ cert issued by {}", captured.issuer);
+    Ok((signing_key, captured))
+}
+
+/// Import an identity discovered via email address.
 ///
-/// Uses the domain's identity provisioning endpoint to get a signed JWT.
-/// The domain certifies the binding between the email and public key.
+/// Captures fresh attribution for the email and records the email → SBO name
+/// association in the local keyring (the on-chain object is created with
+/// `sbo id create --email`).
+pub async fn import_email(email: &str) -> Result<()> {
+    let (_signing_key, captured) = capture_for(email, None).await?;
+    let name = name_from_email(email);
+
+    let mut keyring = Keyring::open()?;
+    let sbo_uri = format!("/sys/names/{name}");
+    keyring.add_email(email, &sbo_uri)?;
+
+    println!("\n✓ Imported email identity");
+    println!("  Email: {email}");
+    println!("  Name:  {name}");
+    println!("  Cert issuer: {}", captured.issuer);
+    println!("\n  Create the on-chain record with: sbo id create --email {email}");
+    Ok(())
+}
+
+/// Create an email-rooted identity (`identity.email.v1`).
+///
+/// Captures a browserid certificate + DNSSEC evidence and assembles the signed
+/// SBO message (Owner = email, carrying Auth-Cert / Auth-Evidence). The message
+/// is printed; on-chain submission of attributed writes is not yet plumbed
+/// through the daemon IPC (TODO), so post it via the wire interface for now.
 pub async fn create_domain_certified(
     email: &str,
     key_alias: Option<&str>,
     no_wait: bool,
 ) -> Result<()> {
-    let _ = (email, key_alias, no_wait);
-    anyhow::bail!("email-identity flows are being migrated to cert+DNSSEC attribution (Phase 1, not yet implemented)")
+    let _ = no_wait; // submission not yet wired; see TODO above.
+    let (signing_key, captured) = capture_for(email, key_alias).await?;
+
+    let name = name_from_email(email);
+    let iat = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let wire = sbo_core::presets::claim_email_identity(
+        &signing_key,
+        &name,
+        email,
+        &captured.auth_cert,
+        &captured.auth_evidence,
+        iat,
+    );
+
+    println!("\n✓ Built identity.email.v1 for {email} (name '{name}')");
+    println!("\n--- SBO message (post to /sys/names/{name}) ---");
+    println!("{}", String::from_utf8_lossy(&wire));
+    Ok(())
 }
 
-/// Resolve an email address to its SBO identity URI
-pub async fn resolve(_email: &str) -> Result<()> {
-    anyhow::bail!("email-identity flows are being migrated to cert+DNSSEC attribution (Phase 1, not yet implemented)")
+/// Resolve an email address to its controlling party.
+///
+/// In the email-rooted model a bare email *is* the controller reference (it
+/// denotes a browserid-attributable identity). This prints that mapping and any
+/// locally-known SBO name association.
+pub async fn resolve(email: &str) -> Result<()> {
+    if email_domain(email).is_none() {
+        anyhow::bail!("'{}' is not a valid email address", email);
+    }
+    println!("{email}");
+    println!("  controller: email (browserid-attributable)");
+
+    let keyring = Keyring::open()?;
+    match keyring.list_emails().get(email) {
+        Some(uri) => println!("  local SBO name: {uri}"),
+        None => println!("  local SBO name: (none — run `sbo id import {email}`)"),
+    }
+    Ok(())
 }

@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 sbo-core.workspace = true
 sbo-crypto.workspace = true
+sbo-capture = { path = "../sbo-capture" }
+browserid-core = { version = "0.1.0", path = "../../../browserid-ng/browserid-core" }
 sbo-avail.workspace = true
 sbo-daemon.workspace = true
 sbo-rpc.workspace = true

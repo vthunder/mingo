@@ -429,6 +429,54 @@ pub fn claim_name_with_profile(signing_key: &SigningKey, name: &str, profile_pat
     wire::serialize(&msg)
 }
 
+/// Claim an email-rooted identity (`identity.email.v1`) at
+/// `/sys/names/<name>`, carrying browserid + DNSSEC attribution.
+///
+/// Unlike key-rooted [`claim_name`], the controller is the `Owner` header (the
+/// email); the signing key is ephemeral and speaks for the email only via the
+/// attached `Auth-Cert` / `Auth-Evidence` (verified at L2 against the write's
+/// inclusion time). `name` is the local name to register; `email` is the
+/// controller; `iat` is the issued-at timestamp (UNIX seconds).
+pub fn claim_email_identity(
+    signing_key: &SigningKey,
+    name: &str,
+    email: &str,
+    auth_cert: &str,
+    auth_evidence: &str,
+    iat: i64,
+) -> Vec<u8> {
+    let public_key = signing_key.public_key();
+
+    let payload_bytes = serde_json::to_vec(&serde_json::json!({ "iat": iat }))
+        .expect("identity.email.v1 payload serialization should not fail");
+    let content_hash = ContentHash::sha256(&payload_bytes);
+
+    let mut msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/names/").unwrap(),
+        id: Id::new(name).unwrap(),
+        object_type: ObjectType::Object,
+        signing_key: public_key,
+        signature: crate::crypto::Signature([0u8; 64]),
+        content_type: Some("application/json".to_string()),
+        content_hash: Some(content_hash),
+        payload: Some(payload_bytes),
+        owner: Some(Id::new(email).expect("email is a valid Owner Id")),
+        creator: None,
+        content_encoding: None,
+        content_schema: Some("identity.email.v1".to_string()),
+        policy_ref: None,
+        related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: Some(auth_cert.to_string()),
+        auth_evidence: Some(auth_evidence.to_string()),
+    };
+    msg.sign(signing_key);
+
+    wire::serialize(&msg)
+}
+
 /// Create a domain object at /sys/domains/<domain_name>
 ///
 /// Domains are self-signed authority objects that can certify identities.
@@ -583,4 +631,33 @@ pub fn policy_with_restrictions(signing_key: &SigningKey, target_path: &str, max
     msg.sign(signing_key);
 
     wire::serialize(&msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::SigningKey;
+
+    #[test]
+    fn claim_email_identity_roundtrips() {
+        let key = SigningKey::generate();
+        let wire = claim_email_identity(
+            &key,
+            "alice",
+            "alice@example.com",
+            "CERT.JWT.SIG",
+            "inline:AAAA",
+            1_700_000_000,
+        );
+        let msg = wire::parse(&wire).expect("serialized message should parse");
+        assert_eq!(msg.path.to_string(), "/sys/names/");
+        assert_eq!(msg.id.as_str(), "alice");
+        assert_eq!(msg.content_schema.as_deref(), Some("identity.email.v1"));
+        assert_eq!(msg.owner.as_ref().map(|o| o.as_str()), Some("alice@example.com"));
+        assert_eq!(msg.auth_cert.as_deref(), Some("CERT.JWT.SIG"));
+        assert_eq!(msg.auth_evidence.as_deref(), Some("inline:AAAA"));
+        // Signature must verify, and the schema arm must accept the payload.
+        crate::message::verify_message(&msg).expect("signature should verify");
+        crate::schema::validate_schema(&msg).expect("identity.email.v1 payload should validate");
+    }
 }

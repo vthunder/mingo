@@ -6013,6 +6013,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "avail-rust-client",
+ "browserid-core",
  "clap",
  "dirs 5.0.1",
  "ed25519-dalek",
@@ -6023,6 +6024,7 @@ dependencies = [
  "parity-scale-codec",
  "rand 0.8.5",
  "sbo-avail",
+ "sbo-capture",
  "sbo-core",
  "sbo-crypto",
  "sbo-daemon",
