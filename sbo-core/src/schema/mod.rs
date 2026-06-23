@@ -7,12 +7,15 @@
 //! - `identity.email.v1` - Email-rooted identity (controller is the Owner header)
 //! - `domain.v1` - Domain objects (JWT format, always self-signed)
 //! - `profile.v1` - Profile data (JSON format)
+//! - `attestation.v1` - Signed claim by an issuer (Owner) about a subject
 
+mod attestation;
 mod identity;
 
 use crate::message::Message;
 use thiserror::Error;
 
+pub use attestation::{parse_attestation, storage_path, validate_attestation, Attestation};
 pub use identity::{Identity, validate_identity, parse_identity};
 pub use crate::jwt::{Profile, IdentityClaims, DomainClaims};
 
@@ -152,6 +155,7 @@ pub fn validate_schema(msg: &Message) -> SchemaResult<()> {
             let _profile: crate::jwt::Profile = serde_json::from_slice(payload)?;
             Ok(())
         }
+        "attestation.v1" => attestation::validate_attestation(msg),
         _ => {
             // Unknown schemas pass through - enforcement can happen at higher layers
             tracing::debug!("Unknown schema '{}', skipping validation", schema);
@@ -219,6 +223,40 @@ mod tests {
         // Unknown schemas pass through - enforcement happens at higher layers
         let msg = make_test_message(Some("unknown.v99"), b"{}");
         assert!(validate_schema(&msg).is_ok());
+    }
+
+    #[test]
+    fn test_attestation_valid() {
+        let payload = br#"{"subject":"alice","type":"role:moderator","value":true,"issued_at":100,"expires":200}"#;
+        let msg = make_email_message(Some("attestation.v1"), payload, Some("mods@community.org"));
+        assert!(validate_schema(&msg).is_ok());
+    }
+
+    #[test]
+    fn test_attestation_bad_type_rejected() {
+        let payload = br#"{"subject":"alice","type":"Role/Moderator","value":true,"issued_at":100}"#;
+        let msg = make_email_message(Some("attestation.v1"), payload, Some("mods@community.org"));
+        assert!(matches!(validate_schema(&msg), Err(SchemaError::InvalidField { field, .. }) if field == "type"));
+    }
+
+    #[test]
+    fn test_attestation_expires_before_issued_at_rejected() {
+        let payload = br#"{"subject":"alice","type":"membership","value":true,"issued_at":200,"expires":100}"#;
+        let msg = make_email_message(Some("attestation.v1"), payload, Some("mods@community.org"));
+        assert!(matches!(validate_schema(&msg), Err(SchemaError::InvalidField { field, .. }) if field == "expires"));
+    }
+
+    #[test]
+    fn test_attestation_payload_issuer_must_equal_owner() {
+        // Advisory issuer field present but != Owner → invalid.
+        let payload = br#"{"subject":"alice","type":"vouch","value":true,"issued_at":100,"issuer":"someone-else@x.org"}"#;
+        let msg = make_email_message(Some("attestation.v1"), payload, Some("mods@community.org"));
+        assert!(matches!(validate_schema(&msg), Err(SchemaError::InvalidField { field, .. }) if field == "issuer"));
+
+        // Matching issuer → ok.
+        let payload_ok = br#"{"subject":"alice","type":"vouch","value":true,"issued_at":100,"issuer":"mods@community.org"}"#;
+        let msg_ok = make_email_message(Some("attestation.v1"), payload_ok, Some("mods@community.org"));
+        assert!(validate_schema(&msg_ok).is_ok());
     }
 
     fn make_email_message(schema: Option<&str>, payload: &[u8], owner: Option<&str>) -> Message {

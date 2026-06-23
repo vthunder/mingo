@@ -261,6 +261,39 @@ fn resolve_creator_prefers_explicit_creator_then_key_hex() {
 }
 
 #[test]
+fn attestation_schema_gated_in_validate_message() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    // A well-formed attestation issued by the signing key (no Owner → effective
+    // owner is the signer, a key controller) passes schema + L2 in genesis mode.
+    let good = br#"{"subject":"bob","type":"vouch","value":true,"issued_at":100}"#.to_vec();
+    let mut msg = signed_post(&key, "/alice/attestations/bob/", "vouch", None, None, None);
+    msg.content_schema = Some("attestation.v1".to_string());
+    msg.payload = Some(good.clone());
+    msg.content_hash = Some(ContentHash::sha256(&good));
+    msg.sign(&key);
+    assert!(
+        matches!(validate_message(&msg, &db, dir.path(), &ctx(&db)), ValidationResult::Valid { .. }),
+        "well-formed attestation should validate"
+    );
+
+    // A malformed type is rejected at the Schema stage.
+    let bad = br#"{"subject":"bob","type":"BAD/Type","value":true,"issued_at":100}"#.to_vec();
+    msg.payload = Some(bad.clone());
+    msg.content_hash = Some(ContentHash::sha256(&bad));
+    msg.sign(&key);
+    assert!(
+        matches!(
+            validate_message(&msg, &db, dir.path(), &ctx(&db)),
+            ValidationResult::Invalid { stage: ValidationStage::Schema, .. }
+        ),
+        "malformed attestation type should be rejected at the schema stage"
+    );
+}
+
+#[test]
 fn unresolvable_owner_is_filtered() {
     let dir = tempdir().unwrap();
     let db = StateDb::open(dir.path()).unwrap();
