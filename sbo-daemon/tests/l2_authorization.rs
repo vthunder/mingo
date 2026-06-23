@@ -301,16 +301,37 @@ fn key_rooted_name_registered_via_real_path_authorizes() {
 }
 
 #[test]
-fn ownerless_write_bypasses_l2_gate() {
+fn ownerless_write_authorized_via_signer_key_controller() {
     let dir = tempdir().unwrap();
     let db = StateDb::open(dir.path()).unwrap();
     let key = SigningKey::generate();
 
-    // No Owner header → legacy key-rooted path, gate skipped, genesis-allowed.
+    // No Owner/Creator header → effective owner is the signing key, which
+    // resolves to a key controller and is authorized by the L1 signature. The
+    // gate runs (not bypassed) but passes; genesis-allowed downstream.
     let msg = signed_post(&key, "/space/", "post1", None, None, None);
     let result = validate_message(&msg, &db, dir.path(), &ctx(&db));
     assert!(
         matches!(result, ValidationResult::Valid { .. }),
-        "ownerless write should bypass the L2 gate, got {result:?}"
+        "ownerless write should authorize via the signer-key controller, got {result:?}"
+    );
+}
+
+#[test]
+fn creator_email_fallback_without_attribution_is_filtered() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    // No Owner, but a Creator that grounds to an email controller. The effective
+    // owner falls back to Creator (Owner → else Creator → else signer), so the
+    // signer must be attributed to that email; absent attribution, filtered.
+    let mut msg = signed_post(&key, "/space/", "post1", None, None, None);
+    msg.creator = Some(Id::new("alice@example.com").unwrap());
+    msg.sign(&key);
+    let result = validate_message(&msg, &db, dir.path(), &ctx(&db));
+    assert!(
+        matches!(result, ValidationResult::Invalid { stage: ValidationStage::Attribution, .. }),
+        "creator-email fallback without attribution should be filtered, got {result:?}"
     );
 }

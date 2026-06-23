@@ -34,6 +34,12 @@ pub enum NameRecord {
 /// Default maximum resolution hops.
 pub const DEFAULT_HOP_LIMIT: u32 = 16;
 
+/// Whether a reference is a bare public key (an algorithm-prefixed key string,
+/// e.g. `ed25519:<hex>` or `bls12-381:<hex>`) rather than an email or a name.
+fn is_key_reference(reference: &str) -> bool {
+    reference.starts_with("ed25519:") || reference.starts_with("bls12-381:")
+}
+
 /// Resolve an identity reference to its controlling party.
 ///
 /// `lookup` fetches a `/sys/names/<name>` record by name (returns `None` if
@@ -71,6 +77,16 @@ where
         // Bare email: a browserid-attributable identity.
         if current.contains('@') {
             return Controller::Email(current);
+        }
+
+        // Bare public key (algorithm-prefixed): a key controller, authorized by
+        // direct signature. This is the reference `effective_owner` produces
+        // when it falls back to the signing key (Authorization Spec
+        // §Verification Algorithm: `Owner → else Creator → else signer`). It is
+        // checked before the cross-repo `:`/`/` rule because a key string such
+        // as `ed25519:<hex>` also contains a colon.
+        if is_key_reference(&current) {
+            return Controller::Key(current);
         }
 
         // Cross-repo references are out of scope for this single-repo version.
@@ -243,6 +259,22 @@ mod tests {
         assert_eq!(
             resolve_controller("n0", &lookup, DEFAULT_HOP_LIMIT),
             Controller::Email("alice@x".to_string())
+        );
+    }
+
+    #[test]
+    fn bare_key_resolves_to_key_controller() {
+        let lookup = lookup_from(HashMap::new());
+        // The signer-fallback effective owner: a raw algorithm-prefixed key
+        // resolves to a key controller (despite containing a colon), authorized
+        // by direct signature.
+        assert_eq!(
+            resolve_controller("ed25519:deadbeef", &lookup, DEFAULT_HOP_LIMIT),
+            Controller::Key("ed25519:deadbeef".to_string())
+        );
+        assert_eq!(
+            resolve_controller("bls12-381:abc", &lookup, DEFAULT_HOP_LIMIT),
+            Controller::Key("bls12-381:abc".to_string())
         );
     }
 

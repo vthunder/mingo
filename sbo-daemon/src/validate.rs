@@ -186,6 +186,19 @@ pub fn resolve_creator(msg: &Message, state: Option<&StateDb>) -> Id {
     Id::new(&creator_str).unwrap_or_else(|_| Id::new("unknown").unwrap())
 }
 
+/// The effective owner reference for a message, per the Authorization Spec
+/// verification algorithm: the `Owner` header, else the `Creator` header, else
+/// the signing key. The L2 gate authorizes the signer against this reference.
+fn effective_owner_ref(msg: &Message) -> String {
+    if let Some(owner) = &msg.owner {
+        owner.as_str().to_string()
+    } else if let Some(creator) = &msg.creator {
+        creator.as_str().to_string()
+    } else {
+        msg.signing_key.to_string()
+    }
+}
+
 /// Validate a message against the current state
 pub fn validate_message(
     msg: &Message,
@@ -209,18 +222,20 @@ pub fn validate_message(
         };
     }
 
-    // 2.5. L2 attribution gate. When a write declares an Owner controller
-    // reference, the signer must speak for it (direct key match for key-rooted
-    // owners, valid browserid+DNSSEC attribution for email-rooted owners) at the
-    // block's inclusion time. L1-valid but L2-unauthorized writes are carried by
-    // the DA layer but disregarded here — they never reach state mutation.
-    if let Some(owner) = &msg.owner {
-        if let Err(reason) = l2_authorize(msg, state, l2, owner.as_str()) {
-            return ValidationResult::Invalid {
-                stage: ValidationStage::Attribution,
-                reason,
-            };
-        }
+    // 2.5. L2 attribution gate. The signer must speak for the write's
+    // *effective owner* — `Owner`, else `Creator`, else the signing key
+    // (Authorization Spec §Verification Algorithm) — at the block's inclusion
+    // time. For key-rooted effective owners (including the signer-fallback case)
+    // this is a direct key match the L1 signature already guarantees; for
+    // email-rooted owners it requires valid browserid+DNSSEC attribution.
+    // L1-valid but L2-unauthorized writes are carried by the DA layer but
+    // disregarded here — they never reach state mutation.
+    let effective_owner = effective_owner_ref(msg);
+    if let Err(reason) = l2_authorize(msg, state, l2, &effective_owner) {
+        return ValidationResult::Invalid {
+            stage: ValidationStage::Attribution,
+            reason,
+        };
     }
 
     // 3. Check if root policy exists (genesis check)
