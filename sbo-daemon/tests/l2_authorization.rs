@@ -170,6 +170,71 @@ fn same_key_owner_can_update_own_object_via_controller_check() {
 }
 
 #[test]
+fn evidence_ref_resolves_to_inline_payload() {
+    use sbo_core::authorize::encode_auth_evidence_inline;
+    use sbo_daemon::validate::resolve_evidence;
+
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    // A self-authenticating dnssec.v1 evidence object at /sys/dnssec/<issuer>;
+    // its payload is the (here, stand-in) RFC 9102 chain.
+    let proof = b"\x00\x01dnssec-chain-bytes\xff".to_vec();
+    let obj = StoredObject {
+        path: Path::parse("/sys/dnssec/").unwrap(),
+        id: Id::new("id.sandmill.org").unwrap(),
+        creator: Id::new("sys").unwrap(),
+        owner: Id::new("sys").unwrap(),
+        content_type: "application/octet-stream".to_string(),
+        content_hash: ContentHash::sha256(&proof),
+        payload: proof.clone(),
+        policy_ref: None,
+        content_schema: Some("dnssec.v1".to_string()),
+        owner_ref: None,
+        block_number: 1,
+        object_hash: [0u8; 32],
+    };
+    db.put_object(&obj).unwrap();
+
+    // ref: resolves to the inline-encoded payload.
+    let msg = signed_post(
+        &key,
+        "/space/",
+        "post1",
+        Some("alice@example.com"),
+        Some("CERT"),
+        Some("ref:/sys/dnssec/id.sandmill.org"),
+    );
+    assert_eq!(
+        resolve_evidence(&msg, &db),
+        Some(encode_auth_evidence_inline(&proof))
+    );
+
+    // A ref to a missing object resolves to nothing (signer stays unattributed).
+    let missing = signed_post(
+        &key,
+        "/space/",
+        "post1",
+        Some("alice@example.com"),
+        Some("CERT"),
+        Some("ref:/sys/dnssec/absent.example"),
+    );
+    assert_eq!(resolve_evidence(&missing, &db), None);
+
+    // inline passes through unchanged.
+    let inline = signed_post(
+        &key,
+        "/space/",
+        "post1",
+        Some("alice@example.com"),
+        Some("CERT"),
+        Some("inline:AAAA"),
+    );
+    assert_eq!(resolve_evidence(&inline, &db), Some("inline:AAAA".to_string()));
+}
+
+#[test]
 fn unresolvable_owner_is_filtered() {
     let dir = tempdir().unwrap();
     let db = StateDb::open(dir.path()).unwrap();

@@ -2,7 +2,7 @@
 //!
 //! Validates SBO messages before they are applied to the repo.
 
-use sbo_core::authorize::{authorize_message, AuthzOutcome};
+use sbo_core::authorize::{authorize_message, encode_auth_evidence_inline, AuthzOutcome};
 use sbo_core::attribution::TrustAnchors;
 use sbo_core::message::{Message, Action, Id, Path as SboPath};
 use sbo_core::policy::{evaluate, ActionType, PolicyResult};
@@ -109,6 +109,9 @@ fn name_lookup(state: &StateDb) -> impl Fn(&str) -> Option<NameRecord> + '_ {
 fn l2_authorize(msg: &Message, state: &StateDb, l2: &L2Context, owner_ref: &str) -> Result<(), String> {
     let signer = msg.signing_key.to_string();
     let lookup = name_lookup(state);
+    // Resolve referenced / conventional evidence to inline bytes the pure
+    // verifier can consume (the pure path can't reach state).
+    let evidence = resolve_evidence(msg, state);
     // An unknown block time cannot satisfy any cert/RRSig window, so email-rooted
     // owners fail closed; key-rooted owners are time-independent.
     let inclusion_time = l2.inclusion_time.unwrap_or(0);
@@ -116,7 +119,7 @@ fn l2_authorize(msg: &Message, state: &StateDb, l2: &L2Context, owner_ref: &str)
         owner_ref,
         &signer,
         msg.auth_cert.as_deref(),
-        msg.auth_evidence.as_deref(),
+        evidence.as_deref(),
         inclusion_time,
         &l2.anchors,
         &lookup,
@@ -125,6 +128,48 @@ fn l2_authorize(msg: &Message, state: &StateDb, l2: &L2Context, owner_ref: &str)
         AuthzOutcome::Authorized => Ok(()),
         AuthzOutcome::Unauthorized(reason) => Err(reason),
     }
+}
+
+/// Resolve a message's `Auth-Evidence` to an `inline:<base64url>` value the pure
+/// verifier accepts. Three carriage forms (Authorization Spec §DNSSEC Evidence):
+/// - `inline:…` passes through unchanged;
+/// - `ref:<sbo-path>` is fetched from the referenced on-chain `dnssec.v1`
+///   object (its payload IS the RFC 9102 chain);
+/// - absent evidence, but an `Auth-Cert` is present → the conventional
+///   `/sys/dnssec/<issuer>` object is consulted (line 140, a MAY).
+///
+/// Returns `None` when nothing resolves; the signer is then simply unattributed
+/// (carried-but-filtered for an email-rooted owner). Because a referenced
+/// `dnssec.v1` object is self-authenticating (re-validated against the pinned
+/// root KSK by the verifier), resolving it is not a trusted read.
+pub fn resolve_evidence(msg: &Message, state: &StateDb) -> Option<String> {
+    match msg.auth_evidence.as_deref() {
+        Some(inline) if inline.starts_with("inline:") => Some(inline.to_string()),
+        Some(reference) if reference.starts_with("ref:") => {
+            let target = reference.trim_start_matches("ref:");
+            let bytes = fetch_evidence_object(state, target)?;
+            Some(encode_auth_evidence_inline(&bytes))
+        }
+        Some(_) => None, // unrecognized form
+        None => {
+            // Absent evidence: try the conventional /sys/dnssec/<issuer> object.
+            let issuer = sbo_core::authorize::cert_issuer(msg.auth_cert.as_deref()?)?;
+            let bytes = fetch_evidence_object(state, &format!("/sys/dnssec/{issuer}"))?;
+            Some(encode_auth_evidence_inline(&bytes))
+        }
+    }
+}
+
+/// Fetch a referenced evidence object's payload (the RFC 9102 DNSSEC chain) by
+/// an `sbo-path` ref like `/sys/dnssec/<issuer>`: the final segment is the
+/// object id, the rest the path. Creator-independent (the object is
+/// self-authenticating, so any creator's copy is equivalent).
+fn fetch_evidence_object(state: &StateDb, ref_path: &str) -> Option<Vec<u8>> {
+    let (path_str, id_str) = ref_path.trim_end_matches('/').rsplit_once('/')?;
+    let path = SboPath::parse(&format!("{path_str}/")).ok()?;
+    let id = Id::new(id_str).ok()?;
+    let obj = state.get_first_object_at_path_id(&path, &id).ok()??;
+    Some(obj.payload)
 }
 
 /// Validation result with stage information

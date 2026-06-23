@@ -78,6 +78,16 @@ pub fn encode_auth_evidence_inline(proof: &[u8]) -> String {
     format!("inline:{}", URL_SAFE_NO_PAD.encode(proof))
 }
 
+/// Parse the issuer domain (`iss`) from a browserid `Auth-Cert`, without
+/// verifying its signature. Used to locate conventional `/sys/dnssec/<issuer>`
+/// evidence when `Auth-Evidence` is absent (Authorization Spec line 140).
+/// Returns `None` if the cert is unparseable.
+pub fn cert_issuer(auth_cert: &str) -> Option<String> {
+    browserid_core::Certificate::parse(auth_cert)
+        .ok()
+        .map(|c| c.issuer().to_string())
+}
+
 /// Compute the [`Attribution`] for a message's signing key, if it carries a
 /// valid `Auth-Cert` + `Auth-Evidence` pair verifying at `inclusion_time`.
 ///
@@ -286,6 +296,23 @@ mod tests {
     #[test]
     fn parse_bare_evidence_rejected() {
         assert!(parse_auth_evidence("deadbeef").is_err());
+    }
+
+    #[test]
+    fn cert_issuer_parses_iss_without_verification() {
+        use browserid_core::{Certificate, KeyPair};
+        let provider = KeyPair::generate();
+        let user = KeyPair::generate();
+        let cert = Certificate::create(
+            "id.sandmill.org",
+            "alice@sandmill.org",
+            &user.public_key(),
+            chrono::Duration::seconds(3600),
+            &provider,
+        )
+        .unwrap();
+        assert_eq!(cert_issuer(cert.encoded()).as_deref(), Some("id.sandmill.org"));
+        assert_eq!(cert_issuer("not-a-cert"), None);
     }
 
     #[test]
