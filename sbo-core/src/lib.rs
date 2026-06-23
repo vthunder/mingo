@@ -23,6 +23,7 @@ pub mod keyring;
 pub mod dns;
 pub mod jwt;
 pub mod attribution;
+pub mod resolve;
 
 mod genesis;
 mod indexer;
