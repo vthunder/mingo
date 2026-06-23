@@ -301,4 +301,56 @@ mod tests {
         let rrs = dnssec_prover::ser::parse_rr_stream(&proof).unwrap();
         dnssec_prover::validation::verify_rr_stream(&rrs).unwrap();
     }
+
+    /// Full live capture against the real broker, then verify the captured
+    /// `Auth-Cert` + `Auth-Evidence` through `sbo-core`'s deterministic verifier
+    /// — the complete email-attribution loop.
+    ///
+    /// Requires a real broker account. Run with:
+    /// ```text
+    /// SBO_TEST_EMAIL=you@sandmill.org SBO_TEST_PASSWORD=... \
+    ///   cargo test -p sbo-capture -- --ignored live_capture_attribution_e2e
+    /// ```
+    /// Optional overrides: `SBO_BROKER_URL` (default `https://id.sandmill.org`),
+    /// `SBO_DNS_RESOLVER` (default `1.1.1.1:53`).
+    #[tokio::test]
+    #[ignore = "requires live broker account (SBO_TEST_EMAIL / SBO_TEST_PASSWORD)"]
+    async fn live_capture_attribution_e2e() {
+        let email = std::env::var("SBO_TEST_EMAIL").expect("set SBO_TEST_EMAIL");
+        let password = std::env::var("SBO_TEST_PASSWORD").expect("set SBO_TEST_PASSWORD");
+        let broker = std::env::var("SBO_BROKER_URL")
+            .unwrap_or_else(|_| "https://id.sandmill.org".to_string());
+        let resolver: SocketAddr = std::env::var("SBO_DNS_RESOLVER")
+            .unwrap_or_else(|_| DEFAULT_RESOLVER.to_string())
+            .parse()
+            .unwrap();
+
+        // The ephemeral key that will become the SBO Public-Key.
+        let user = browserid_core::KeyPair::generate();
+        let user_pubkey = user.public_key();
+
+        let captured = capture_attribution(&broker, &email, &password, &user_pubkey, resolver)
+            .await
+            .expect("capture should succeed");
+
+        // Now verify it the way every replayer will: deterministic offline check.
+        let evidence = sbo_core::authorize::parse_auth_evidence(&captured.auth_evidence).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        // Email domain != issuer (broker), so the issuer must be a pinned broker.
+        let anchors = sbo_core::attribution::TrustAnchors::with_brokers(vec![captured.issuer.clone()]);
+
+        let attribution = sbo_core::attribution::verify_attribution(
+            &user_pubkey.to_base64(),
+            &captured.auth_cert,
+            &evidence,
+            now,
+            &anchors,
+        )
+        .expect("captured attribution should verify");
+        assert_eq!(attribution.email, email);
+        assert_eq!(attribution.key, user_pubkey.to_base64());
+    }
 }
