@@ -70,6 +70,8 @@ fn put_key_rooted_name(db: &StateDb, name: &str, key: &SigningKey) {
         owner_ref: None,
         block_number: 1,
         object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
     };
     db.put_object(&obj).unwrap();
 }
@@ -195,6 +197,8 @@ fn evidence_ref_resolves_to_inline_payload() {
         owner_ref: None,
         block_number: 1,
         object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
     };
     db.put_object(&obj).unwrap();
 
@@ -335,6 +339,8 @@ fn attestation_defined_role_gates_policy() {
         owner_ref: None,
         block_number: 1,
         object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
     }).unwrap();
 
     // An in-force role:moderator attestation by the issuer about the moderator.
@@ -358,6 +364,8 @@ fn attestation_defined_role_gates_policy() {
         owner_ref: Some(issuer_ref.to_string()),
         block_number: 1,
         object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
     }).unwrap();
 
     // The attested moderator may create under /space/**.
@@ -410,6 +418,8 @@ fn put_email_rooted_name(db: &StateDb, name: &str, email: &str) {
         owner_ref: Some(email.to_string()),
         block_number: 1,
         object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
     };
     db.put_object(&obj).unwrap();
 }
@@ -503,6 +513,8 @@ fn trust_brokers_object_loads_into_anchors() {
         owner_ref: None,
         block_number: 1,
         object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
     };
     db.put_object(&obj).unwrap();
 
@@ -652,6 +664,91 @@ fn hlc_bound_gates_writes() {
     ));
 }
 
+// LWW-by-HLC admission (Content Spec §Conflict Resolution): the apply path
+// suppresses an HLC-bearing write that loses the total order against the current
+// HLC-bearing value, independent of inclusion order.
+#[test]
+fn lww_admits_only_higher_hlc() {
+    use sbo_daemon::validate::lww_admits;
+    let key = SigningKey::generate();
+    let oh = [7u8; 32];
+
+    // Build a stored object carrying an HLC, as the apply path persists it.
+    let stored = |hlc: &str, signer: &str, object_hash: [u8; 32]| StoredObject {
+        path: Path::parse("/spaces/general/").unwrap(),
+        id: Id::new("note").unwrap(),
+        creator: Id::new("alice").unwrap(),
+        owner: Id::new(signer).unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(b"{}"),
+        payload: b"{}".to_vec(),
+        policy_ref: None,
+        content_schema: Some("post.v1".to_string()),
+        owner_ref: Some("alice".to_string()),
+        block_number: 1,
+        object_hash,
+        hlc: Some(hlc.to_string()),
+        prev: None,
+    };
+    let with_hlc = |hlc: &str| {
+        let mut m = signed_post(&key, "/spaces/general/", "note", None, None, None);
+        m.hlc = Some(hlc.to_string());
+        m.sign(&key);
+        m
+    };
+
+    // No existing object → always admitted (a create).
+    assert!(lww_admits(&with_hlc("100.0"), None, &oh));
+
+    // Higher HLC wins; lower / equal-physical-lower-counter loses.
+    let existing = stored("100.5", &key.public_key().to_string(), [1u8; 32]);
+    assert!(lww_admits(&with_hlc("101.0"), Some(&existing), &oh), "higher physical wins");
+    assert!(lww_admits(&with_hlc("100.6"), Some(&existing), &oh), "higher counter wins");
+    assert!(!lww_admits(&with_hlc("100.4"), Some(&existing), &oh), "lower counter loses");
+    assert!(!lww_admits(&with_hlc("099.0"), Some(&existing), &oh), "lower physical loses");
+
+    // An incoming write without an HLC keeps base semantics → admitted even over
+    // an HLC-bearing value.
+    let no_hlc = signed_post(&key, "/spaces/general/", "note", None, None, None);
+    assert!(lww_admits(&no_hlc, Some(&existing), &oh));
+}
+
+// Prev causal-link format gate (Content Spec §Causal Links): a `Prev` header,
+// when present, must be a 64-char hex object_hash. Malformed → Ordering reject;
+// well-formed (or absent) → passes. Genesis mode isolates the Ordering stage.
+#[test]
+fn prev_format_gated() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    let with_prev = |prev: Option<&str>| {
+        let mut m = signed_post(&key, "/spaces/general/", "p1", None, None, None);
+        m.prev = prev.map(|s| s.to_string());
+        m.sign(&key);
+        m
+    };
+
+    // Well-formed 32-byte hex → valid.
+    let good = with_prev(Some(&"ab".repeat(32)));
+    assert!(matches!(validate_message(&good, &db, dir.path(), &ctx(&db)), ValidationResult::Valid { .. }));
+
+    // Too short / non-hex → rejected at Ordering.
+    for bad in ["deadbeef", &"zz".repeat(32), &"ab".repeat(31)] {
+        let m = with_prev(Some(bad));
+        assert!(
+            matches!(
+                validate_message(&m, &db, dir.path(), &ctx(&db)),
+                ValidationResult::Invalid { stage: ValidationStage::Ordering, .. }
+            ),
+            "malformed Prev {bad:?} should reject at Ordering"
+        );
+    }
+
+    // Absent Prev (a create) → valid.
+    assert!(matches!(validate_message(&with_prev(None), &db, dir.path(), &ctx(&db)), ValidationResult::Valid { .. }));
+}
+
 /// Store an in-force `attestation.v1` issued by `issuer` about `subject`.
 fn put_attestation(db: &StateDb, issuer: &str, subject: &str, type_: &str) {
     use sbo_core::schema::storage_path;
@@ -675,6 +772,8 @@ fn put_attestation(db: &StateDb, issuer: &str, subject: &str, type_: &str) {
         owner_ref: Some(issuer.to_string()),
         block_number: 1,
         object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
     })
     .unwrap();
 }
@@ -747,6 +846,8 @@ fn open_community_membership_post_and_ban_end_to_end() {
         owner_ref: None,
         block_number: 1,
         object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
     })
     .unwrap();
 

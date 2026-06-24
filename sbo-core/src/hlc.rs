@@ -82,6 +82,41 @@ impl Ord for Hlc {
     }
 }
 
+/// The full cross-author total-order key for last-writer-wins (Content Spec
+/// §Total order): `HLC`, then signer public key, then `object_hash`. All terms
+/// are on-chain and deterministic, so every client computes the same order.
+///
+/// Borrows its components so callers can build it cheaply from a stored object or
+/// an incoming message without cloning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LwwKey<'a> {
+    pub hlc: Hlc,
+    pub signer: &'a str,
+    pub object_hash: &'a [u8; 32],
+}
+
+impl<'a> PartialOrd for LwwKey<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<'a> Ord for LwwKey<'a> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.hlc
+            .cmp(&other.hlc)
+            .then_with(|| self.signer.cmp(other.signer))
+            .then_with(|| self.object_hash.cmp(other.object_hash))
+    }
+}
+
+/// Whether an incoming write `new` wins last-writer-wins over the current value
+/// `old` — i.e. `new` is **strictly greater** in the total order. A tie (the
+/// identical key) does not win, so a replayed duplicate never flips state.
+pub fn lww_wins(new: LwwKey<'_>, old: LwwKey<'_>) -> bool {
+    new > old
+}
+
 /// Errors parsing an `HLC` header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HlcParseError {
@@ -124,6 +159,35 @@ mod tests {
         assert!(a < b, "counter breaks ties on equal physical");
         assert!(b < c, "physical dominates counter");
         assert!(a < c);
+    }
+
+    #[test]
+    fn lww_total_order_tiebreaks() {
+        let h_lo = Hlc { physical: 100, counter: 0 };
+        let h_hi = Hlc { physical: 100, counter: 1 };
+        let hash_a = [1u8; 32];
+        let hash_b = [2u8; 32];
+
+        // Higher HLC wins regardless of signer/hash.
+        assert!(lww_wins(
+            LwwKey { hlc: h_hi, signer: "aaa", object_hash: &hash_a },
+            LwwKey { hlc: h_lo, signer: "zzz", object_hash: &hash_b },
+        ));
+        // Equal HLC → signer breaks the tie.
+        assert!(lww_wins(
+            LwwKey { hlc: h_lo, signer: "bbb", object_hash: &hash_a },
+            LwwKey { hlc: h_lo, signer: "aaa", object_hash: &hash_a },
+        ));
+        // Equal HLC + signer → object_hash breaks the tie.
+        assert!(lww_wins(
+            LwwKey { hlc: h_lo, signer: "aaa", object_hash: &hash_b },
+            LwwKey { hlc: h_lo, signer: "aaa", object_hash: &hash_a },
+        ));
+        // Identical key does not win (idempotent replay).
+        assert!(!lww_wins(
+            LwwKey { hlc: h_lo, signer: "aaa", object_hash: &hash_a },
+            LwwKey { hlc: h_lo, signer: "aaa", object_hash: &hash_a },
+        ));
     }
 
     #[test]

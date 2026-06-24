@@ -887,6 +887,20 @@ impl SyncEngine {
             // Use get_first_object_at_path_id to find existing object regardless of creator
             let existing = state_db.get_first_object_at_path_id(&msg.path, &msg.id).ok().flatten();
 
+            // Last-writer-wins by HLC (Content Spec §Conflict Resolution): an
+            // HLC-bearing write that loses the total order against the current
+            // HLC-bearing value is suppressed — it does not touch the trie, the
+            // filesystem, or state — so LWW is independent of inclusion order.
+            if !matches!(msg.action, sbo_core::message::Action::Delete)
+                && !crate::validate::lww_admits(msg, existing.as_ref(), &object_hash)
+            {
+                tracing::debug!(
+                    "LWW: write {}{} (HLC {:?}) does not win over current value; suppressed",
+                    msg.path, msg.id, msg.hlc
+                );
+                return Ok(());
+            }
+
             if matches!(msg.action, sbo_core::message::Action::Delete) {
                 // Delete operation
                 if let Some(old_obj) = existing {

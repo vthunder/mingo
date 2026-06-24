@@ -21,6 +21,8 @@ fn test_store_and_retrieve_object() {
         owner_ref: None,
         block_number: 1,
         object_hash: [0u8; 32], // Placeholder - in production, this is sha256(raw_sbo_bytes)
+        hlc: None,
+        prev: None,
     };
 
     db.put_object(&obj).unwrap();

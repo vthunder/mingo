@@ -299,6 +299,57 @@ fn check_hlc_bound(msg: &Message, l2: &L2Context) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate the `Prev` causal-link header (Content Spec §Causal Links), if
+/// present: it must be the hex encoding of a 32-byte `object_hash`. `Prev` points
+/// at the version a mutable write was based on; the chain of links is a
+/// verifiable per-object history. We validate only its *form* here — that the
+/// referenced version actually exists is a read-side/indexer concern, not a
+/// validity rule (a write may legitimately reference a version not yet seen).
+fn check_prev(msg: &Message) -> Result<(), String> {
+    let prev = match &msg.prev {
+        Some(p) => p,
+        None => return Ok(()), // a create sets no Prev
+    };
+    if prev.len() != 64 || !prev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "malformed Prev '{prev}': expected 64 hex chars (a 32-byte object_hash)"
+        ));
+    }
+    Ok(())
+}
+
+/// Last-writer-wins admission check (Content Spec §Conflict Resolution): whether
+/// an incoming write should overwrite the current value at its key. When both the
+/// incoming write and the existing object carry an `HLC`, the incoming one is
+/// admitted only if it **wins** the total order (HLC, then signer public key,
+/// then `object_hash`) — making LWW independent of inclusion order so a
+/// back-dated write included later cannot clobber a higher-HLC value. If either
+/// side lacks an `HLC` (or the `HLC` fails to parse), base inclusion-order
+/// semantics apply and the write is admitted. `object_hash` is the incoming
+/// write's hash (the full raw bytes).
+pub fn lww_admits(msg: &Message, existing: Option<&StoredObject>, object_hash: &[u8; 32]) -> bool {
+    let (Some(new_hlc_str), Some(old)) = (&msg.hlc, existing) else {
+        return true;
+    };
+    let Some(old_hlc_str) = &old.hlc else {
+        return true;
+    };
+    let (Ok(new_hlc), Ok(old_hlc)) = (
+        sbo_core::hlc::Hlc::parse(new_hlc_str),
+        sbo_core::hlc::Hlc::parse(old_hlc_str),
+    ) else {
+        return true;
+    };
+    let new_signer = msg.signing_key.to_string();
+    let new_key = sbo_core::hlc::LwwKey { hlc: new_hlc, signer: &new_signer, object_hash };
+    let old_key = sbo_core::hlc::LwwKey {
+        hlc: old_hlc,
+        signer: old.owner.as_str(),
+        object_hash: &old.object_hash,
+    };
+    sbo_core::hlc::lww_wins(new_key, old_key)
+}
+
 /// The effective owner reference for a message, per the Authorization Spec
 /// verification algorithm: the `Owner` header, else the `Creator` header, else
 /// the signing key. The L2 gate authorizes the signer against this reference.
@@ -344,6 +395,12 @@ pub fn validate_message(
     // evaluate the bound, so we only enforce the parse (fail-open on the bound,
     // matching the carry semantics elsewhere).
     if let Err(reason) = check_hlc_bound(msg, l2) {
+        return ValidationResult::Invalid {
+            stage: ValidationStage::Ordering,
+            reason,
+        };
+    }
+    if let Err(reason) = check_prev(msg) {
         return ValidationResult::Invalid {
             stage: ValidationStage::Ordering,
             reason,
@@ -779,6 +836,8 @@ pub fn message_to_stored_object(
         owner_ref: Some(effective_owner_ref(msg)),
         block_number,
         object_hash,
+        hlc: msg.hlc.clone(),
+        prev: msg.prev.clone(),
     })
 }
 

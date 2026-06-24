@@ -31,6 +31,15 @@ pub struct StoredObject {
     /// Used for merkle tree leaf computation in the proof system
     #[serde(default, skip_serializing_if = "is_zero_hash")]
     pub object_hash: [u8; 32],
+    /// The object's `HLC` header (the content-layer ordering key), if any.
+    /// Persisted so last-writer-wins resolution can compare the current value's
+    /// HLC against an incoming write's without re-parsing the wire bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hlc: Option<String>,
+    /// The object's `Prev` header (the `object_hash` of the version this write
+    /// was based on), if any. Records the causal link for per-object history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev: Option<String>,
 }
 
 fn is_zero_hash(h: &[u8; 32]) -> bool {
