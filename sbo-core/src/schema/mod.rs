@@ -8,14 +8,17 @@
 //! - `domain.v1` - Domain objects (JWT format, always self-signed)
 //! - `profile.v1` - Profile data (JSON format)
 //! - `attestation.v1` - Signed claim by an issuer (Owner) about a subject
+//! - `community.v1` - Thin descriptor for a self-owned community
 
 mod attestation;
+mod community;
 mod identity;
 
 use crate::message::Message;
 use thiserror::Error;
 
 pub use attestation::{parse_attestation, storage_path, validate_attestation, Attestation};
+pub use community::{parse_community, validate_community, Community, DEFAULT_MEMBERS_PREFIX, DEFAULT_SPACES_PREFIX};
 pub use identity::{Identity, validate_identity, parse_identity};
 pub use crate::jwt::{Profile, IdentityClaims, DomainClaims};
 
@@ -156,6 +159,7 @@ pub fn validate_schema(msg: &Message) -> SchemaResult<()> {
             Ok(())
         }
         "attestation.v1" => attestation::validate_attestation(msg),
+        "community.v1" => community::validate_community(msg),
         _ => {
             // Unknown schemas pass through - enforcement can happen at higher layers
             tracing::debug!("Unknown schema '{}', skipping validation", schema);
@@ -257,6 +261,27 @@ mod tests {
         let payload_ok = br#"{"subject":"alice","type":"vouch","value":true,"issued_at":100,"issuer":"mods@community.org"}"#;
         let msg_ok = make_email_message(Some("attestation.v1"), payload_ok, Some("mods@community.org"));
         assert!(validate_schema(&msg_ok).is_ok());
+    }
+
+    #[test]
+    fn test_community_valid() {
+        let payload = br#"{"name":"Cooks","issuer":"cooks@example.org","policy":"/sys/policies/root","open":true}"#;
+        let msg = make_email_message(Some("community.v1"), payload, Some("sys"));
+        assert!(validate_schema(&msg).is_ok());
+    }
+
+    #[test]
+    fn test_community_missing_policy_rejected() {
+        let payload = br#"{"name":"Cooks","issuer":"cooks@example.org"}"#;
+        let msg = make_email_message(Some("community.v1"), payload, Some("sys"));
+        assert!(matches!(validate_schema(&msg), Err(SchemaError::InvalidJson(_))));
+    }
+
+    #[test]
+    fn test_community_empty_name_rejected() {
+        let payload = br#"{"name":"","issuer":"cooks@example.org","policy":"/sys/policies/root"}"#;
+        let msg = make_email_message(Some("community.v1"), payload, Some("sys"));
+        assert!(matches!(validate_schema(&msg), Err(SchemaError::MissingField(f)) if f == "name"));
     }
 
     fn make_email_message(schema: Option<&str>, payload: &[u8], owner: Option<&str>) -> Message {
