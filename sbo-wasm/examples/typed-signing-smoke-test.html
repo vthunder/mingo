@@ -3,32 +3,26 @@
   Typed signing smoke test (SBO Phase 7.4) — prove the in-browser loop end to end
   against the LIVE broker at https://id.sandmill.org:
 
-    login (dialog, sbo_sign=1) -> consent (Allow) -> signSboEnvelope (silent,
-    in the communication iframe) -> assembleWire (sbo-wasm) -> verify the
-    detached signature locally with WebCrypto.
+    login (dialog popup, sbo_sign=1) -> consent (Allow) -> sign (first-party
+    signer POPUP) -> assembleWire (sbo-wasm) -> verify the detached signature
+    locally with WebCrypto.
 
-  No daemon/repo needed: we only verify that the agent produced a valid SBO
-  signature over the exact canonical bytes, bound to the logged-in identity.
-
-  ⚠️ STORAGE PARTITIONING: run this SAME-ORIGIN with the broker, or signing fails
-  with "not_granted". When this page is a cross-origin top-level site, the
-  embedded communication iframe gets a PARTITIONED storage bucket and can't see
-  the keypair/grant the first-party login popup stored. Use the broker-hosted
-  copy: https://id.sandmill.org/dialog/sbo-smoke-test.html
-  (Cross-origin RPs need a popup signer instead — browserid-ng#2.)
+  Signing uses a first-party broker popup (id.sandmill.org/sign), so it works
+  CROSS-SITE under storage partitioning — run this page from any origin. No
+  daemon/repo needed: we only verify the agent produced a valid SBO signature
+  over the exact canonical bytes, bound to the logged-in identity.
 
   HOW TO RUN
     1. You need a broker account on id.sandmill.org (email + password). The
        owner can create one; the dialog also offers account creation.
-    2. Serve this file from a stable origin (NOT file://, which has a null
-       origin). E.g. from this directory:
+    2. Serve this file from a stable origin (NOT file://). E.g.:
            python3 -m http.server 8000
        then open  http://localhost:8000/typed-signing-smoke-test.html
     3. Enter your broker email, click "1. Sign in + grant", complete login and
        click Allow on the consent screen. Then click "2. Sign test envelope".
+       (Allow popups for this origin — signing opens a brief popup.)
 
-  Everything (jschannel + sbo-wasm) loads cross-origin from the broker, which
-  serves them with permissive CORS.
+  sbo-wasm loads cross-origin from the broker (permissive CORS).
 -->
 <html>
 <head>
@@ -69,9 +63,11 @@
   <h3>Result</h3>
   <pre id="out">(waiting)</pre>
 
-  <!-- jschannel from the broker (defines window.Channel) -->
-  <script src="https://id.sandmill.org/common/js/lib/jschannel.js"></script>
   <script type="module">
+    // Cross-site signing via a first-party broker POPUP (not an embedded iframe):
+    // the popup is a top-level broker window, so it has first-party broker
+    // storage — the same partition where login stored the key/cert/grant. Works
+    // from ANY origin (run this page from anywhere, incl. a different site).
     const BROKER = "https://id.sandmill.org";
     const RP_ORIGIN = location.origin;
     document.getElementById("broker").textContent = BROKER;
@@ -83,31 +79,43 @@
     };
     const reset = () => { out.innerHTML = ""; };
 
-    // --- load sbo-wasm (cross-origin ESM from the broker) ---------------------
+    window.addEventListener("error", (e) => log("window error: " + (e.message || e), "err"));
+    window.addEventListener("unhandledrejection", (e) =>
+      log("unhandled rejection: " + (e.reason && e.reason.message || e.reason), "err"));
+
+    // --- load sbo-wasm (for payload build + assemble + local verify) ----------
     const sbo = await import(`${BROKER}/common/js/sbo-wasm/sbo_wasm.js`);
     await sbo.default(); // init() fetches the .wasm
 
-    // --- a hidden communication iframe + a channel to it (scope mozid_ni) -----
-    const iframe = document.createElement("iframe");
-    iframe.style.display = "none";
-    iframe.src = `${BROKER}/communication_iframe`;
-    document.body.appendChild(iframe);
-    await new Promise((res) => (iframe.onload = res));
-
-    const chan = Channel.build({
-      window: iframe.contentWindow,
-      origin: BROKER,
-      scope: "mozid_ni"
-    });
-
+    // --- sign via the first-party signer popup --------------------------------
+    // MUST be called from within a user gesture (the Sign button click) so the
+    // popup isn't blocked. The popup signs automatically (consent was granted at
+    // login) and posts the result back.
     function callSign(params) {
       return new Promise((resolve, reject) => {
-        chan.call({
-          method: "signSboEnvelope",
-          params,
-          success: resolve,
-          error: (err, message) => reject(new Error(`${err}: ${message}`))
-        });
+        const popup = window.open(`${BROKER}/sign`, "sbo-signer",
+          "width=340,height=220");
+        if (!popup) { reject(new Error("popup blocked — allow popups for this site")); return; }
+        log("→ opened signer popup…", "muted");
+        let settled = false;
+        const cleanup = () => {
+          settled = true;
+          window.removeEventListener("message", onMsg);
+          try { popup.close(); } catch (_) {}
+        };
+        const onMsg = (e) => {
+          if (e.origin !== BROKER || e.source !== popup) return;
+          const d = e.data || {};
+          if (d.type === "sbo:signer-ready") {
+            popup.postMessage({ type: "sbo:sign", email: params.email, envelope: params.envelope }, BROKER);
+          } else if (d.type === "sbo:signed") {
+            cleanup(); resolve(d);
+          } else if (d.type === "sbo:sign-error") {
+            cleanup(); reject(new Error(`${d.error}: ${d.message || ""}`));
+          }
+        };
+        window.addEventListener("message", onMsg);
+        setTimeout(() => { if (!settled) { cleanup(); reject(new Error("timeout waiting for signer popup")); } }, 20000);
       });
     }
 
@@ -166,7 +174,7 @@
           hlc
         };
 
-        log("→ requesting signature from the agent (communication iframe)…", "muted");
+        log("→ requesting signature from the signer popup…", "muted");
         const res = await callSign({ email, envelope: spec });
         log(`✓ agent returned signature (${res.signature.length / 2} bytes), cert, pubkey`, "ok");
         log(`  pubkey: ${res.pubkey}`);
