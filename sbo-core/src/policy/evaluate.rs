@@ -64,7 +64,7 @@ pub fn evaluate(
     let granted = policy.grants.iter().any(|grant| {
         let path_parsed = crate::message::Path::parse(target_path).unwrap();
         let path_matches = grant.on.matches(&path_parsed, effective_owner_ref);
-        let action_matches = grant.can.contains(&action) || grant.can.contains(&ActionType::All);
+        let action_matches = grant.can.iter().any(|granted| action_covered_by(*granted, action));
         let identity_match = identity_matches(&grant.to, actor, &actor_key, effective_owner_ref, signer_is_owner, is_attested, &policy.roles);
 
         grant_debug.push(format!(
@@ -91,6 +91,19 @@ pub fn evaluate(
     }
 
     PolicyResult::Allowed
+}
+
+/// Whether a granted action covers a requested action. `post` is shorthand for
+/// `create` + `update` (Policy Spec §Actions), so a `post` grant authorizes both
+/// `create` and `update` requests; `*` covers everything. The daemon only ever
+/// requests `Create`/`Update`/`Delete`/`Transfer` (it maps a `post` envelope to
+/// `create` or `update` by object existence), so the `post`⇒{create,update}
+/// expansion is what makes community `can: ["post"]` grants work.
+fn action_covered_by(granted: ActionType, requested: ActionType) -> bool {
+    granted == ActionType::All
+        || granted == requested
+        || (granted == ActionType::Post
+            && matches!(requested, ActionType::Create | ActionType::Update))
 }
 
 /// Extract namespace owner from path (first component)
@@ -378,6 +391,55 @@ mod tests {
         ));
         assert!(matches!(
             evaluate(&policy, &actor, ActionType::Create, "/alice/posts/", Some("alice@example.com"), false, &no_attest, &msg),
+            PolicyResult::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn post_grant_covers_create_and_update_not_delete() {
+        // `post` is shorthand for create + update; a `post` grant must authorize
+        // both (the daemon maps a `post` envelope to Create/Update by existence),
+        // but must NOT authorize delete.
+        let policy: Policy = serde_json::from_value(serde_json::json!({
+            "grants": [{"to": "*", "can": ["post"], "on": "/public/**"}]
+        }))
+        .unwrap();
+        let msg = signed_msg();
+        let actor = Id::new("e_x").unwrap();
+        let no_attest = |_: &AttestedSource| false;
+
+        for action in [ActionType::Create, ActionType::Update, ActionType::Post] {
+            assert!(
+                matches!(
+                    evaluate(&policy, &actor, action, "/public/p1/", None, false, &no_attest, &msg),
+                    PolicyResult::Allowed
+                ),
+                "post grant should cover {action:?}"
+            );
+        }
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Delete, "/public/p1/", None, false, &no_attest, &msg),
+            PolicyResult::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn create_grant_does_not_imply_update() {
+        // The create/update split must stay asymmetric: a bare `create` grant
+        // (first-come-first-served) must not confer update rights.
+        let policy: Policy = serde_json::from_value(serde_json::json!({
+            "grants": [{"to": "*", "can": ["create"], "on": "/sys/names/**"}]
+        }))
+        .unwrap();
+        let msg = signed_msg();
+        let actor = Id::new("e_x").unwrap();
+        let no_attest = |_: &AttestedSource| false;
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Create, "/sys/names/alice/", None, false, &no_attest, &msg),
+            PolicyResult::Allowed
+        ));
+        assert!(matches!(
+            evaluate(&policy, &actor, ActionType::Update, "/sys/names/alice/", None, false, &no_attest, &msg),
             PolicyResult::Denied(_)
         ));
     }
