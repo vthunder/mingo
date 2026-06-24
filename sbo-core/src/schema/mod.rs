@@ -12,6 +12,7 @@
 //! - `post.v1` / `comment.v1` / `reaction.v1` - Content-layer objects
 
 mod attestation;
+mod collection;
 mod community;
 mod content;
 mod identity;
@@ -20,6 +21,7 @@ use crate::message::Message;
 use thiserror::Error;
 
 pub use attestation::{parse_attestation, storage_path, validate_attestation, Attestation};
+pub use collection::{parse_collection, validate_collection, Collection, Durability, COLLECTION_CONFIG_ID};
 pub use community::{parse_community, validate_community, Community, DEFAULT_MEMBERS_PREFIX, DEFAULT_SPACES_PREFIX};
 pub use content::{
     parse_comment, parse_post, parse_reaction, validate_comment, validate_post, validate_reaction,
@@ -169,6 +171,7 @@ pub fn validate_schema(msg: &Message) -> SchemaResult<()> {
         "post.v1" => content::validate_post(msg),
         "comment.v1" => content::validate_comment(msg),
         "reaction.v1" => content::validate_reaction(msg),
+        "collection.v1" => collection::validate_collection(msg),
         _ => {
             // Unknown schemas pass through - enforcement can happen at higher layers
             tracing::debug!("Unknown schema '{}', skipping validation", schema);
@@ -294,6 +297,16 @@ mod tests {
         assert!(validate_schema(&ok).is_ok());
         let no_kind = make_email_message(Some("reaction.v1"), br#"{"target":"/p"}"#, Some("alice@x.org"));
         assert!(matches!(validate_schema(&no_kind), Err(SchemaError::InvalidJson(_))));
+    }
+
+    #[test]
+    fn test_collection_valid_and_bad_durability() {
+        let ok = make_email_message(Some("collection.v1"), br#"{"durability":"batched","max_authoring_lag_s":3600}"#, Some("sys"));
+        assert!(validate_schema(&ok).is_ok());
+        let bad = make_email_message(Some("collection.v1"), br#"{"durability":"nope"}"#, Some("sys"));
+        assert!(matches!(validate_schema(&bad), Err(SchemaError::InvalidJson(_))));
+        let neg = make_email_message(Some("collection.v1"), br#"{"max_authoring_lag_s":-1}"#, Some("sys"));
+        assert!(matches!(validate_schema(&neg), Err(SchemaError::InvalidField { field, .. }) if field == "max_authoring_lag_s"));
     }
 
     #[test]

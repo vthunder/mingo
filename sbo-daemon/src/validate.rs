@@ -273,7 +273,7 @@ pub fn resolve_creator(msg: &Message, state: Option<&StateDb>, l2: &L2Context) -
 ///
 /// `W` (max authoring lag) defaults to [`sbo_core::hlc::DEFAULT_MAX_AUTHORING_LAG_MS`];
 /// per-collection `W` from a `collection.v1` descriptor is wired in a later step.
-fn check_hlc_bound(msg: &Message, l2: &L2Context) -> Result<(), String> {
+fn check_hlc_bound(msg: &Message, state: &StateDb, l2: &L2Context) -> Result<(), String> {
     let hlc_str = match &msg.hlc {
         Some(h) => h,
         None => return Ok(()), // no HLC → base inclusion-order semantics
@@ -282,7 +282,7 @@ fn check_hlc_bound(msg: &Message, l2: &L2Context) -> Result<(), String> {
 
     if let Some(t_b_secs) = l2.inclusion_time {
         let t_b_ms = t_b_secs.saturating_mul(1000);
-        let max_lag = sbo_core::hlc::DEFAULT_MAX_AUTHORING_LAG_MS;
+        let max_lag = collection_max_lag_ms(msg, state);
         let skew = sbo_core::hlc::DEFAULT_SKEW_TOLERANCE_MS;
         if !hlc.within_bound(t_b_ms, max_lag, skew) {
             return Err(format!(
@@ -297,6 +297,29 @@ fn check_hlc_bound(msg: &Message, l2: &L2Context) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Resolve the collection's `W` (max authoring lag) in **milliseconds** for a
+/// write, from a `collection.v1` descriptor at the write's collection root
+/// (`<path>/_config`). Absent a descriptor (or its `max_authoring_lag_s`), the
+/// collection defaults to a small `W` ([`sbo_core::hlc::DEFAULT_MAX_AUTHORING_LAG_MS`]).
+/// The descriptor is looked up at the write's own path; deeper ancestor
+/// resolution is a later refinement.
+fn collection_max_lag_ms(msg: &Message, state: &StateDb) -> i64 {
+    let descriptor = state
+        .get_first_object_at_path_id(&msg.path, &Id::new(sbo_core::schema::COLLECTION_CONFIG_ID).unwrap())
+        .ok()
+        .flatten();
+    if let Some(obj) = descriptor {
+        if obj.content_schema.as_deref() == Some("collection.v1") {
+            if let Ok(collection) = sbo_core::schema::parse_collection(&obj.payload) {
+                if let Some(lag_s) = collection.max_authoring_lag_s {
+                    return lag_s.saturating_mul(1000);
+                }
+            }
+        }
+    }
+    sbo_core::hlc::DEFAULT_MAX_AUTHORING_LAG_MS
 }
 
 /// Validate the `Prev` causal-link header (Content Spec §Causal Links), if
@@ -394,7 +417,7 @@ pub fn validate_message(
     // skip this gate. When the block carries no usable timestamp we cannot
     // evaluate the bound, so we only enforce the parse (fail-open on the bound,
     // matching the carry semantics elsewhere).
-    if let Err(reason) = check_hlc_bound(msg, l2) {
+    if let Err(reason) = check_hlc_bound(msg, state, l2) {
         return ValidationResult::Invalid {
             stage: ValidationStage::Ordering,
             reason,

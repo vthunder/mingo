@@ -713,6 +713,57 @@ fn lww_admits_only_higher_hlc() {
     assert!(lww_admits(&no_hlc, Some(&existing), &oh));
 }
 
+// A collection.v1 descriptor's max_authoring_lag_s (W) widens the HLC back-dating
+// bound: a write the default small W would reject is admitted under a generous W.
+#[test]
+fn collection_descriptor_widens_authoring_lag() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    let t_b_secs = 1_000_000i64;
+    let l2 = L2Context::for_block(Some(t_b_secs), &db);
+    let t_b_ms = t_b_secs * 1000;
+
+    // Back-dated 1 hour — beyond the default W (5 min) but within a 2h descriptor W.
+    let back_dated_ms = t_b_ms - 3600 * 1000;
+    let mut write = signed_post(&key, "/spaces/general/", "p1", None, None, None);
+    write.hlc = Some(format!("{back_dated_ms}.0"));
+    write.sign(&key);
+
+    // Without a descriptor → default W rejects the back-dated write.
+    assert!(matches!(
+        validate_message(&write, &db, dir.path(), &l2),
+        ValidationResult::Invalid { stage: ValidationStage::Ordering, .. }
+    ));
+
+    // Install a collection.v1 descriptor at the collection root with W = 2h.
+    let cfg = br#"{"durability":"batched","max_authoring_lag_s":7200}"#.to_vec();
+    db.put_object(&StoredObject {
+        path: Path::parse("/spaces/general/").unwrap(),
+        id: Id::new("_config").unwrap(),
+        creator: Id::new("sys").unwrap(),
+        owner: Id::new("sys").unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(&cfg),
+        payload: cfg,
+        policy_ref: None,
+        content_schema: Some("collection.v1".to_string()),
+        owner_ref: None,
+        block_number: 1,
+        object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
+    })
+    .unwrap();
+
+    // Now the same back-dated write is within bound → valid.
+    assert!(matches!(
+        validate_message(&write, &db, dir.path(), &l2),
+        ValidationResult::Valid { .. }
+    ));
+}
+
 // Prev causal-link format gate (Content Spec §Causal Links): a `Prev` header,
 // when present, must be a 64-char hex object_hash. Malformed → Ordering reject;
 // well-formed (or absent) → passes. Genesis mode isolates the Ordering stage.
