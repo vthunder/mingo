@@ -9,9 +9,11 @@
 //! - `profile.v1` - Profile data (JSON format)
 //! - `attestation.v1` - Signed claim by an issuer (Owner) about a subject
 //! - `community.v1` - Thin descriptor for a self-owned community
+//! - `post.v1` / `comment.v1` / `reaction.v1` - Content-layer objects
 
 mod attestation;
 mod community;
+mod content;
 mod identity;
 
 use crate::message::Message;
@@ -19,6 +21,10 @@ use thiserror::Error;
 
 pub use attestation::{parse_attestation, storage_path, validate_attestation, Attestation};
 pub use community::{parse_community, validate_community, Community, DEFAULT_MEMBERS_PREFIX, DEFAULT_SPACES_PREFIX};
+pub use content::{
+    parse_comment, parse_post, parse_reaction, validate_comment, validate_post, validate_reaction,
+    Comment, Post, Reaction,
+};
 pub use identity::{Identity, validate_identity, parse_identity};
 pub use crate::jwt::{Profile, IdentityClaims, DomainClaims};
 
@@ -160,6 +166,9 @@ pub fn validate_schema(msg: &Message) -> SchemaResult<()> {
         }
         "attestation.v1" => attestation::validate_attestation(msg),
         "community.v1" => community::validate_community(msg),
+        "post.v1" => content::validate_post(msg),
+        "comment.v1" => content::validate_comment(msg),
+        "reaction.v1" => content::validate_reaction(msg),
         _ => {
             // Unknown schemas pass through - enforcement can happen at higher layers
             tracing::debug!("Unknown schema '{}', skipping validation", schema);
@@ -261,6 +270,30 @@ mod tests {
         let payload_ok = br#"{"subject":"alice","type":"vouch","value":true,"issued_at":100,"issuer":"mods@community.org"}"#;
         let msg_ok = make_email_message(Some("attestation.v1"), payload_ok, Some("mods@community.org"));
         assert!(validate_schema(&msg_ok).is_ok());
+    }
+
+    #[test]
+    fn test_post_valid_and_missing_body() {
+        let ok = make_email_message(Some("post.v1"), br#"{"body":"hello"}"#, Some("alice@x.org"));
+        assert!(validate_schema(&ok).is_ok());
+        let empty = make_email_message(Some("post.v1"), br#"{"body":""}"#, Some("alice@x.org"));
+        assert!(matches!(validate_schema(&empty), Err(SchemaError::MissingField(f)) if f == "body"));
+    }
+
+    #[test]
+    fn test_comment_requires_parent() {
+        let no_parent = make_email_message(Some("comment.v1"), br#"{"body":"hi"}"#, Some("alice@x.org"));
+        assert!(matches!(validate_schema(&no_parent), Err(SchemaError::InvalidJson(_))));
+        let ok = make_email_message(Some("comment.v1"), br#"{"body":"hi","parent":"/p"}"#, Some("alice@x.org"));
+        assert!(validate_schema(&ok).is_ok());
+    }
+
+    #[test]
+    fn test_reaction_valid() {
+        let ok = make_email_message(Some("reaction.v1"), br#"{"target":"/p","kind":"upvote"}"#, Some("alice@x.org"));
+        assert!(validate_schema(&ok).is_ok());
+        let no_kind = make_email_message(Some("reaction.v1"), br#"{"target":"/p"}"#, Some("alice@x.org"));
+        assert!(matches!(validate_schema(&no_kind), Err(SchemaError::InvalidJson(_))));
     }
 
     #[test]
