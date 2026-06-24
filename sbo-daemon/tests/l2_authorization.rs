@@ -593,6 +593,142 @@ fn ownerless_write_authorized_via_signer_key_controller() {
     );
 }
 
+/// Store an in-force `attestation.v1` issued by `issuer` about `subject`.
+fn put_attestation(db: &StateDb, issuer: &str, subject: &str, type_: &str) {
+    use sbo_core::schema::storage_path;
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "subject": subject,
+        "type": type_,
+        "value": true,
+        "issued_at": 0
+    }))
+    .unwrap();
+    db.put_object(&StoredObject {
+        path: Path::parse(&storage_path(issuer, subject)).unwrap(),
+        id: Id::new(type_).unwrap(),
+        creator: Id::new(issuer).unwrap(),
+        owner: Id::new(issuer).unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(&payload),
+        payload,
+        policy_ref: None,
+        content_schema: Some("attestation.v1".to_string()),
+        owner_ref: Some(issuer.to_string()),
+        block_number: 1,
+        object_hash: [0u8; 32],
+    })
+    .unwrap();
+}
+
+// End-to-end open community (Community Spec §Worked Example): a `community.v1`
+// descriptor plus a root policy where the `member` role is an in-force
+// `membership` attestation (open / self-issued, no `by`), `post` is granted on
+// /spaces/**, and a `ban` by the issuer is excluded via `not_attested`. Shows
+// join → post (post⇒create), ban → denied, and stranger → denied, composing
+// Phase 3 (attestations), Phase 4 (attested roles/conditions) and Phase 5.0/5.1.
+#[test]
+fn open_community_membership_post_and_ban_end_to_end() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+
+    let issuer = SigningKey::generate(); // the community's authoritative issuer
+    let alice = SigningKey::generate(); // a joining member
+    let carol = SigningKey::generate(); // a member who gets banned
+    let stranger = SigningKey::generate(); // never joined
+    put_key_rooted_name(&db, "cooks", &issuer);
+    put_key_rooted_name(&db, "alice", &alice);
+    put_key_rooted_name(&db, "carol", &carol);
+    let issuer_ref = "cooks";
+
+    // The community.v1 descriptor at /sys/community, signed by the issuer (who
+    // controls the `sys` namespace here — genesis owner). It must validate.
+    let descriptor = serde_json::to_vec(&serde_json::json!({
+        "name": "Cooks",
+        "issuer": issuer_ref,
+        "policy": "/sys/policies/root",
+        "open": true
+    }))
+    .unwrap();
+    let mut desc_msg = signed_post(&issuer, "/sys/", "community", None, None, None);
+    desc_msg.content_schema = Some("community.v1".to_string());
+    desc_msg.payload = Some(descriptor.clone());
+    desc_msg.content_hash = Some(ContentHash::sha256(&descriptor));
+    desc_msg.sign(&issuer);
+    // Validated in genesis mode (before the root policy exists), as it is when a
+    // community is bootstrapped: schema + L2 attribution pass.
+    assert!(
+        matches!(
+            validate_message(&desc_msg, &db, dir.path(), &ctx(&db)),
+            ValidationResult::Valid { .. }
+        ),
+        "community descriptor must pass schema + attribution at genesis"
+    );
+
+    // Open-community root policy: members (anyone with an in-force membership)
+    // may post in spaces, but banned subjects are excluded.
+    let policy: sbo_core::policy::Policy = serde_json::from_value(serde_json::json!({
+        "roles": { "member": [{"attested": {"type": "membership"}}] },
+        "grants": [{"to": {"role": "member"}, "can": ["post"], "on": "/spaces/**"}],
+        "restrictions": [
+            {"on": "/spaces/**", "require": {"not_attested": {"type": "ban", "by": issuer_ref}}}
+        ]
+    }))
+    .unwrap();
+    db.put_policy(&Path::parse("/sys/policies/").unwrap(), &policy).unwrap();
+    db.put_object(&StoredObject {
+        path: Path::parse("/sys/policies/").unwrap(),
+        id: Id::new("root").unwrap(),
+        creator: Id::new("sys").unwrap(),
+        owner: Id::new("sys").unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(b"{}"),
+        payload: b"{}".to_vec(),
+        policy_ref: None,
+        content_schema: Some("policy.v2".to_string()),
+        owner_ref: None,
+        block_number: 1,
+        object_hash: [0u8; 32],
+    })
+    .unwrap();
+
+    // Join: alice self-issues membership in her own namespace (open mode).
+    put_attestation(&db, "alice", "alice", "membership");
+    // She may now post in spaces (post grant ⇒ create).
+    let post = signed_post(&alice, "/spaces/general/", "p1", None, None, None);
+    assert!(
+        matches!(validate_message(&post, &db, dir.path(), &ctx(&db)), ValidationResult::Valid { .. }),
+        "joined member should be allowed to post (post⇒create)"
+    );
+
+    // A stranger who never joined has no membership → no grant → denied.
+    let denied = signed_post(&stranger, "/spaces/general/", "p2", None, None, None);
+    assert!(
+        matches!(
+            validate_message(&denied, &db, dir.path(), &ctx(&db)),
+            ValidationResult::Invalid { stage: ValidationStage::Policy, .. }
+        ),
+        "stranger without membership should be denied"
+    );
+
+    // Carol joins, then the community bans her. The ban (in the issuer's
+    // namespace) overrides her membership via the not_attested restriction.
+    put_attestation(&db, "carol", "carol", "membership");
+    let carol_post = signed_post(&carol, "/spaces/general/", "p3", None, None, None);
+    assert!(
+        matches!(validate_message(&carol_post, &db, dir.path(), &ctx(&db)), ValidationResult::Valid { .. }),
+        "carol should be able to post before the ban"
+    );
+    put_attestation(&db, issuer_ref, "carol", "ban");
+    let carol_banned = signed_post(&carol, "/spaces/general/", "p4", None, None, None);
+    assert!(
+        matches!(
+            validate_message(&carol_banned, &db, dir.path(), &ctx(&db)),
+            ValidationResult::Invalid { stage: ValidationStage::Policy, .. }
+        ),
+        "banned member should be denied by the not_attested restriction"
+    );
+}
+
 #[test]
 fn creator_email_fallback_without_attribution_is_filtered() {
     let dir = tempdir().unwrap();
