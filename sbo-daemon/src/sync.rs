@@ -424,8 +424,8 @@ pub struct SyncEngine {
     /// chain), just without light-client sampling — a dev/demo fallback. Run
     /// avail-light for production-grade availability verification.
     rpc_only: bool,
-    /// StateDb instances per repo URI
-    state_dbs: HashMap<String, StateDb>,
+    /// StateDb instances per repo URI (shared process-wide handles)
+    state_dbs: HashMap<String, std::sync::Arc<StateDb>>,
 }
 
 impl SyncEngine {
@@ -437,14 +437,13 @@ impl SyncEngine {
     /// State is stored in ~/.sbo/state/<sanitized_uri>/ for human-readable paths
     fn get_state_db(&mut self, uri: &str) -> crate::Result<&StateDb> {
         if !self.state_dbs.contains_key(uri) {
+            // Use the shared process-wide handle so the sync task and the HTTP/
+            // IPC read handlers don't open the same RocksDB path twice.
             let state_path = crate::state_db_path_for_uri(uri);
-            std::fs::create_dir_all(&state_path)?;
-
-            let state_db = StateDb::open(&state_path)
-                .map_err(|e| crate::DaemonError::State(format!("Failed to open state DB: {}", e)))?;
+            let state_db = crate::shared_state_db(&state_path)?;
             self.state_dbs.insert(uri.to_string(), state_db);
         }
-        Ok(self.state_dbs.get(uri).unwrap())
+        Ok(self.state_dbs.get(uri).unwrap().as_ref())
     }
 
     /// Process a single block for all repos
@@ -942,7 +941,7 @@ impl SyncEngine {
         if let Some(state_db) = self.state_dbs.get(&uri) {
             // Get the creator ID using the same resolution as message_to_stored_object
             // This ensures witness path segments match what gets stored in the database
-            let creator = resolve_creator(msg, Some(state_db), l2);
+            let creator = resolve_creator(msg, Some(state_db.as_ref()), l2);
 
             // Build path segments for witness tracking
             let path_segments = StateDb::object_to_segments(&msg.path, &creator, &msg.id);
@@ -1001,7 +1000,7 @@ impl SyncEngine {
 
         // Update state DB (keyed by URI)
         let uri = repo.uri.to_string();
-        let state_db = self.state_dbs.get(&uri);
+        let state_db = self.state_dbs.get(&uri).map(|a| a.as_ref());
         if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_db, object_hash, l2) {
             if let Some(db) = state_db {
                 if let Err(e) = db.put_object(&stored_obj) {

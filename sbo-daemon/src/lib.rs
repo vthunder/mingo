@@ -93,3 +93,33 @@ pub fn repo_dir_for_uri(uri: &str) -> std::path::PathBuf {
 pub fn state_db_path_for_uri(uri: &str) -> std::path::PathBuf {
     repo_dir_for_uri(uri).join("state")
 }
+
+/// Process-wide cache of open `StateDb` handles, keyed by state-dir path.
+///
+/// RocksDB takes an exclusive per-path lock, so a directory must be opened
+/// exactly once per process. Both the sync task (writer) and the HTTP/IPC read
+/// handlers go through this so they share one handle — no "lock held" races, and
+/// reads see the writer's latest state immediately (RocksDB handles are
+/// thread-safe for concurrent access).
+static STATE_DB_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<sbo_core::state::StateDb>>>,
+> = std::sync::OnceLock::new();
+
+/// Open (or reuse) the shared `StateDb` for a state-dir path.
+pub fn shared_state_db(
+    state_dir: &std::path::Path,
+) -> crate::Result<std::sync::Arc<sbo_core::state::StateDb>> {
+    let key = state_dir.to_string_lossy().to_string();
+    let cache = STATE_DB_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut map = cache.lock().unwrap();
+    if let Some(db) = map.get(&key) {
+        return Ok(db.clone());
+    }
+    std::fs::create_dir_all(state_dir).ok();
+    let db = std::sync::Arc::new(
+        sbo_core::state::StateDb::open(state_dir)
+            .map_err(|e| crate::DaemonError::Repo(format!("Failed to open state db: {}", e)))?,
+    );
+    map.insert(key, db.clone());
+    Ok(db)
+}

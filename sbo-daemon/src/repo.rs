@@ -231,11 +231,9 @@ impl Repo {
     }
 
     /// Get the state database for this repo
-    pub fn state_db(&self) -> crate::Result<sbo_core::state::StateDb> {
-        let repo_dir = crate::repo_dir_for_uri(&self.uri.to_string());
-        let state_dir = repo_dir.join("state");
-        sbo_core::state::StateDb::open(&state_dir)
-            .map_err(|e| crate::DaemonError::Repo(format!("Failed to open state db: {}", e)))
+    pub fn state_db(&self) -> crate::Result<std::sync::Arc<sbo_core::state::StateDb>> {
+        let state_dir = crate::repo_dir_for_uri(&self.uri.to_string()).join("state");
+        crate::shared_state_db(&state_dir)
     }
 }
 
