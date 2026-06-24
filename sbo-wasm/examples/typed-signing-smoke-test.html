@@ -141,7 +141,9 @@
       reset();
       try {
         const email = loggedInEmail;
-        const payload = sbo.payloadPost("hello from the typed-signing smoke test", undefined, Date.now());
+        // NOTE: created_at is an i64 — wasm-bindgen marshals i64 as BigInt, so
+        // pass BigInt(...) (a plain Number throws "Cannot convert N to a BigInt").
+        const payload = sbo.payloadPost("hello from the typed-signing smoke test", undefined, BigInt(Date.now()));
         const hlc = `${Date.now()}.0`;
 
         // Caller-built spec (sbo-wasm shape). public_key/auth_cert are placeholders;
