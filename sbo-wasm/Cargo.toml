@@ -18,6 +18,14 @@ sha2.workspace = true
 rand.workspace = true
 thiserror.workspace = true
 hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+# Browser bindings (Phase 7.4). wasm-bindgen + serde-wasm-bindgen compile on
+# native too, so the pure kit stays unit-testable; JS glue is emitted only for
+# wasm32.
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
 
 # On wasm32, rand's OsRng (used by SigningKey::generate) needs getrandom's js
 # backend. Native targets pull getrandom transitively without this.

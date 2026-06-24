@@ -24,6 +24,12 @@ pub mod message;
 #[path = "../../sbo-core/src/wire/mod.rs"]
 pub mod wire;
 
+/// The Phase 7.4 serialization kit (pure Rust; natively unit-tested).
+pub mod kit;
+
+/// The Phase 7.4 `wasm_bindgen` layer over [`kit`] (JS-facing exports).
+pub mod bindings;
+
 #[cfg(test)]
 mod spike_tests {
     use crate::crypto::{ContentHash, SigningKey};
