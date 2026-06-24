@@ -121,10 +121,15 @@
         if (e.data && e.data.assertion !== undefined) {
           window.removeEventListener("message", onMsg);
           loggedInEmail = email;
+          // The dialog reports the grant decision explicitly (no guessing).
+          const granted = e.data.sbo_sign_granted === true;
+          const grantMsg = granted
+            ? `<span class="ok">SBO signing GRANTED</span>`
+            : `<span class="err">SBO signing NOT granted</span> — re-run and click Allow`;
           document.getElementById("loginStatus").innerHTML =
-            `<span class="ok">signed in as ${email}</span> (assertion received; consent granted if you clicked Allow)`;
-          document.getElementById("sign").disabled = false;
-          document.getElementById("signStatus").textContent = "ready";
+            `<span class="ok">signed in as ${email}</span> · ${grantMsg}`;
+          document.getElementById("sign").disabled = !granted;
+          document.getElementById("signStatus").textContent = granted ? "ready" : "grant required";
           try { popup && popup.close(); } catch (_) {}
         }
       };
