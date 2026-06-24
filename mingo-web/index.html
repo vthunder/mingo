@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<!-- Mingo — the SBO reference client (Phase 7.6).
+     Reads confirmed state from the sbo-daemon /v1 HTTP API; writes are built
+     with sbo-wasm and signed by the browserid agent (typed signing popup). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mingo</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" data-route="#/">Mingo</div>
+    <div class="spacer"></div>
+    <div id="auth-slot" class="auth-slot"><!-- sign in / who am i --></div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="side-section">
+        <div class="side-h">Communities</div>
+        <ul id="community-list" class="community-list"><li class="muted">loading…</li></ul>
+      </div>
+      <div class="side-section">
+        <div class="side-h">You</div>
+        <ul class="community-list">
+          <li><a id="passport-link" href="#/passport">🎖 Passport</a></li>
+        </ul>
+      </div>
+      <div class="side-section">
+        <div class="side-h">Daemon</div>
+        <div id="state-root" class="muted tiny">—</div>
+      </div>
+    </aside>
+
+    <main id="main" class="main"><!-- routed view --></main>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
