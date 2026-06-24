@@ -8,7 +8,10 @@
 const qs = new URLSearchParams(location.search);
 const CONFIG = Object.assign(
   {
-    daemon: "http://127.0.0.1:7890",
+    // Default the daemon to the page's own host on :7890 (the daemon usually runs
+    // alongside the served client), so remote loads work without ?daemon=. The
+    // daemon must bind a reachable address (SBO_HTTP_BIND) for this to resolve.
+    daemon: `${location.protocol}//${location.hostname}:7890`,
     broker: "https://browserid.me",
     domain: "mingo.place",
     space: "general",
@@ -116,9 +119,13 @@ const session = {
 };
 
 function signIn() {
-  // T1 federated flow: the dialog authenticates an external email (passwordless),
-  // provisions a <handle>@mingo.place identity, and returns it.
-  const url = `${CONFIG.broker}/dialog/dialog.html?origin=${encodeURIComponent(location.origin)}&sbo_sign=1&flow=mingo`;
+  // Mingo owns the handle choice (its product decision); it passes the handle to
+  // the broker, which authenticates the external email (passwordless) and
+  // provisions <handle>@mingo.place. (A nicer in-page handle step can replace
+  // this prompt later.)
+  const handle = (prompt("Choose your Mingo handle — your public @mingo.place identity:") || "").trim();
+  if (!handle) return;
+  const url = `${CONFIG.broker}/dialog/dialog.html?origin=${encodeURIComponent(location.origin)}&sbo_sign=1&flow=mingo&handle=${encodeURIComponent(handle)}`;
   const popup = window.open(url, "mingo_login", "width=440,height=600");
   const onMsg = (e) => {
     if (e.origin !== CONFIG.broker || !e.data || e.data.assertion === undefined) return;

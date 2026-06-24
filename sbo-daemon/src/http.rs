@@ -580,14 +580,17 @@ fn extract_app_name(origin: &str) -> String {
         .to_string()
 }
 
-/// Start the HTTP server
+/// Start the HTTP server. Binds `127.0.0.1:<port>` by default; override the full
+/// bind address with `SBO_HTTP_BIND` (e.g. `0.0.0.0:7890` to reach it over a
+/// LAN/tailnet — CORS is already permissive, so only do this on a trusted
+/// network).
 pub async fn run_server<S: SignRequestStore + RepoApi>(state: HttpState<S>, port: u16) -> anyhow::Result<()> {
     let router = create_router(state);
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let bind = std::env::var("SBO_HTTP_BIND").unwrap_or_else(|_| format!("127.0.0.1:{port}"));
 
-    tracing::info!("HTTP server listening on http://{}", addr);
+    tracing::info!("HTTP server listening on http://{}", bind);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
     axum::serve(listener, router).await?;
 
     Ok(())
