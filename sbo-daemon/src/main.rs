@@ -316,14 +316,13 @@ impl RepoApi for DaemonState {
         let db = repo
             .state_db()
             .map_err(|e| ApiError::internal(format!("Failed to open state db: {e}")))?;
-        let block = db
-            .get_last_block()
+        // State roots are recorded only at blocks where state changed, so report
+        // the latest recorded (block, root) — not the latest synced block, which
+        // may have had no writes (→ no root stored).
+        let (block, root) = db
+            .get_latest_state_root()
             .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?
-            .unwrap_or(repo.head);
-        let root = db
-            .get_state_root_at_block(block)
-            .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?
-            .unwrap_or([0u8; 32]);
+            .unwrap_or((repo.head, [0u8; 32]));
         Ok(StateRootView {
             block,
             state_root: hex::encode(root),
