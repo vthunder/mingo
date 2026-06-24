@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<!--
+  Typed signing smoke test (SBO Phase 7.4) — prove the in-browser loop end to end
+  against the LIVE broker at https://id.sandmill.org:
+
+    login (dialog, sbo_sign=1) -> consent (Allow) -> signSboEnvelope (silent,
+    in the communication iframe) -> assembleWire (sbo-wasm) -> verify the
+    detached signature locally with WebCrypto.
+
+  No daemon/repo needed: we only verify that the agent produced a valid SBO
+  signature over the exact canonical bytes, bound to the logged-in identity.
+
+  HOW TO RUN
+    1. You need a broker account on id.sandmill.org (email + password). The
+       owner can create one; the dialog also offers account creation.
+    2. Serve this file from a stable origin (NOT file://, which has a null
+       origin). E.g. from this directory:
+           python3 -m http.server 8000
+       then open  http://localhost:8000/typed-signing-smoke-test.html
+    3. Enter your broker email, click "1. Sign in + grant", complete login and
+       click Allow on the consent screen. Then click "2. Sign test envelope".
+
+  Everything (jschannel + sbo-wasm) loads cross-origin from the broker, which
+  serves them with permissive CORS.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SBO typed signing — smoke test</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 20px; }
+    input { padding: 6px 8px; font-size: 14px; width: 280px; }
+    button { padding: 8px 14px; font-size: 14px; margin: 8px 8px 8px 0; cursor: pointer; }
+    pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    .ok { color: #059669; font-weight: 600; }
+    .err { color: #dc2626; font-weight: 600; }
+    .muted { color: #64748b; }
+    fieldset { border: 1px solid #e2e8f0; border-radius: 8px; margin: 16px 0; }
+  </style>
+</head>
+<body>
+  <h1>SBO typed signing — smoke test</h1>
+  <p class="muted">Broker: <code id="broker"></code> · this page's origin:
+     <code id="rporigin"></code></p>
+
+  <fieldset>
+    <legend>1. Identity</legend>
+    <p>
+      <label>Broker email: <input id="email" type="email" placeholder="you@sandmill.org"></label>
+    </p>
+    <button id="login">1. Sign in + grant</button>
+    <span id="loginStatus" class="muted">not signed in</span>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Sign a test envelope</legend>
+    <button id="sign" disabled>2. Sign test envelope</button>
+    <span id="signStatus" class="muted">sign in first</span>
+  </fieldset>
+
+  <h3>Result</h3>
+  <pre id="out">(waiting)</pre>
+
+  <!-- jschannel from the broker (defines window.Channel) -->
+  <script src="https://id.sandmill.org/common/js/lib/jschannel.js"></script>
+  <script type="module">
+    const BROKER = "https://id.sandmill.org";
+    const RP_ORIGIN = location.origin;
+    document.getElementById("broker").textContent = BROKER;
+    document.getElementById("rporigin").textContent = RP_ORIGIN;
+
+    const out = document.getElementById("out");
+    const log = (msg, cls) => {
+      out.innerHTML += (cls ? `<span class="${cls}">${msg}</span>` : msg) + "\n";
+    };
+    const reset = () => { out.innerHTML = ""; };
+
+    // --- load sbo-wasm (cross-origin ESM from the broker) ---------------------
+    const sbo = await import(`${BROKER}/common/js/sbo-wasm/sbo_wasm.js`);
+    await sbo.default(); // init() fetches the .wasm
+
+    // --- a hidden communication iframe + a channel to it (scope mozid_ni) -----
+    const iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    iframe.src = `${BROKER}/communication_iframe`;
+    document.body.appendChild(iframe);
+    await new Promise((res) => (iframe.onload = res));
+
+    const chan = Channel.build({
+      window: iframe.contentWindow,
+      origin: BROKER,
+      scope: "mozid_ni"
+    });
+
+    function callSign(params) {
+      return new Promise((resolve, reject) => {
+        chan.call({
+          method: "signSboEnvelope",
+          params,
+          success: resolve,
+          error: (err, message) => reject(new Error(`${err}: ${message}`))
+        });
+      });
+    }
+
+    // --- hex/bytes helpers for local verification ----------------------------
+    const hexToBytes = (h) => Uint8Array.from(h.match(/../g).map((b) => parseInt(b, 16)));
+
+    // --- step 1: login via the dialog popup with the SBO capability ----------
+    let loggedInEmail = null;
+    document.getElementById("login").addEventListener("click", () => {
+      const email = document.getElementById("email").value.trim();
+      if (!email) { alert("enter your broker email first"); return; }
+
+      const url = `${BROKER}/dialog/dialog.html?origin=${encodeURIComponent(RP_ORIGIN)}&sbo_sign=1`;
+      const popup = window.open(url, "sbo_login", "width=420,height=560");
+
+      const onMsg = (e) => {
+        if (e.origin !== BROKER) return;
+        if (e.data && e.data.assertion !== undefined) {
+          window.removeEventListener("message", onMsg);
+          loggedInEmail = email;
+          document.getElementById("loginStatus").innerHTML =
+            `<span class="ok">signed in as ${email}</span> (assertion received; consent granted if you clicked Allow)`;
+          document.getElementById("sign").disabled = false;
+          document.getElementById("signStatus").textContent = "ready";
+          try { popup && popup.close(); } catch (_) {}
+        }
+      };
+      window.addEventListener("message", onMsg);
+    });
+
+    // --- step 2: build a test envelope, have the agent sign it, verify -------
+    document.getElementById("sign").addEventListener("click", async () => {
+      reset();
+      try {
+        const email = loggedInEmail;
+        const payload = sbo.payloadPost("hello from the typed-signing smoke test", undefined, Date.now());
+        const hlc = `${Date.now()}.0`;
+
+        // Caller-built spec (sbo-wasm shape). public_key/auth_cert are placeholders;
+        // the agent OVERRIDES them with its own and binds Owner == email.
+        const spec = {
+          action: "",
+          path: "/communities/cooks/spaces/general/",
+          id: "smoke-" + Date.now(),
+          public_key: "ed25519:" + "00".repeat(32),
+          content_schema: "post.v1",
+          owner: email,
+          payload: Array.from(payload),
+          hlc
+        };
+
+        log("→ requesting signature from the agent (communication iframe)…", "muted");
+        const res = await callSign({ email, envelope: spec });
+        log(`✓ agent returned signature (${res.signature.length / 2} bytes), cert, pubkey`, "ok");
+        log(`  pubkey: ${res.pubkey}`);
+        log(`  cert:   ${String(res.cert).slice(0, 48)}…`);
+
+        // Reconstruct the bound spec exactly as the agent signed it.
+        const bound = { ...spec, public_key: res.pubkey, auth_cert: res.cert };
+        const signingBytes = sbo.signingBytes(bound);
+        const wire = sbo.assembleWire(bound, res.signature);
+
+        // Local verification: the detached signature must verify over the exact
+        // canonical bytes, under the returned public key.
+        const rawPub = hexToBytes(res.pubkey.replace(/^ed25519:/, ""));
+        const key = await crypto.subtle.importKey("raw", rawPub, { name: "Ed25519" }, false, ["verify"]);
+        const ok = await crypto.subtle.verify({ name: "Ed25519" }, key, hexToBytes(res.signature), signingBytes);
+
+        log(ok ? "✓ signature VERIFIES over canonical bytes — PASS" : "✗ signature does NOT verify — FAIL",
+            ok ? "ok" : "err");
+        document.getElementById("signStatus").innerHTML = ok
+          ? '<span class="ok">PASS</span>' : '<span class="err">FAIL</span>';
+
+        log("\n--- assembled SBO wire ---");
+        log(new TextDecoder().decode(wire));
+      } catch (e) {
+        log("✗ " + (e && e.message || e), "err");
+        document.getElementById("signStatus").innerHTML = '<span class="err">error</span>';
+        if (/not_granted/.test(String(e))) {
+          log("hint: re-run step 1 and click Allow on the consent screen.", "muted");
+        }
+        if (/no_identity/.test(String(e))) {
+          log("hint: the email must match the account you signed in as.", "muted");
+        }
+      }
+    });
+
+    log("ready — enter your broker email and click step 1.", "muted");
+  </script>
+</body>
+</html>
