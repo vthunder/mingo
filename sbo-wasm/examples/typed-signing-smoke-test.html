@@ -10,6 +10,13 @@
   No daemon/repo needed: we only verify that the agent produced a valid SBO
   signature over the exact canonical bytes, bound to the logged-in identity.
 
+  ⚠️ STORAGE PARTITIONING: run this SAME-ORIGIN with the broker, or signing fails
+  with "not_granted". When this page is a cross-origin top-level site, the
+  embedded communication iframe gets a PARTITIONED storage bucket and can't see
+  the keypair/grant the first-party login popup stored. Use the broker-hosted
+  copy: https://id.sandmill.org/dialog/sbo-smoke-test.html
+  (Cross-origin RPs need a popup signer instead — browserid-ng#2.)
+
   HOW TO RUN
     1. You need a broker account on id.sandmill.org (email + password). The
        owner can create one; the dialog also offers account creation.
