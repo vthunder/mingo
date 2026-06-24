@@ -150,6 +150,198 @@ impl SignRequestStore for DaemonState {
     }
 }
 
+// ===========================================================================
+// Phase 7.3 — shared read helpers + the browser RepoApi implementation
+// ===========================================================================
+
+use sbo_core::state::{StateDb, StoredObject};
+use sbo_daemon::http::{
+    ApiError, ListSelector, ObjectView, RepoApi, StateRootView, SubmitResultView,
+};
+use sbo_daemon::repo::Repo;
+
+/// Resolve which followed repo a request targets. `sel` may be a display/canonical
+/// URI or the local path; `None` selects the sole repo (error if several).
+fn resolve_repo<'a>(repos: &'a RepoManager, sel: Option<&str>) -> Result<&'a Repo, ApiError> {
+    match sel {
+        Some(s) => repos
+            .list()
+            .find(|r| {
+                r.display_uri == s
+                    || r.uri.to_string() == s
+                    || r.uri.to_canonical_string() == s
+                    || r.path.to_string_lossy() == s
+            })
+            .ok_or_else(|| ApiError::not_found(format!("no followed repo matching {s}"))),
+        None => {
+            let mut it = repos.list();
+            let first = it
+                .next()
+                .ok_or_else(|| ApiError::not_found("no repos followed"))?;
+            if it.next().is_some() {
+                return Err(ApiError::bad_request(
+                    "multiple repos followed; specify ?repo=",
+                ));
+            }
+            Ok(first)
+        }
+    }
+}
+
+/// Render a stored object into the browser view, attaching `sboq` if supplied.
+fn build_object_view(obj: &StoredObject, sboq: Option<String>) -> ObjectView {
+    let payload_text = String::from_utf8_lossy(&obj.payload).to_string();
+    let value = if obj.content_type == "application/json" {
+        serde_json::from_slice::<serde_json::Value>(&obj.payload).ok()
+    } else {
+        None
+    };
+    ObjectView {
+        path: obj.path.to_string(),
+        id: obj.id.as_str().to_string(),
+        creator: obj.creator.as_str().to_string(),
+        owner_ref: obj.owner_ref.clone(),
+        content_type: obj.content_type.clone(),
+        content_schema: obj.content_schema.clone(),
+        block: obj.block_number,
+        hlc: obj.hlc.clone(),
+        prev: obj.prev.clone(),
+        object_hash: hex::encode(obj.object_hash),
+        value,
+        payload_text,
+        sboq,
+    }
+}
+
+/// Build the SBOQ proof text for an object (creator auto-detected), mirroring
+/// the IPC `ObjectProof` path. Returns `None` if the object has no trie proof.
+fn generate_sboq_text(
+    repo: &Repo,
+    db: &StateDb,
+    path: &sbo_core::message::Path,
+    id: &sbo_core::message::Id,
+    path_str: &str,
+    id_str: &str,
+) -> Result<Option<String>, String> {
+    match db.generate_trie_proof_auto(path, id) {
+        Ok(Some((creator, trie_proof))) => {
+            let object_file_path = repo.path.join(path_str.trim_start_matches('/')).join(id_str);
+            let object_bytes = std::fs::read(&object_file_path).ok();
+            let sboq = sbo_core::proof::SboqMessage {
+                version: "0.2".to_string(),
+                path: path_str.to_string(),
+                id: id_str.to_string(),
+                creator: creator.to_string(),
+                block: repo.head,
+                state_root: trie_proof.state_root,
+                object_hash: trie_proof.object_hash,
+                trie_proof,
+                object: object_bytes,
+            };
+            Ok(Some(
+                String::from_utf8_lossy(&sbo_core::proof::serialize_sboq(&sboq)).to_string(),
+            ))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("Failed to generate proof: {e}")),
+    }
+}
+
+/// Read one object's view from a repo's confirmed state (shared by IPC + HTTP).
+fn read_object_view(
+    repo: &Repo,
+    path_str: &str,
+    id_str: &str,
+    with_proof: bool,
+) -> Result<ObjectView, ApiError> {
+    let db = repo
+        .state_db()
+        .map_err(|e| ApiError::internal(format!("Failed to open state db: {e}")))?;
+    let path = sbo_core::message::Path::parse(path_str)
+        .map_err(|e| ApiError::bad_request(format!("Invalid path: {e}")))?;
+    let id = sbo_core::message::Id::new(id_str)
+        .map_err(|e| ApiError::bad_request(format!("Invalid id: {e}")))?;
+
+    let obj = db
+        .get_first_object_at_path_id(&path, &id)
+        .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("object not found: {path_str}{id_str}")))?;
+
+    let sboq = if with_proof {
+        generate_sboq_text(repo, &db, &path, &id, path_str, id_str)
+            .map_err(ApiError::internal)?
+    } else {
+        None
+    };
+    Ok(build_object_view(&obj, sboq))
+}
+
+/// List object views from a repo's confirmed state (shared by IPC + HTTP).
+fn read_object_list(repo: &Repo, selector: &ListSelector) -> Result<Vec<ObjectView>, ApiError> {
+    let db = repo
+        .state_db()
+        .map_err(|e| ApiError::internal(format!("Failed to open state db: {e}")))?;
+    let objs = match selector {
+        ListSelector::Prefix(p) => db.list_objects_by_path_prefix(p),
+        ListSelector::Schema(s) => db.list_objects_by_schema(s),
+    }
+    .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?;
+    Ok(objs.iter().map(|o| build_object_view(o, None)).collect())
+}
+
+#[async_trait::async_trait]
+impl RepoApi for DaemonState {
+    fn get_object(
+        &self,
+        repo: Option<&str>,
+        path: &str,
+        id: &str,
+        with_proof: bool,
+    ) -> Result<ObjectView, ApiError> {
+        let repo = resolve_repo(&self.repos, repo)?;
+        read_object_view(repo, path, id, with_proof)
+    }
+
+    fn list_objects(
+        &self,
+        repo: Option<&str>,
+        selector: &ListSelector,
+    ) -> Result<Vec<ObjectView>, ApiError> {
+        let repo = resolve_repo(&self.repos, repo)?;
+        read_object_list(repo, selector)
+    }
+
+    fn state_root(&self, repo: Option<&str>) -> Result<StateRootView, ApiError> {
+        let repo = resolve_repo(&self.repos, repo)?;
+        let db = repo
+            .state_db()
+            .map_err(|e| ApiError::internal(format!("Failed to open state db: {e}")))?;
+        let block = db
+            .get_last_block()
+            .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?
+            .unwrap_or(repo.head);
+        let root = db
+            .get_state_root_at_block(block)
+            .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?
+            .unwrap_or([0u8; 32]);
+        Ok(StateRootView {
+            block,
+            state_root: hex::encode(root),
+        })
+    }
+
+    async fn submit(&self, data: Vec<u8>) -> Result<SubmitResultView, ApiError> {
+        let result = self
+            .turbo
+            .submit_raw(&data)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(SubmitResultView {
+            submission_id: result.submission_id,
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize logging
@@ -695,9 +887,36 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
             }
         }
 
-        Request::GetObject { repo_path: _, path, id, with_proof: _ } => {
-            // TODO: Implement GetObject with proof support
-            Response::error(format!("GetObject not yet implemented for {}:{}", path, id))
+        Request::GetObject { repo_path, path, id, with_proof } => {
+            let state = state.read().await;
+            let repo = match state.repos.get_by_path(&repo_path) {
+                Some(r) => r,
+                None => return Response::error(format!("No repo at path: {}", repo_path.display())),
+            };
+            match read_object_view(repo, &path, &id, with_proof) {
+                Ok(view) => Response::ok(view),
+                Err(e) => Response::error(e.message),
+            }
+        }
+
+        Request::ListObjects { repo_path, prefix, schema } => {
+            let state = state.read().await;
+            let repo = match state.repos.get_by_path(&repo_path) {
+                Some(r) => r,
+                None => return Response::error(format!("No repo at path: {}", repo_path.display())),
+            };
+            let selector = match (prefix, schema) {
+                (Some(p), None) => ListSelector::Prefix(p),
+                (None, Some(s)) => ListSelector::Schema(s),
+                (Some(_), Some(_)) => {
+                    return Response::error("provide exactly one of `prefix` or `schema`")
+                }
+                (None, None) => return Response::error("`prefix` or `schema` is required"),
+            };
+            match read_object_list(repo, &selector) {
+                Ok(views) => Response::ok(serde_json::json!({ "objects": views })),
+                Err(e) => Response::error(e.message),
+            }
         }
 
         Request::ObjectProof { repo_path, path, id } => {

@@ -6085,6 +6085,7 @@ name = "sbo-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "avail-rust-client",
  "axum",
  "clap",
@@ -6092,6 +6093,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "http-body-util",
  "nix",
  "notify",
  "parity-scale-codec",
@@ -6109,6 +6111,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "toml",
+ "tower",
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber 0.3.22",

@@ -77,6 +77,9 @@ pub enum Request {
     Submit { repo_path: PathBuf, sbo_path: String, id: String, data: Vec<u8> },
     /// Get an object with optional proof
     GetObject { repo_path: PathBuf, path: String, id: String, with_proof: bool },
+    /// List objects in a repo's confirmed state by path prefix or content schema
+    /// (exactly one of `prefix`/`schema`).
+    ListObjects { repo_path: PathBuf, prefix: Option<String>, schema: Option<String> },
     /// Get a merkle proof for an object (SBOQ format)
     /// Creator is auto-detected from the stored object
     ObjectProof { repo_path: PathBuf, path: String, id: String },
