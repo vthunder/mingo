@@ -1,0 +1,25 @@
+[package]
+name = "sbo-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Phase 7.0 spike: prove the SBO wire/message/crypto subset compiles to wasm32
+# and produces canonical signing bytes byte-identical to native. The modules are
+# `#[path]`-included from sbo-core (identical source → parity by construction),
+# depending only on the lean, wasm-clean subset (no rocksdb/reqwest/dnssec).
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ed25519-dalek.workspace = true
+sha2.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+
+# On wasm32, rand's OsRng (used by SigningKey::generate) needs getrandom's js
+# backend. Native targets pull getrandom transitively without this.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

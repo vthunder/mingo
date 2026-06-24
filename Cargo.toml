@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["sbo-core", "sbo-avail", "sbo-daemon", "sbo-cli", "sbo-types", "sbo-crypto", "sbo-capture", "sbo-zkvm", "sbo-zkvm/methods", "sbo-rpc"]
+members = ["sbo-core", "sbo-avail", "sbo-daemon", "sbo-cli", "sbo-types", "sbo-crypto", "sbo-capture", "sbo-wasm", "sbo-zkvm", "sbo-zkvm/methods", "sbo-rpc"]
 
 [workspace.package]
 version = "0.1.0"
