@@ -770,15 +770,21 @@ pub fn community(
     )
 }
 
-/// Build an **open-membership** `policy.v2` for a community, stored at
-/// `/communities/<community_id>/policies/` with `ID: root`.
+/// Build an **open-membership** `policy.v2` for a community, stored at the
+/// community **root** `/communities/<community_id>/` with `ID: root`.
+///
+/// It lives at the community root (not a `policies/` sibling) so the daemon's
+/// ancestor-walk `resolve_policy` finds it for every write under the community —
+/// `spaces/**`, `members/**`, etc. — without any engine change. The descriptor
+/// (`ID: community`) and this policy (`ID: root`) share the prefix but are
+/// distinct `(path, id)` objects; policy indexing keys on the prefix alone.
 ///
 /// The `member` role is anyone holding an in-force `membership` attestation from
 /// `issuer`; members may post anywhere under the community's `spaces/**`; a `ban`
 /// by `issuer` excludes them via `not_attested` (Policy Spec §Attestation-Defined
 /// Roles, mirrored by the worked example in `l2_authorization.rs`).
 pub fn community_policy(signing_key: &SigningKey, community_id: &str, issuer: &str) -> Vec<u8> {
-    let path = format!("/communities/{community_id}/policies/");
+    let path = format!("/communities/{community_id}/");
     let spaces = format!("/communities/{community_id}/spaces/**");
     let payload = serde_json::to_vec(&serde_json::json!({
         "roles": { "member": [{ "attested": { "type": "membership", "by": issuer } }] },
@@ -985,14 +991,13 @@ pub struct MingoCommunity<'a> {
 ///    and a `collection.v1` for `spaces/general/_config`
 /// 5. the **hub root policy** (`/sys/policies/root`) — written last
 ///
-/// The hub root policy governs the whole repo via the daemon's ancestor-walk
-/// policy resolution: name claims, each user's own namespace (incl. self-issued
-/// membership), and posting in any `/communities/*/spaces/**` by in-force
-/// members (excluding bans). The per-community `policies/root` objects mirror
-/// this per-issuer and are named by each `community.v1`'s `policy` pointer;
-/// today they are descriptive (the daemon's `resolve_policy` walks path
-/// ancestors, not the descriptor pointer) — cascade-by-pointer is a documented
-/// fast-follow. All signing for sys-owned objects uses `sys_signing_key`.
+/// The hub root policy is the repo-wide fallback (name claims, each user's own
+/// namespace incl. self-issued membership). Each community's policy lives at its
+/// **root** (`/communities/<id>/`, `ID: root`), so the daemon's ancestor-walk
+/// `resolve_policy` resolves it for every write under that community — the
+/// per-issuer `membership`/`ban` rules enforce without any engine change, and
+/// each `community.v1`'s `policy` pointer names that same object. All signing
+/// for sys-owned objects uses `sys_signing_key`.
 pub fn mingo_genesis(
     domain_signing_key: &SigningKey,
     sys_signing_key: &SigningKey,
@@ -1076,7 +1081,9 @@ pub fn mingo_genesis(
 
     // 4. Per-community descriptor + policy + general-space collection config.
     for c in communities {
-        let policy_path = format!("/communities/{}/policies/root", c.id);
+        // The descriptor's policy pointer names the same object the daemon's
+        // ancestor-walk resolves: the community-root policy (ID: root).
+        let policy_path = format!("/communities/{}/", c.id);
         batch.extend(community(
             sys_signing_key,
             c.id,
@@ -1201,7 +1208,8 @@ mod tests {
     fn community_policy_builder_validates_and_parses_as_policy() {
         let key = SigningKey::generate();
         let msg = parse_verified(&community_policy(&key, "cooks", "cooks@mingo.place"));
-        assert_eq!(msg.path.to_string(), "/communities/cooks/policies/");
+        // Stored at the community ROOT so the ancestor-walk resolver finds it.
+        assert_eq!(msg.path.to_string(), "/communities/cooks/");
         assert_eq!(msg.id.as_str(), "root");
         let _policy: crate::policy::Policy =
             serde_json::from_slice(msg.payload.as_ref().unwrap()).expect("parses as policy.v2");
