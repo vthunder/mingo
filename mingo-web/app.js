@@ -116,13 +116,15 @@ const session = {
 };
 
 function signIn() {
-  const email = prompt(`Sign in — your ${CONFIG.domain} email (broker account):`);
-  if (!email) return;
-  const url = `${CONFIG.broker}/dialog/dialog.html?origin=${encodeURIComponent(location.origin)}&sbo_sign=1`;
-  const popup = window.open(url, "mingo_login", "width=420,height=560");
+  // T1 federated flow: the dialog authenticates an external email (passwordless),
+  // provisions a <handle>@mingo.place identity, and returns it.
+  const url = `${CONFIG.broker}/dialog/dialog.html?origin=${encodeURIComponent(location.origin)}&sbo_sign=1&flow=mingo`;
+  const popup = window.open(url, "mingo_login", "width=440,height=600");
   const onMsg = (e) => {
     if (e.origin !== CONFIG.broker || !e.data || e.data.assertion === undefined) return;
     window.removeEventListener("message", onMsg);
+    const email = e.data.email; // <handle>@mingo.place
+    if (!email) { toast("Sign-in did not return an identity"); return; }
     if (e.data.sbo_sign_granted === false) toast("Signed in, but signing was not granted");
     session.email = email;
     try { popup && popup.close(); } catch {}
