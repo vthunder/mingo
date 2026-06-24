@@ -543,29 +543,43 @@ async fn run_daemon(config: Config, verbose: VerboseFlags, debug: DebugFlags) ->
                 (state.config.light_client.clone(), state.config.rpc.clone())
             };
 
-            // Check LC status without holding lock
+            // Resolve the chain head + availability window. Prefer the light
+            // client; if it's not running, fall back to the RPC finalized head
+            // and run in RPC-only mode (trust the full node for block data —
+            // real DA, no light-client sampling). Sleep+retry if both fail.
             let lc = LcManager::new(lc_config.clone());
-            match lc.status().await {
-                Ok(status) => {
+            let (status, rpc_only) = match lc.status().await {
+                Ok(s) => {
                     tracing::debug!(
                         "LC status: latest={}, available={}-{}",
-                        status.latest_block,
-                        status.available_first,
-                        status.available_last
+                        s.latest_block, s.available_first, s.available_last
                     );
+                    (s, false)
                 }
                 Err(e) => {
-                    tracing::debug!("LC unavailable: {}", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    continue;
+                    let mut rpc = RpcClient::new(rpc_config.clone(), false, false, false);
+                    match rpc.get_finalized_head().await {
+                        Ok(head) => {
+                            tracing::debug!("LC unavailable ({e}); RPC-only sync at head {head}");
+                            (
+                                sbo_daemon::lc::LcStatus {
+                                    modes: vec!["rpc-only".to_string()],
+                                    app_id: None,
+                                    network: lc_config.network.clone(),
+                                    latest_block: head,
+                                    available_first: 0,
+                                    available_last: head,
+                                },
+                                true,
+                            )
+                        }
+                        Err(rpc_err) => {
+                            tracing::debug!("LC unavailable ({e}); RPC head failed ({rpc_err})");
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    }
                 }
-            }
-
-            // Process one sync cycle
-            let lc = LcManager::new(lc_config.clone());
-            let status = match lc.status().await {
-                Ok(s) => s,
-                Err(_) => continue,
             };
 
             // Process blocks for each repo
@@ -575,6 +589,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags, debug: DebugFlags) ->
                 verbose_for_sync.raw_incoming,
                 verbose_for_sync.rpc_decode,
                 light_mode,
+                rpc_only,
             );
 
             // Get repo info with read lock
@@ -1362,11 +1377,22 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 return Response::error(format!("Repo already exists for URI: {}", resolved_uri));
             }
 
-            // Get current block height before submission
+            // Get current block height before submission. Prefer the light
+            // client; fall back to the Avail RPC finalized head when no light
+            // client is running (a fresh RpcClient avoids needing &mut on the
+            // shared one under the read lock).
             let current_block = match state_read.lc.status().await {
                 Ok(status) => status.latest_block,
-                Err(e) => {
-                    return Response::error(format!("Cannot get chain head: {}", e));
+                Err(lc_err) => {
+                    let mut rpc = RpcClient::new(state_read.config.rpc.clone(), false, false, false);
+                    match rpc.get_finalized_head().await {
+                        Ok(head) => head,
+                        Err(rpc_err) => {
+                            return Response::error(format!(
+                                "Cannot get chain head (light client: {lc_err}; rpc: {rpc_err})"
+                            ));
+                        }
+                    }
                 }
             };
 

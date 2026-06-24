@@ -365,6 +365,53 @@ fn verify_proof_light_mode(
 }
 
 /// Synchronization engine
+/// Strip Avail's app-data framing to recover the exact submitted SBO bytes.
+///
+/// Avail stores submitted data as a SCALE `Compact<u32>(len)` prefix followed by
+/// the payload, padded to DA cell boundaries. We strip the prefix and truncate
+/// to `len` so the wire parser sees neither the prefix nor the trailing zero
+/// padding. Falls back to locating the `SBO-Version:` marker, then to the raw
+/// bytes, if the framing isn't recognized.
+fn extract_sbo_payload(data: &[u8]) -> Vec<u8> {
+    const MAGIC: &[u8] = b"SBO-Version:";
+    if data.starts_with(MAGIC) {
+        return data.to_vec();
+    }
+    if let Some((len, prefix)) = decode_compact_u32(data) {
+        let len = len as usize;
+        if let Some(end) = prefix.checked_add(len) {
+            if end <= data.len() && data[prefix..].starts_with(MAGIC) {
+                return data[prefix..end].to_vec();
+            }
+        }
+    }
+    if let Some(pos) = data.windows(MAGIC.len()).position(|w| w == MAGIC) {
+        return data[pos..].to_vec();
+    }
+    data.to_vec()
+}
+
+/// Decode a SCALE compact-encoded u32 at the start of `data`, returning
+/// `(value, bytes_consumed)`. Supports the 1/2/4-byte modes (big-integer mode is
+/// not expected for app-data lengths).
+fn decode_compact_u32(data: &[u8]) -> Option<(u32, usize)> {
+    let b0 = *data.first()?;
+    match b0 & 0b11 {
+        0b00 => Some(((b0 >> 2) as u32, 1)),
+        0b01 => {
+            let v = u16::from_le_bytes([*data.first()?, *data.get(1)?]) as u32;
+            Some((v >> 2, 2))
+        }
+        0b10 => {
+            let v = u32::from_le_bytes([
+                *data.first()?, *data.get(1)?, *data.get(2)?, *data.get(3)?,
+            ]);
+            Some((v >> 2, 4))
+        }
+        _ => None,
+    }
+}
+
 pub struct SyncEngine {
     lc: LcManager,
     rpc: RpcClient,
@@ -372,13 +419,18 @@ pub struct SyncEngine {
     verbose_rpc_decode: bool,
     /// Light mode: only process SBOP proofs, skip state transitions
     light_mode: bool,
+    /// RPC-only mode: no light client available, so skip the LC data-availability
+    /// gate and trust the full-node RPC for block data. Still real DA (the turing
+    /// chain), just without light-client sampling — a dev/demo fallback. Run
+    /// avail-light for production-grade availability verification.
+    rpc_only: bool,
     /// StateDb instances per repo URI
     state_dbs: HashMap<String, StateDb>,
 }
 
 impl SyncEngine {
-    pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool, verbose_rpc_decode: bool, light_mode: bool) -> Self {
-        Self { lc, rpc, verbose_raw, verbose_rpc_decode, light_mode, state_dbs: HashMap::new() }
+    pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool, verbose_rpc_decode: bool, light_mode: bool, rpc_only: bool) -> Self {
+        Self { lc, rpc, verbose_raw, verbose_rpc_decode, light_mode, rpc_only, state_dbs: HashMap::new() }
     }
 
     /// Get or open StateDb for a repo by URI
@@ -402,14 +454,17 @@ impl SyncEngine {
         block_number: u64,
         repos: &mut RepoManager,
     ) -> crate::Result<BlockProcessResult> {
-        // 1. Verify block is available via LC (DAS)
-        if !self.lc.is_block_available(block_number).await? {
-            tracing::warn!("Block {} not available (DAS failed)", block_number);
-            // TODO: Raise alarm
-            return Err(crate::DaemonError::Sync(format!(
-                "Block {} DAS verification failed",
-                block_number
-            )));
+        // 1. Verify block is available via LC (DAS) — unless RPC-only mode, where
+        // no light client is running and we trust the full-node RPC for data.
+        if !self.rpc_only {
+            if !self.lc.is_block_available(block_number).await? {
+                tracing::warn!("Block {} not available (DAS failed)", block_number);
+                // TODO: Raise alarm
+                return Err(crate::DaemonError::Sync(format!(
+                    "Block {} DAS verification failed",
+                    block_number
+                )));
+            }
         }
 
         // 2. Get all app_ids we're following
@@ -644,8 +699,15 @@ impl SyncEngine {
                     continue;
                 }
 
+                // Avail returns the app data lane as a SCALE `Compact<u32>(len)`
+                // length prefix followed by the payload, padded to cell
+                // boundaries. Strip the prefix and truncate to the declared
+                // length so parse_batch sees exactly the submitted bytes (no
+                // prefix, no trailing zero padding).
+                let payload = extract_sbo_payload(&tx.data);
+
                 // Parse SBO messages (may be a batch with multiple messages)
-                let messages = match sbo_core::wire::parse_batch(&tx.data) {
+                let messages = match sbo_core::wire::parse_batch(&payload) {
                     Ok(msgs) => {
                         if msgs.len() > 1 {
                             tracing::debug!(
