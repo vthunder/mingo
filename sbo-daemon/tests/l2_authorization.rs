@@ -593,6 +593,65 @@ fn ownerless_write_authorized_via_signer_key_controller() {
     );
 }
 
+// HLC ordering-integrity gate (Content Spec §Validity bound). A write carrying
+// an `HLC` must parse and, when the block timestamp is known, fall within
+// `T_b − W ≤ physical ≤ T_b + ε`. Genesis mode (no root policy) isolates the
+// Ordering stage from policy.
+#[test]
+fn hlc_bound_gates_writes() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let key = SigningKey::generate();
+
+    // Block inclusion time 1_000_000s → 1_000_000_000ms. W = ε = 5min = 300_000ms.
+    let t_b_secs = 1_000_000i64;
+    let l2 = L2Context::for_block(Some(t_b_secs), &db);
+    let t_b_ms = t_b_secs * 1000;
+
+    let with_hlc = |hlc: &str| {
+        let mut m = signed_post(&key, "/spaces/general/", "p1", None, None, None);
+        m.hlc = Some(hlc.to_string());
+        m.sign(&key);
+        m
+    };
+
+    // In-bound (exactly T_b) → valid.
+    let ok = with_hlc(&format!("{t_b_ms}.0"));
+    assert!(matches!(validate_message(&ok, &db, dir.path(), &l2), ValidationResult::Valid { .. }));
+
+    // Future-dated beyond ε → rejected at Ordering.
+    let future = with_hlc(&format!("{}.0", t_b_ms + 300_001));
+    assert!(matches!(
+        validate_message(&future, &db, dir.path(), &l2),
+        ValidationResult::Invalid { stage: ValidationStage::Ordering, .. }
+    ));
+
+    // Back-dated beyond W → rejected at Ordering.
+    let stale = with_hlc(&format!("{}.0", t_b_ms - 300_001));
+    assert!(matches!(
+        validate_message(&stale, &db, dir.path(), &l2),
+        ValidationResult::Invalid { stage: ValidationStage::Ordering, .. }
+    ));
+
+    // Malformed HLC → rejected at Ordering regardless of timestamp.
+    let bad = with_hlc("not-an-hlc");
+    assert!(matches!(
+        validate_message(&bad, &db, dir.path(), &l2),
+        ValidationResult::Invalid { stage: ValidationStage::Ordering, .. }
+    ));
+
+    // No timestamp → bound cannot be evaluated; a well-formed HLC still passes.
+    let no_ts = L2Context::for_block(None, &db);
+    let ok2 = with_hlc(&format!("{}.0", t_b_ms + 300_001));
+    assert!(matches!(validate_message(&ok2, &db, dir.path(), &no_ts), ValidationResult::Valid { .. }));
+    // ...but a malformed HLC is rejected even without a timestamp.
+    let bad2 = with_hlc("1.2.3");
+    assert!(matches!(
+        validate_message(&bad2, &db, dir.path(), &no_ts),
+        ValidationResult::Invalid { stage: ValidationStage::Ordering, .. }
+    ));
+}
+
 /// Store an in-force `attestation.v1` issued by `issuer` about `subject`.
 fn put_attestation(db: &StateDb, issuer: &str, subject: &str, type_: &str) {
     use sbo_core::schema::storage_path;

@@ -25,6 +25,7 @@ pub mod jwt;
 pub mod attribution;
 pub mod resolve;
 pub mod authorize;
+pub mod hlc;
 
 mod genesis;
 mod indexer;

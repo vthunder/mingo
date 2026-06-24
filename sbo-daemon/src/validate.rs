@@ -16,6 +16,9 @@ use std::path::Path;
 pub enum ValidationStage {
     Signature,
     Schema,
+    /// HLC ordering-integrity: the write's `HLC` is malformed or falls outside
+    /// the validity bound `T_b − W ≤ physical ≤ T_b + ε` (Content Spec).
+    Ordering,
     /// L2 attribution: the signer does not speak for the object's owner.
     Attribution,
     State,
@@ -27,6 +30,7 @@ impl std::fmt::Display for ValidationStage {
         match self {
             ValidationStage::Signature => write!(f, "sig"),
             ValidationStage::Schema => write!(f, "schema"),
+            ValidationStage::Ordering => write!(f, "ordering"),
             ValidationStage::Attribution => write!(f, "attr"),
             ValidationStage::State => write!(f, "state"),
             ValidationStage::Policy => write!(f, "policy"),
@@ -260,6 +264,41 @@ pub fn resolve_creator(msg: &Message, state: Option<&StateDb>, l2: &L2Context) -
     Id::new(&creator_str).unwrap_or_else(|_| Id::new("unknown").unwrap())
 }
 
+/// Enforce the HLC ordering-integrity rule (Content Spec §Validity bound) for a
+/// write that carries an `HLC` header. A malformed `HLC` is always rejected. The
+/// `T_b − W ≤ physical ≤ T_b + ε` bound is enforced only when the block's
+/// inclusion time is known; absent a timestamp the bound cannot be evaluated and
+/// we fail open on it (the write is still carried, matching the attribution
+/// carry semantics). Returns `Err(reason)` if the write must be filtered.
+///
+/// `W` (max authoring lag) defaults to [`sbo_core::hlc::DEFAULT_MAX_AUTHORING_LAG_MS`];
+/// per-collection `W` from a `collection.v1` descriptor is wired in a later step.
+fn check_hlc_bound(msg: &Message, l2: &L2Context) -> Result<(), String> {
+    let hlc_str = match &msg.hlc {
+        Some(h) => h,
+        None => return Ok(()), // no HLC → base inclusion-order semantics
+    };
+    let hlc = sbo_core::hlc::Hlc::parse(hlc_str).map_err(|e| format!("malformed HLC: {e}"))?;
+
+    if let Some(t_b_secs) = l2.inclusion_time {
+        let t_b_ms = t_b_secs.saturating_mul(1000);
+        let max_lag = sbo_core::hlc::DEFAULT_MAX_AUTHORING_LAG_MS;
+        let skew = sbo_core::hlc::DEFAULT_SKEW_TOLERANCE_MS;
+        if !hlc.within_bound(t_b_ms, max_lag, skew) {
+            return Err(format!(
+                "HLC physical {} outside validity bound [{}, {}] (T_b={}ms, W={}ms, ε={}ms)",
+                hlc.physical,
+                t_b_ms - max_lag,
+                t_b_ms + skew,
+                t_b_ms,
+                max_lag,
+                skew
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The effective owner reference for a message, per the Authorization Spec
 /// verification algorithm: the `Owner` header, else the `Creator` header, else
 /// the signing key. The L2 gate authorizes the signer against this reference.
@@ -293,6 +332,21 @@ pub fn validate_message(
         return ValidationResult::Invalid {
             stage: ValidationStage::Schema,
             reason: format_schema_error(&e),
+        };
+    }
+
+    // 2.25. HLC ordering-integrity gate. A write that carries an `HLC` header
+    // must parse and satisfy the validity bound against the block's inclusion
+    // time (`T_b − W ≤ physical ≤ T_b + ε`). This bounds future-dating and
+    // back-dated insertion; it is an ordering rule only and does not touch
+    // attribution. Writes without an `HLC` use base inclusion-order semantics and
+    // skip this gate. When the block carries no usable timestamp we cannot
+    // evaluate the bound, so we only enforce the parse (fail-open on the bound,
+    // matching the carry semantics elsewhere).
+    if let Err(reason) = check_hlc_bound(msg, l2) {
+        return ValidationResult::Invalid {
+            stage: ValidationStage::Ordering,
+            reason,
         };
     }
 
