@@ -89,6 +89,9 @@ function toItem(o) {
     parent: o.value?.parent,
     block: o.block,
     hlc: o.hlc,
+    // Authoring time in Unix ms, parsed from the HLC physical component
+    // (wire form `<physical>.<counter>`, physical = Unix ms).
+    ts: hlcMs(o.hlc),
     // false when served from the daemon's unconfirmed overlay (render pending).
     confirmed: o.confirmed !== false,
   };
@@ -387,6 +390,29 @@ async function upvote(commId, space, targetUri) {
 const $ = (sel) => document.querySelector(sel);
 const el = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// HLC physical component → Unix ms (wire form `<physical>.<counter>`).
+function hlcMs(hlc) {
+  if (!hlc) return null;
+  const n = parseInt(String(hlc).split(".")[0], 10);
+  return Number.isFinite(n) ? n : null;
+}
+// Compact, human-readable "time ago" for an authoring timestamp (Unix ms).
+function relTime(ms) {
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 10) return "just now";
+  if (s < 60) return `${s} seconds ago`;
+  const units = [["minute", 60], ["hour", 60], ["day", 24], ["week", 7], ["month", 4.345], ["year", 12]];
+  let v = s / 60, i = 0;
+  for (; i < units.length - 1 && v >= units[i + 1][1]; i++) v /= units[i + 1][1];
+  const n = Math.floor(v);
+  return `${n} ${units[i][0]}${n === 1 ? "" : "s"} ago`;
+}
+// A muted "· 5 minutes ago" span tooltipped with the absolute local timestamp.
+function timeAgo(ts) {
+  if (!ts) return "";
+  return ` · <span class="muted" title="${esc(new Date(ts).toLocaleString())}">${esc(relTime(ts))}</span>`;
+}
 let toastTimer;
 // ms = 0 keeps the toast up until the next toast() call (for in-flight tx status).
 function toast(msg, ms = 3000) {
@@ -441,12 +467,12 @@ async function viewHub() {
   wireVoteButtons();
 }
 
-function feedRow(p, votes) {
+function feedRow(p, votes, showComm = true) {
   const pending = p.confirmed === false;
   return `<div class="card feed-row${pending ? " pending" : ""}">
     <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
     <div style="flex:1">
-      <div class="post-meta">c/${esc(p.comm)} · ${esc(p.author)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
+      <div class="post-meta">${showComm ? `c/${esc(p.comm)} · ` : ""}${esc(p.author)}${timeAgo(p.ts)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
       <div class="post-title"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
     </div></div>`;
 }
@@ -465,7 +491,7 @@ async function viewCommunity(commId) {
   main.innerHTML = `
     <div class="row-between"><div class="h1">c/${esc(c.id)} ${c.open ? "✓" : ""}</div>
       ${actionBtn}</div>
-    <div class="card muted">${esc(c.description || "")} · issuer ${esc(c.issuer)}</div>
+    <div class="card muted">${esc(c.description || "")}</div>
     <div id="compose"></div>
     <div id="posts" class="muted">loading…</div>`;
   if (session.email && member) $("#newpost").onclick = () => showCompose(c.id);
@@ -483,7 +509,7 @@ async function viewCommunity(commId) {
   else $("#signin2").onclick = signIn;
   const [{ posts }, votes] = await Promise.all([getSpaceItems(c.id, CONFIG.space), getVoteCounts()]);
   posts.sort((a, b) => (votes.get(b.uri) || 0) - (votes.get(a.uri) || 0) || (b.hlc || "").localeCompare(a.hlc || ""));
-  $("#posts").outerHTML = `<div id="posts">${posts.length ? posts.map((p) => feedRow({ ...p, comm: c.id }, votes)).join("") : `<div class="card muted">No posts yet.</div>`}</div>`;
+  $("#posts").outerHTML = `<div id="posts">${posts.length ? posts.map((p) => feedRow({ ...p, comm: c.id }, votes, false)).join("") : `<div class="card muted">No posts yet.</div>`}</div>`;
   wireVoteButtons();
 }
 
@@ -526,7 +552,7 @@ async function viewThread(commId, postId) {
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
-    <div class="card"><div class="post-meta">${esc(post.author)}</div>
+    <div class="card"><div class="post-meta">${esc(post.author)}${timeAgo(post.ts)}</div>
       <div class="post-body">${esc(post.body)}</div>
       <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · <span data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div>
     </div>
@@ -558,7 +584,7 @@ async function viewThread(commId, postId) {
   wireVoteButtons();
 }
 function commentBox(c, votes) {
-  return `<div class="comment"><div class="post-meta">${esc(c.author)} · ${votes.get(c.uri) || 0} ▲</div><div>${esc(c.body)}</div></div>`;
+  return `<div class="comment"><div class="post-meta">${esc(c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲</div><div>${esc(c.body)}</div></div>`;
 }
 
 function wireVoteButtons() {
