@@ -851,17 +851,21 @@ pub fn community_policy(signing_key: &SigningKey, community_id: &str, issuer: &s
     )
 }
 
-/// Like [`community_policy`], but **open**: the `member` role accepts a
-/// `membership` attestation from ANY issuer — including the subject's own
-/// self-attestation (the `by` field is omitted, which the policy engine treats
-/// as "any issuer"). This is the "anyone can join by self-issuing a membership"
-/// model for `open: true` communities. Bans are still gated on the community
-/// `issuer` so moderation stays with the community authority.
+/// Like [`community_policy`], but **open** and **community-scoped**: the `member`
+/// role accepts a `membership:<community_id>` attestation from ANY issuer —
+/// including the subject's own self-attestation (the `by` field is omitted, which
+/// the policy engine treats as "any issuer"). This is the "anyone can join by
+/// self-issuing a membership" model for `open: true` communities, but a
+/// membership in one community does NOT authorize posting in another: the
+/// attestation `type` carries the community id, and the matcher filters on `type`
+/// (no engine change needed — the same mechanism `role:moderator` uses). Bans are
+/// still gated on the community `issuer` so moderation stays with the authority.
 pub fn community_policy_open(signing_key: &SigningKey, community_id: &str, issuer: &str) -> Vec<u8> {
     let path = format!("/communities/{community_id}/");
     let spaces = format!("/communities/{community_id}/spaces/**");
+    let membership_type = format!("membership:{community_id}");
     let payload = serde_json::to_vec(&serde_json::json!({
-        "roles": { "member": [{ "attested": { "type": "membership" } }] },
+        "roles": { "member": [{ "attested": { "type": membership_type } }] },
         "grants": [
             { "to": { "role": "member" }, "can": ["post"], "on": spaces }
         ],
@@ -1168,7 +1172,7 @@ pub fn mingo_genesis(
             true,
             created_at,
         ));
-        batch.extend(community_policy(sys_signing_key, c.id, c.issuer));
+        batch.extend(community_policy_open(sys_signing_key, c.id, c.issuer));
         let general = format!("/communities/{}/spaces/general/", c.id);
         batch.extend(collection_config(
             sys_signing_key,
@@ -1185,8 +1189,7 @@ pub fn mingo_genesis(
         "grants": [
             { "to": "*", "can": ["create"], "on": "/sys/names/*" },
             { "to": "owner", "can": ["update", "delete"], "on": "/sys/names/*" },
-            { "to": "owner", "can": ["*"], "on": "/$owner/**" },
-            { "to": { "attested": { "type": "membership" } }, "can": ["post"], "on": "/communities/*/spaces/**" }
+            { "to": "owner", "can": ["*"], "on": "/$owner/**" }
         ],
         "restrictions": [
             { "on": "/communities/*/spaces/**", "require": { "not_attested": { "type": "ban" } } }

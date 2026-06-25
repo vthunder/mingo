@@ -940,6 +940,75 @@ fn open_community_membership_post_and_ban_end_to_end() {
     );
 }
 
+// Per-community membership: a `membership:<id>` scoped to one community does NOT
+// authorize posting in another. This is the enforcement behind the SPA's
+// per-community Join — each open community's policy requires its own scoped
+// membership type (presets::community_policy_open), so joining c/cooks grants
+// nothing in c/books.
+#[test]
+fn community_scoped_membership_does_not_cross_communities() {
+    let dir = tempdir().unwrap();
+    let db = StateDb::open(dir.path()).unwrap();
+    let alice = SigningKey::generate();
+    put_key_rooted_name(&db, "alice", &alice);
+
+    // Root policy object must exist so we evaluate in enforced (non-genesis) mode.
+    db.put_object(&StoredObject {
+        path: Path::parse("/sys/policies/").unwrap(),
+        id: Id::new("root").unwrap(),
+        creator: Id::new("sys").unwrap(),
+        owner: Id::new("sys").unwrap(),
+        content_type: "application/json".to_string(),
+        content_hash: ContentHash::sha256(b"{}"),
+        payload: b"{}".to_vec(),
+        policy_ref: None,
+        content_schema: Some("policy.v2".to_string()),
+        owner_ref: None,
+        block_number: 1,
+        object_hash: [0u8; 32],
+        hlc: None,
+        prev: None,
+    })
+    .unwrap();
+    db.put_policy(
+        &Path::parse("/sys/policies/").unwrap(),
+        &serde_json::from_value(serde_json::json!({ "roles": {}, "grants": [], "restrictions": [] })).unwrap(),
+    )
+    .unwrap();
+
+    // Two community policies, each requiring its OWN community-scoped membership.
+    for cid in ["cooks", "books"] {
+        let spaces = format!("/communities/{cid}/spaces/**");
+        let policy: sbo_core::policy::Policy = serde_json::from_value(serde_json::json!({
+            "roles": { "member": [{ "attested": { "type": format!("membership:{cid}") } }] },
+            "grants": [{ "to": { "role": "member" }, "can": ["post"], "on": spaces }],
+            "restrictions": [],
+        }))
+        .unwrap();
+        db.put_policy(&Path::parse(&format!("/communities/{cid}/")).unwrap(), &policy).unwrap();
+    }
+
+    // Alice joins ONLY cooks (self-issued, scoped membership).
+    put_attestation(&db, "alice", "alice", "membership:cooks");
+
+    // She may post in cooks…
+    let in_cooks = signed_post(&alice, "/communities/cooks/spaces/general/", "p1", None, None, None);
+    assert!(
+        matches!(validate_message(&in_cooks, &db, dir.path(), &ctx(&db)), ValidationResult::Valid { .. }),
+        "a cooks member should be allowed to post in cooks"
+    );
+
+    // …but NOT in books, where she holds no membership:books.
+    let in_books = signed_post(&alice, "/communities/books/spaces/general/", "p2", None, None, None);
+    assert!(
+        matches!(
+            validate_message(&in_books, &db, dir.path(), &ctx(&db)),
+            ValidationResult::Invalid { stage: ValidationStage::Policy, .. }
+        ),
+        "a cooks-only member must NOT be able to post in books"
+    );
+}
+
 #[test]
 fn creator_email_fallback_without_attribution_is_filtered() {
     let dir = tempdir().unwrap();

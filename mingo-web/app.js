@@ -319,30 +319,32 @@ async function writeContent({ path, id, schema, payload, hlc, prev, owner, conte
 }
 
 // ---------------------------------------------------------------------------
-// membership (self-issued) — open communities accept any in-force membership
-// attestation, so a user "joins the hub" by self-issuing one in their own
-// namespace (permitted by the root policy's owner grant). One membership lets
-// you post in any open community.
+// membership (self-issued, per-community) — an open community accepts an
+// in-force `membership:<commId>` attestation, so a user "joins" a community by
+// self-issuing one (scoped to that community) in their own namespace. Membership
+// is per-community: joining c/cooks does not let you post in c/woodworking.
 // ---------------------------------------------------------------------------
-async function hasMembership() {
-  if (!session.email) return false;
+async function hasMembership(commId) {
+  if (!session.email || !commId) return false;
   try {
     // Path-scoped list (NOT getObject: /v1/object matches by id regardless of
     // path, which would falsely match another user's membership).
     const objs = await listPrefix(`/${session.email}/attestations/${session.email}/`);
-    // Membership gating counts PENDING memberships (Phase B): the daemon now
-    // validates posts against confirmed+pending state (StateView/Overlay), so a
-    // just-submitted membership authorizes posting immediately — no need to wait
-    // for the attestation to confirm on-chain before flipping "Join" → "New post".
-    return objs.some((o) => o.content_schema === "attestation.v1" && o.id === "membership");
+    // Counts PENDING memberships too (Phase B): the daemon validates posts
+    // against confirmed+pending state, so a just-submitted membership authorizes
+    // posting immediately — Join flips to New post without waiting for on-chain
+    // confirmation. Matched by the community-scoped attestation type.
+    return objs.some(
+      (o) => o.content_schema === "attestation.v1" && o.value?.type === `membership:${commId}`,
+    );
   } catch { return false; }
 }
-async function joinHub() {
+async function joinHub(commId) {
   if (!session.email) { signIn(); return false; }
   const att = {
     subject: session.email,
-    type: "membership",
-    value: { via: "mingo-web" },
+    type: `membership:${commId}`,
+    value: { community: commId, via: "mingo-web" },
     issued_at: Math.floor(Date.now() / 1000),
     expires: null,
     issuer: session.email,
@@ -350,7 +352,7 @@ async function joinHub() {
   const payload = new TextEncoder().encode(JSON.stringify(att));
   await writeContent({
     path: `/${session.email}/attestations/${session.email}/`,
-    id: "membership",
+    id: `membership-${commId}`,
     schema: "attestation.v1",
     contentType: "application/json",
     payload,
@@ -482,7 +484,7 @@ async function viewCommunity(commId) {
   const comms = window.__comms || (await getCommunities());
   const c = comms.find((x) => x.id === commId);
   if (!c) { main.innerHTML = `<div class="card">Unknown community.</div>`; return; }
-  const member = session.email ? await hasMembership() : false;
+  const member = session.email ? await hasMembership(c.id) : false;
   const actionBtn = !session.email
     ? `<button class="primary" id="signin2">Sign in to post</button>`
     : member
@@ -498,7 +500,7 @@ async function viewCommunity(commId) {
   else if (session.email) $("#join").onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = "Joining…";
     try {
-      await joinHub();
+      await joinHub(c.id);
       // The daemon serves the membership from its overlay immediately and now
       // validates posts against confirmed+pending state, so the user can post
       // right away — flip the button without waiting for on-chain confirmation.
