@@ -9,7 +9,11 @@
 #
 # Build context = repo root. Selected per-app via:
 #   dokku builder-dockerfile:set mingo dockerfile-path deploy/mingo/Dockerfile
-FROM rust:1-bookworm AS chef
+# Base pinned to a specific toolchain (not the moving `rust:1` tag): a tag bump
+# changes the image digest and invalidates every cached layer below — including
+# the slow cargo-chef install and the dependency build. Bump deliberately on
+# Rust upgrades (keep in sync with deploy/sbo-daemon/Dockerfile).
+FROM rust:1.93-bookworm AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /src
 

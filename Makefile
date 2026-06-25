@@ -26,5 +26,9 @@ deploy-daemon:
 deploy-mingo:
 	$(GIT_SSH) git push $(HOST):mingo $(BRANCH):master
 
-## Deploy both.
-deploy: deploy-daemon deploy-mingo
+## Deploy both, concurrently. The two apps are independent dokku remotes with
+## separate build caches, so there's no reason to serialize them — running in
+## parallel roughly halves wall-clock when both rebuild. (Push progress from the
+## two streams interleaves; the per-app "Application deployed" lines are final.)
+deploy:
+	$(MAKE) -j2 deploy-daemon deploy-mingo
