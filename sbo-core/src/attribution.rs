@@ -229,8 +229,12 @@ pub fn verify_attribution_with_provider_key(
 ) -> Result<Attribution, AttributionError> {
     let claims = cert.claims();
 
-    // Step 1: the certified key must equal the SBO public key argument.
-    if claims.public_key.to_base64() != public_key {
+    // Step 1: the certified key must equal the SBO signer key. The browserid
+    // cert stores the key base64url-encoded; SBO refers to keys as
+    // "ed25519:<hex>". Compare by value, accepting either encoding, so the
+    // daemon (which passes the sbo form) and base64 callers both verify.
+    let cert_key_sbo = format!("ed25519:{}", hex::encode(claims.public_key.as_bytes()));
+    if public_key != cert_key_sbo && public_key != claims.public_key.to_base64() {
         return Err(AttributionError::KeyMismatch);
     }
 

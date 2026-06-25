@@ -81,6 +81,83 @@ pub async fn create(
     Ok(())
 }
 
+/// Capture an RFC 9102 DNSSEC proof of `_browserid.<domain>` and build the
+/// self-authenticating `/sys/dnssec/<domain>` evidence object (dnssec.v1). The
+/// L2 attribution verifier consults this when a write carries no inline
+/// auth_evidence, so seeding it unblocks `<handle>@<domain>`-signed writes.
+///
+/// Writes the signed wire bytes to `out`; submit with:
+///   curl --data-binary @<out> -H 'Content-Type: application/octet-stream' \
+///        <daemon>/v1/submit
+pub async fn evidence(
+    domain_name: &str,
+    key_alias: Option<&str>,
+    resolver: Option<&str>,
+    out: &str,
+) -> Result<()> {
+    use std::net::SocketAddr;
+
+    let keyring = Keyring::open()?;
+    let alias = keyring.resolve_alias(key_alias)?;
+    let signing_key = keyring.get_signing_key(&alias)?;
+
+    let resolver_str = resolver.unwrap_or(sbo_capture::DEFAULT_RESOLVER);
+    let resolver_addr: SocketAddr = resolver_str
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid resolver '{}': {}", resolver_str, e))?;
+
+    println!(
+        "Capturing DNSSEC proof for _browserid.{} via {} ...",
+        domain_name, resolver_addr
+    );
+    let proof = sbo_capture::capture_evidence(resolver_addr, domain_name)
+        .await
+        .map_err(|e| anyhow::anyhow!("capture failed: {}", e))?;
+    println!("  ✓ RFC 9102 proof: {} bytes", proof.len());
+
+    let wire = sbo_core::presets::set_dnssec(&signing_key, domain_name, &proof);
+    std::fs::write(out, &wire)?;
+    println!(
+        "  ✓ wrote /sys/dnssec/{} wire to {} ({} bytes, signed by {})",
+        domain_name,
+        out,
+        wire.len(),
+        alias
+    );
+    println!(
+        "\nSubmit with:\n  curl --data-binary @{} -H 'Content-Type: application/octet-stream' <daemon>/v1/submit",
+        out
+    );
+    Ok(())
+}
+
+/// Build an OPEN community policy (member = any-issuer membership, incl. self)
+/// for `community_id` and write the signed wire to `out`. Submit with curl to
+/// <daemon>/v1/submit. Lets users join open communities by self-issuing a
+/// membership attestation.
+pub async fn open_community(
+    community_id: &str,
+    issuer: &str,
+    key_alias: Option<&str>,
+    out: &str,
+) -> Result<()> {
+    let keyring = Keyring::open()?;
+    let alias = keyring.resolve_alias(key_alias)?;
+    let signing_key = keyring.get_signing_key(&alias)?;
+
+    let wire = sbo_core::presets::community_policy_open(&signing_key, community_id, issuer);
+    std::fs::write(out, &wire)?;
+    println!(
+        "✓ wrote OPEN policy for /communities/{}/ (issuer {}) to {} ({} bytes, signed by {})",
+        community_id, issuer, out, wire.len(), alias
+    );
+    println!(
+        "\nSubmit: curl --data-binary @{} -H 'Content-Type: application/octet-stream' <daemon>/v1/submit",
+        out
+    );
+    Ok(())
+}
+
 /// List domains from synced repos
 pub async fn list(uri_filter: Option<&str>) -> Result<()> {
     let config = Config::load(&Config::config_path())?;

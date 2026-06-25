@@ -1,0 +1,33 @@
+[package]
+name = "mingo-idp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "mingo.place primary BrowserID IdP — issues <handle>@mingo.place certs"
+
+[[bin]]
+name = "mingo-idp"
+path = "src/main.rs"
+
+[dependencies]
+# BrowserID protocol primitives (certificate signing, assertion verify, discovery).
+# Path dependency on the sibling browserid-ng checkout for local dev; switch to a
+# pinned git dependency for deploy.
+browserid-core = { path = "../../../browserid-ng/browserid-core" }
+
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower = "0.5"
+tower-cookies = "0.10"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

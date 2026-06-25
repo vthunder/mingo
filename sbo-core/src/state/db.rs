@@ -158,13 +158,17 @@ impl StateDb {
             match item {
                 Ok((key, value)) => {
                     let key_str = String::from_utf8_lossy(&key);
+                    // Stop once we've walked past this path's range — otherwise a
+                    // key from a LATER path that happens to end with the same
+                    // `\x1f<id>` suffix would be wrongly returned (prefix_iterator
+                    // yields keys >= prefix, not only prefix-matching ones).
+                    if !key_str.starts_with(&prefix) {
+                        break;
+                    }
                     if key_str.ends_with(&suffix) {
                         let obj: StoredObject = serde_json::from_slice(&value)
                             .map_err(|e| DbError::Serialization(e.to_string()))?;
                         return Ok(Some(obj));
-                    }
-                    if !key_str.starts_with(&prefix) {
-                        break;
                     }
                 }
                 Err(e) => return Err(DbError::RocksDb(e.to_string())),

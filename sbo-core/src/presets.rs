@@ -519,6 +519,48 @@ pub fn set_trust_brokers(signing_key: &SigningKey, brokers: &[&str]) -> Vec<u8> 
     wire::serialize(&msg)
 }
 
+/// Post an RFC 9102 DNSSEC proof of `_browserid.<domain>` to `/sys/dnssec/<domain>`.
+///
+/// This is the on-chain, self-authenticating evidence the L2 attribution verifier
+/// consults when a write carries no inline `auth_evidence` (the conventional
+/// fallback in `resolve_evidence`): to honor a browserid cert issued by `<domain>`,
+/// the verifier needs `<domain>`'s `_browserid` provider key, proven via DNSSEC.
+/// The payload IS the raw RFC 9102 proof chain (re-validated against the pinned
+/// IANA root on every replay). The proof has an RRSIG validity window, so this
+/// object must be refreshed before it expires.
+///
+/// Sign with an authority over `/sys/dnssec/` (the sys key at genesis, or an
+/// authorized key once policy governs the path).
+pub fn set_dnssec(signing_key: &SigningKey, domain: &str, proof: &[u8]) -> Vec<u8> {
+    let public_key = signing_key.public_key();
+    let content_hash = ContentHash::sha256(proof);
+
+    let mut msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/dnssec/").unwrap(),
+        id: Id::new(domain).expect("domain is a valid id"),
+        object_type: ObjectType::Object,
+        signing_key: public_key,
+        signature: crate::crypto::Signature([0u8; 64]),
+        content_type: Some("application/octet-stream".to_string()),
+        content_hash: Some(content_hash),
+        payload: Some(proof.to_vec()),
+        owner: None,
+        creator: None,
+        content_encoding: None,
+        content_schema: Some("dnssec.v1".to_string()),
+        policy_ref: None,
+        related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
+    };
+    msg.sign(signing_key);
+
+    wire::serialize(&msg)
+}
+
 /// Create a domain object at /sys/domains/<domain_name>
 ///
 /// Domains are self-signed authority objects that can certify identities.
@@ -788,6 +830,38 @@ pub fn community_policy(signing_key: &SigningKey, community_id: &str, issuer: &s
     let spaces = format!("/communities/{community_id}/spaces/**");
     let payload = serde_json::to_vec(&serde_json::json!({
         "roles": { "member": [{ "attested": { "type": "membership", "by": issuer } }] },
+        "grants": [
+            { "to": { "role": "member" }, "can": ["post"], "on": spaces }
+        ],
+        "restrictions": [
+            { "on": spaces, "require": { "not_attested": { "type": "ban", "by": issuer } } }
+        ],
+    }))
+    .expect("policy.v2 payload serialization");
+    signed_object(
+        signing_key,
+        &path,
+        "root",
+        "policy.v2",
+        "application/json",
+        payload,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Like [`community_policy`], but **open**: the `member` role accepts a
+/// `membership` attestation from ANY issuer — including the subject's own
+/// self-attestation (the `by` field is omitted, which the policy engine treats
+/// as "any issuer"). This is the "anyone can join by self-issuing a membership"
+/// model for `open: true` communities. Bans are still gated on the community
+/// `issuer` so moderation stays with the community authority.
+pub fn community_policy_open(signing_key: &SigningKey, community_id: &str, issuer: &str) -> Vec<u8> {
+    let path = format!("/communities/{community_id}/");
+    let spaces = format!("/communities/{community_id}/spaces/**");
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "roles": { "member": [{ "attested": { "type": "membership" } }] },
         "grants": [
             { "to": { "role": "member" }, "can": ["post"], "on": spaces }
         ],

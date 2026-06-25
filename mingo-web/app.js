@@ -8,17 +8,22 @@
 const qs = new URLSearchParams(location.search);
 const CONFIG = Object.assign(
   {
-    // Default the daemon to the page's own host on :7890 (the daemon usually runs
-    // alongside the served client), so remote loads work without ?daemon=. The
-    // daemon must bind a reachable address (SBO_HTTP_BIND) for this to resolve.
-    daemon: `${location.protocol}//${location.hostname}:7890`,
+    // The public sbo-daemon (DA read/submit API), deployed at da.sandmill.org.
+    // Override with ?daemon= or window.MINGO_CONFIG for local dev
+    // (e.g. ?daemon=http://127.0.0.1:7890).
+    daemon: "https://da.sandmill.org",
     broker: "https://browserid.me",
+    // The mingo.place primary IdP. Defaults to the page's own origin, since the
+    // mingo-idp service serves this SPA same-origin (so its session cookie is
+    // visible to the broker's /provision iframe). Override with ?idp= in dev.
+    idp: location.origin,
     domain: "mingo.place",
     space: "general",
   },
   window.MINGO_CONFIG || {},
   qs.get("daemon") ? { daemon: qs.get("daemon") } : {},
-  qs.get("broker") ? { broker: qs.get("broker") } : {}
+  qs.get("broker") ? { broker: qs.get("broker") } : {},
+  qs.get("idp") ? { idp: qs.get("idp") } : {}
 );
 const SBO_WASM_URL = CONFIG.sboWasm || `${CONFIG.broker}/common/js/sbo-wasm/sbo_wasm.js`;
 
@@ -79,7 +84,10 @@ function toItem(o) {
 function shortAuthor(ref) {
   if (!ref) return "unknown";
   if (ref.startsWith("ed25519:")) return ref.slice(8, 16) + "…";
-  return ref; // email or name
+  // Every identity here is <handle>@mingo.place — show just the handle.
+  const at = ref.indexOf("@");
+  if (at > 0 && ref.endsWith(`@${CONFIG.domain}`)) return ref.slice(0, at);
+  return ref; // other email or name
 }
 // Count present upvotes per target (LWW by author/target/kind handled coarsely:
 // keep the latest state per (author,target)).
@@ -118,29 +126,110 @@ const session = {
   set email(v) { v ? localStorage.setItem("mingo_email", v) : localStorage.removeItem("mingo_email"); },
 };
 
-function signIn() {
-  // Mingo owns the handle choice (its product decision); it passes the handle to
-  // the broker, which authenticates the external email (passwordless) and
-  // provisions <handle>@mingo.place. (A nicer in-page handle step can replace
-  // this prompt later.)
-  const handle = (prompt("Choose your Mingo handle — your public @mingo.place identity:") || "").trim();
-  if (!handle) return;
-  const url = `${CONFIG.broker}/dialog/dialog.html?origin=${encodeURIComponent(location.origin)}&sbo_sign=1&flow=mingo&handle=${encodeURIComponent(handle)}`;
-  const popup = window.open(url, "mingo_login", "width=440,height=600");
-  const onMsg = (e) => {
-    if (e.origin !== CONFIG.broker || !e.data || e.data.assertion === undefined) return;
-    window.removeEventListener("message", onMsg);
-    const email = e.data.email; // <handle>@mingo.place
-    if (!email) { toast("Sign-in did not return an identity"); return; }
-    if (e.data.sbo_sign_granted === false) toast("Signed in, but signing was not granted");
-    session.email = email;
-    try { popup && popup.close(); } catch {}
-    renderAuth();
-    toast(`Signed in as ${email}`);
-  };
-  window.addEventListener("message", onMsg);
+// Open the broker dialog and resolve with its response ({assertion, email?,
+// sbo_sign_granted?}). When `provisionEmail` is set, the dialog skips its chooser
+// and provisions/sign-in that exact identity (silent if a session exists at its IdP).
+function brokerDialog({ sboSign = false, provisionEmail = null } = {}) {
+  return new Promise((resolve) => {
+    let url = `${CONFIG.broker}/dialog/dialog.html?origin=${encodeURIComponent(location.origin)}`;
+    if (sboSign) url += "&sbo_sign=1";
+    if (provisionEmail) url += `&provision_email=${encodeURIComponent(provisionEmail)}`;
+    const popup = window.open(url, "mingo_login", "width=440,height=600");
+    let done = false;
+    const onMsg = (e) => {
+      if (e.origin !== CONFIG.broker || !e.data || e.data.assertion === undefined) return;
+      done = true;
+      window.removeEventListener("message", onMsg);
+      try { popup && popup.close(); } catch {}
+      resolve(e.data);
+    };
+    window.addEventListener("message", onMsg);
+    // If the user closes the popup without finishing, resolve null.
+    const poll = setInterval(() => {
+      if (done) return clearInterval(poll);
+      if (popup && popup.closed) { clearInterval(poll); window.removeEventListener("message", onMsg); resolve(null); }
+    }, 500);
+  });
 }
-function signOut() { session.email = null; renderAuth(); toast("Signed out"); }
+
+const idpPost = async (path, body) => {
+  const r = await fetch(`${CONFIG.idp}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${path} ${r.status} ${await r.text()}`);
+  return r.json();
+};
+
+// Login ≠ registration. (1) Authenticate the user's EXTERNAL identity via the
+// broker. (2) Establish a mingo.place session from that assertion. (3) New users
+// pick a handle (in-page). (4) Silently provision <handle>@mingo.place — the
+// broker discovers mingo.place's IdP and, because the session exists, mints the
+// cert into custody without a second login.
+async function signIn() {
+  try {
+    const ext = await brokerDialog({ sboSign: false });
+    if (!ext || !ext.assertion) return; // cancelled
+    const sess = await idpPost("/session/from-assertion", { assertion: ext.assertion });
+
+    let handle = sess.handle;
+    if (!handle) {
+      handle = await promptHandle();
+      if (!handle) return; // cancelled registration
+      const claim = await idpPost("/claim_handle", { handle });
+      handle = claim.email.split("@")[0];
+    }
+    const email = `${handle}@${CONFIG.domain}`;
+
+    const prov = await brokerDialog({ sboSign: true, provisionEmail: email });
+    if (!prov || !prov.assertion) { toast("Could not provision your @mingo.place identity"); return; }
+    if (prov.sbo_sign_granted === false) toast("Signed in, but signing was not granted");
+
+    session.email = prov.email || email;
+    renderAuth();
+    route(); // re-render the current view (e.g. flip "Sign in to post" → Join/New post)
+    toast(`Signed in as ${session.email}`);
+  } catch (e) {
+    toast("Sign-in failed: " + e.message);
+  }
+}
+function signOut() { session.email = null; renderAuth(); route(); toast("Signed out"); }
+
+// In-page handle picker (a Mingo product decision — never inside the broker dialog).
+function promptHandle() {
+  return new Promise((resolve) => {
+    const sanitize = (v) => v.toLowerCase().replace(/[^a-z0-9._-]/g, "");
+    const overlay = el(`<div class="modal-overlay">
+      <div class="modal card">
+        <div class="h2">Choose your Mingo handle</div>
+        <p class="muted tiny">This is your public identity here: <strong><span id="h-prev">handle</span>@${esc(CONFIG.domain)}</strong>. Your email stays private.</p>
+        <input type="text" id="h-input" placeholder="handle" autocapitalize="none" autocomplete="off" spellcheck="false">
+        <div id="h-error" class="error tiny"></div>
+        <div class="row-between" style="margin-top:10px">
+          <button id="h-cancel">Cancel</button>
+          <button class="primary" id="h-ok">Create my identity</button>
+        </div>
+      </div></div>`);
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector("#h-input");
+    const prev = overlay.querySelector("#h-prev");
+    input.focus();
+    input.addEventListener("input", () => {
+      input.value = sanitize(input.value);
+      prev.textContent = input.value || "handle";
+    });
+    const close = (val) => { overlay.remove(); resolve(val); };
+    overlay.querySelector("#h-cancel").onclick = () => close(null);
+    overlay.querySelector("#h-ok").onclick = () => {
+      const v = sanitize(input.value.trim());
+      if (!v) { overlay.querySelector("#h-error").textContent = "Pick a handle"; return; }
+      close(v);
+    };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") overlay.querySelector("#h-ok").click(); });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // signer popup (reuse the first-party signer; correlate by id)
@@ -157,6 +246,12 @@ window.addEventListener("message", (e) => {
   pendingSign.delete(d.id);
   if (d.type === "sbo:signed") p.resolve(d);
   else if (d.type === "sbo:sign-error") p.reject(new Error(`${d.error}: ${d.message || ""}`));
+  // Auto-close the signer popup once it's idle (no pending signs), so it doesn't
+  // linger on top. It reopens on the next sign (a user gesture).
+  if (pendingSign.size === 0 && signerWin && !signerWin.closed) {
+    try { signerWin.close(); } catch {}
+    signerWin = null;
+  }
 });
 function ensureSigner() {
   if (signerWin && !signerWin.closed) return signerReady.promise;
@@ -189,31 +284,69 @@ function sbo() {
 }
 
 // Build → sign → assemble → submit a content write owned by the session email.
-async function writeContent({ path, id, schema, payload, hlc, prev }) {
+async function writeContent({ path, id, schema, payload, hlc, prev, owner, contentType }) {
   if (!session.email) { signIn(); return; }
   const wasm = await sbo();
   const spec = {
     action: "", path, id,
     public_key: "ed25519:" + "00".repeat(32), // overridden by the signer
     content_schema: schema,
-    owner: session.email,
+    owner: owner || session.email,
     payload: Array.from(payload),
     hlc: hlc || `${Date.now()}.0`,
     prev,
   };
+  if (contentType) spec.content_type = contentType;
   const res = await signEnvelope(session.email, spec);
   const bound = { ...spec, public_key: res.pubkey, auth_cert: res.cert };
   const wire = wasm.assembleWire(bound, res.signature);
   return submitWire(wire);
 }
 
+// ---------------------------------------------------------------------------
+// membership (self-issued) — open communities accept any in-force membership
+// attestation, so a user "joins the hub" by self-issuing one in their own
+// namespace (permitted by the root policy's owner grant). One membership lets
+// you post in any open community.
+// ---------------------------------------------------------------------------
+async function hasMembership() {
+  if (!session.email) return false;
+  try {
+    // Path-scoped list (NOT getObject: /v1/object matches by id regardless of
+    // path, which would falsely match another user's membership).
+    const objs = await listPrefix(`/${session.email}/attestations/${session.email}/`);
+    return objs.some((o) => o.content_schema === "attestation.v1" && o.id === "membership");
+  } catch { return false; }
+}
+async function joinHub() {
+  if (!session.email) { signIn(); return false; }
+  const att = {
+    subject: session.email,
+    type: "membership",
+    value: { via: "mingo-web" },
+    issued_at: Math.floor(Date.now() / 1000),
+    expires: null,
+    issuer: session.email,
+  };
+  const payload = new TextEncoder().encode(JSON.stringify(att));
+  await writeContent({
+    path: `/${session.email}/attestations/${session.email}/`,
+    id: "membership",
+    schema: "attestation.v1",
+    contentType: "application/json",
+    payload,
+  });
+  return true;
+}
+
 async function composePost(commId, space, body) {
   const wasm = await sbo();
   const payload = wasm.payloadPost(body, undefined, BigInt(Date.now()));
   const id = "p-" + Date.now().toString(36);
-  return writeContent({
+  await writeContent({
     path: `/communities/${commId}/spaces/${space}/`, id, schema: "post.v1", payload,
   });
+  return id;
 }
 async function addComment(commId, space, parentUri, body) {
   const wasm = await sbo();
@@ -239,9 +372,11 @@ const $ = (sel) => document.querySelector(sel);
 const el = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let toastTimer;
-function toast(msg) {
+// ms = 0 keeps the toast up until the next toast() call (for in-flight tx status).
+function toast(msg, ms = 3000) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 3000);
+  clearTimeout(toastTimer);
+  if (ms > 0) toastTimer = setTimeout(() => (t.hidden = true), ms);
 }
 
 function renderAuth() {
@@ -292,10 +427,21 @@ async function viewHub() {
 
 function feedRow(p, votes) {
   return `<div class="card feed-row">
-    <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n">${votes.get(p.uri) || 0}</span></div>
+    <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
     <div style="flex:1">
-      <div class="post-meta">r/${esc(p.comm)} · ${esc(p.author)} · <span class="confirmed">✅ confirmed</span></div>
+      <div class="post-meta">m/${esc(p.comm)} · ${esc(p.author)}</div>
       <div class="post-title"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
+    </div></div>`;
+}
+
+// A lightweight placeholder shown immediately after posting, until the real
+// object is indexed and the view re-renders.
+function pendingRow(body) {
+  return `<div class="card feed-row pending">
+    <div class="votes"><span class="muted">▲</span><span class="n">·</span></div>
+    <div style="flex:1">
+      <div class="post-meta muted">${esc(session.email || "")} · posting…</div>
+      <div class="post-title">${esc((body || "").slice(0, 120))}</div>
     </div></div>`;
 }
 
@@ -304,13 +450,35 @@ async function viewCommunity(commId) {
   const comms = window.__comms || (await getCommunities());
   const c = comms.find((x) => x.id === commId);
   if (!c) { main.innerHTML = `<div class="card">Unknown community.</div>`; return; }
+  const member = session.email ? await hasMembership() : false;
+  const actionBtn = !session.email
+    ? `<button class="primary" id="signin2">Sign in to post</button>`
+    : member
+      ? `<button class="primary" id="newpost">+ New post</button>`
+      : `<button class="primary" id="join">Join to post</button>`;
   main.innerHTML = `
-    <div class="row-between"><div class="h1">r/${esc(c.id)} ${c.open ? "✓" : ""}</div>
-      <button class="primary" id="newpost">+ New post</button></div>
+    <div class="row-between"><div class="h1">m/${esc(c.id)} ${c.open ? "✓" : ""}</div>
+      ${actionBtn}</div>
     <div class="card muted">${esc(c.description || "")} · issuer ${esc(c.issuer)}</div>
     <div id="compose"></div>
     <div id="posts" class="muted">loading…</div>`;
-  $("#newpost").onclick = () => showCompose(c.id);
+  if (session.email && member) $("#newpost").onclick = () => showCompose(c.id);
+  else if (session.email) $("#join").onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = "Joining…";
+    try {
+      await joinHub();
+      toast("Joining the hub — confirming on-chain (~30s)…");
+      e.target.textContent = "Confirming…";
+      // Poll until the membership attestation is visible in state, then re-render
+      // so the action button flips to "New post" without a manual reload.
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        if (await hasMembership()) { toast("You're in — you can post now."); return void route(); }
+      }
+      toast("Still confirming — reload in a moment if the button hasn't updated.");
+    } catch (err) { toast("join failed: " + err.message); e.target.disabled = false; e.target.textContent = "Join to post"; }
+  };
+  else $("#signin2").onclick = signIn;
   const [{ posts }, votes] = await Promise.all([getSpaceItems(c.id, CONFIG.space), getVoteCounts()]);
   posts.sort((a, b) => (votes.get(b.uri) || 0) - (votes.get(a.uri) || 0) || (b.hlc || "").localeCompare(a.hlc || ""));
   $("#posts").outerHTML = `<div id="posts">${posts.length ? posts.map((p) => feedRow({ ...p, comm: c.id }, votes)).join("") : `<div class="card muted">No posts yet.</div>`}</div>`;
@@ -319,7 +487,7 @@ async function viewCommunity(commId) {
 
 function showCompose(commId) {
   const box = $("#compose");
-  box.innerHTML = `<div class="card"><div class="h2">New post in r/${esc(commId)}/${esc(CONFIG.space)}</div>
+  box.innerHTML = `<div class="card"><div class="h2">New post in m/${esc(commId)}/${esc(CONFIG.space)}</div>
     <textarea id="post-body" placeholder="Share something…"></textarea>
     <div class="row-between" style="margin-top:8px"><span class="muted tiny">posts to the DA layer</span>
     <span><button id="post-cancel">Cancel</button> <button class="primary" id="post-submit">Post</button></span></div></div>`;
@@ -329,9 +497,19 @@ function showCompose(commId) {
     if (!body) return;
     $("#post-submit").disabled = true;
     try {
-      await composePost(commId, CONFIG.space, body);
-      toast("posting… it will appear once the block lands");
+      const id = await composePost(commId, CONFIG.space, body);
+      toast("posting… confirming on-chain (~30s)…", 0); // sticky until indexed
       box.innerHTML = "";
+      // Show a placeholder where the post will land, so it doesn't vanish.
+      const posts = $("#posts");
+      if (posts) posts.insertAdjacentHTML("afterbegin", pendingRow(body));
+      // Poll until the post is visible in state, then refresh the view.
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const { posts: list } = await getSpaceItems(commId, CONFIG.space);
+        if (list.find((p) => p.id === id)) { toast("posted!"); return void route(); }
+      }
+      toast("Still confirming — reload in a moment to see your post.");
     } catch (e) { toast("post failed: " + e.message); $("#post-submit").disabled = false; }
   };
 }
@@ -344,10 +522,10 @@ async function viewThread(commId, postId) {
   if (!post) { main.innerHTML = `<div class="card">Post not found.</div>`; return; }
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
-    <a class="muted" href="#/c/${esc(commId)}">← r/${esc(commId)}</a>
-    <div class="card"><div class="post-meta">${esc(post.author)} · <span class="confirmed">✅</span></div>
+    <a class="muted" href="#/c/${esc(commId)}">← m/${esc(commId)}</a>
+    <div class="card"><div class="post-meta">${esc(post.author)}</div>
       <div class="post-body">${esc(post.body)}</div>
-      <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · ${votes.get(post.uri) || 0}</div>
+      <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · <span data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div>
     </div>
     <div class="h2">Comments</div>
     <div class="card"><textarea id="c-body" placeholder="Add a comment…"></textarea>
@@ -356,8 +534,19 @@ async function viewThread(commId, postId) {
   $("#c-submit").onclick = async () => {
     const body = $("#c-body").value.trim(); if (!body) return;
     $("#c-submit").disabled = true;
-    try { await addComment(commId, CONFIG.space, post.uri, body); toast("commenting… appears once the block lands"); $("#c-body").value = ""; }
-    catch (e) { toast("comment failed: " + e.message); } finally { $("#c-submit").disabled = false; }
+    try {
+      await addComment(commId, CONFIG.space, post.uri, body);
+      toast("commenting… confirming on-chain (~30s)…", 0);
+      $("#c-body").value = "";
+      const before = kids.length;
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const { comments: cs } = await getSpaceItems(commId, CONFIG.space);
+        if (cs.filter((c) => c.parent === post.uri).length > before) { toast("commented!"); return void route(); }
+      }
+      toast("Still confirming — reload in a moment to see your comment.");
+    } catch (e) { toast("comment failed: " + e.message); }
+    finally { $("#c-submit").disabled = false; }
   };
   wireVoteButtons();
 }
@@ -369,8 +558,19 @@ function wireVoteButtons() {
   document.querySelectorAll("[data-vote]").forEach((b) => {
     b.onclick = async () => {
       const [comm, uri] = b.getAttribute("data-vote").split("|");
-      try { await upvote(comm, CONFIG.space, uri); toast("vote submitted"); }
-      catch (e) { toast("vote failed: " + e.message); }
+      if (b.dataset.voted) return; // already optimistically counted
+      // Optimistic LWW update: bump just this count + mark the button, without
+      // re-rendering the page (so content doesn't jump). Reconciles on next load.
+      const span = document.querySelector(`[data-count="${CSS.escape(uri)}"]`);
+      const prev = span ? span.textContent : null;
+      if (span) span.textContent = String((parseInt(span.textContent, 10) || 0) + 1);
+      b.dataset.voted = "1"; b.classList.add("voted");
+      try { await upvote(comm, CONFIG.space, uri); toast("vote submitted — confirming on-chain…", 0); }
+      catch (e) {
+        if (span && prev !== null) span.textContent = prev; // revert
+        delete b.dataset.voted; b.classList.remove("voted");
+        toast("vote failed: " + e.message);
+      }
     };
   });
 }

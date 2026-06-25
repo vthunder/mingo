@@ -58,3 +58,14 @@ textarea { min-height: 90px; resize: vertical; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
   background: #1e293b; color: #e2e8f0; padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 50; }
 .passport-row { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+
+/* In-page handle picker (registration) */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4);
+  display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { width: 360px; max-width: 90vw; margin: 0; }
+.error { color: #c0392b; }
+
+/* Pending (optimistic) post placeholder + voted state */
+.feed-row.pending { opacity: .6; }
+.feed-row.pending .post-title { font-style: italic; }
+button.up.voted { color: var(--accent); font-weight: 700; }

@@ -389,6 +389,40 @@ enum DomainCommands {
         /// (e.g., example.com or sbo+raw://avail:turing:506/sys/domains/example.com)
         domain: String,
     },
+
+    /// Capture a DNSSEC proof of _browserid.<domain> and build the on-chain
+    /// /sys/dnssec/<domain> evidence object (unblocks <handle>@<domain> writes).
+    Evidence {
+        /// Domain to capture evidence for (e.g., mingo.place)
+        domain_name: String,
+
+        /// Key alias to sign the /sys/dnssec write (default: "default")
+        #[arg(long)]
+        key: Option<String>,
+
+        /// DNS resolver (host:port) to query (default: 1.1.1.1:53)
+        #[arg(long)]
+        resolver: Option<String>,
+
+        /// File to write the signed wire bytes to
+        #[arg(long, default_value = "dnssec.wire")]
+        out: String,
+    },
+
+    /// Re-issue a community's policy as OPEN (anyone can join by self-issuing a
+    /// membership attestation). Writes the signed wire to --out.
+    OpenCommunity {
+        /// Community id (e.g., cooks)
+        community_id: String,
+        /// Community issuer (e.g., cooks@mingo.place) — still governs bans
+        issuer: String,
+        /// Key alias to sign with (must have authority over /communities/<id>/)
+        #[arg(long)]
+        key: Option<String>,
+        /// File to write the signed wire bytes to
+        #[arg(long, default_value = "policy.wire")]
+        out: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1471,6 +1505,22 @@ async fn main() -> anyhow::Result<()> {
                 }
                 DomainCommands::Show { domain } => {
                     commands::domain::show(&domain).await?;
+                }
+                DomainCommands::Evidence { domain_name, key, resolver, out } => {
+                    commands::domain::evidence(
+                        &domain_name,
+                        key.as_deref(),
+                        resolver.as_deref(),
+                        &out,
+                    ).await?;
+                }
+                DomainCommands::OpenCommunity { community_id, issuer, key, out } => {
+                    commands::domain::open_community(
+                        &community_id,
+                        &issuer,
+                        key.as_deref(),
+                        &out,
+                    ).await?;
                 }
             }
         }
