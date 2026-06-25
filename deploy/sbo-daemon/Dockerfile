@@ -1,40 +1,31 @@
 # syntax=docker/dockerfile:1
-# sbo-daemon (the Mingo DA gateway / read+submit API) → da.sandmill.org.
+# sbo-daemon (the generic SBO DA gateway / read+submit API) → da.sandmill.org.
 #
-# cargo-chef layering: the dependency compile (including the slow bundled rocksdb
-# C++ build) lives in a layer keyed only on Cargo.toml/Cargo.lock, so an
-# app-code change recompiles just our crates — never rocksdb. BuildKit cache
-# mounts persist the cargo registry + target across deploys on top of that.
+# The daemon is application-agnostic and lives in vthunder/sbo. This image builds
+# it from that repo at a pinned rev (SBO_REV), then layers mingo's deploy config
+# (the app-506 seed in entrypoint.sh + config.toml) on top — code in sbo, app
+# config in mingo. Bump SBO_REV (keep in sync with the sbo-core git pin in
+# ../../Cargo.toml) to adopt daemon changes.
 #
 # Bundled rocksdb (not system librocksdb): bookworm's 8.9.1 lacks C-API symbols
 # librocksdb-sys 0.16 (rocksdb 8.10 bindings) needs, so linking system fails.
 #
-# Build context = repo root. Selected per-app via:
-#   dokku builder-dockerfile:set sbo-daemon dockerfile-path deploy/sbo-daemon/Dockerfile
-# Base pinned to a specific toolchain (not the moving `rust:1` tag): a tag bump
-# changes the image digest and invalidates every cached layer below — including
-# the slow cargo-chef install and the bundled-rocksdb dependency build. Bump this
-# deliberately when upgrading Rust.
-FROM rust:1.93-bookworm AS chef
-RUN cargo install cargo-chef --locked
-WORKDIR /src
-
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM chef AS build
+# Build context = mingo repo root (for config.toml + entrypoint.sh). The daemon
+# source is cloned from git, so the context need not contain the sbo crates.
+# Base pinned to a specific toolchain (not the moving `rust:1` tag) so the
+# rocksdb dependency layer stays cached across deploys.
+FROM rust:1.93-bookworm AS build
+ARG SBO_REV=a3483a136679633899d558dc5db5818b11519be4
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler \
+        clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler git \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=planner /src/recipe.json recipe.json
-# Dependency layer — only rebuilds when Cargo.lock changes.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
-    cargo chef cook --release -p sbo-daemon --recipe-path recipe.json
-COPY . .
+WORKDIR /src
+# Clone + checkout in one layer so a SBO_REV bump re-fetches the pinned source.
+RUN git clone https://github.com/vthunder/sbo . \
+    && git checkout "$SBO_REV"
+# BuildKit cache mounts persist the cargo registry + target across deploys, so
+# only changed codegen units recompile after the first (cold) build.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \

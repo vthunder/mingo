@@ -1,13 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["sbo-core", "sbo-avail", "sbo-daemon", "sbo-cli", "sbo-types", "sbo-crypto", "sbo-capture", "sbo-wasm", "sbo-zkvm", "sbo-zkvm/methods", "sbo-rpc", "mingo-idp", "mingo-app"]
+members = ["mingo-idp", "mingo-app"]
 
 # Incremental release builds. Cargo only ever compiles *workspace* crates
-# incrementally (never registry deps), so this is cache-safe: it does NOT change
-# the fingerprint of rocksdb et al., and combined with the deploy's persisted
-# BuildKit target/ cache mount it makes redeploys recompile only the changed
-# codegen units of our own crates (sbo-core, sbo-daemon, ...). opt-level is left
-# at the release default (3) on purpose — lowering it WOULD rebuild every dep.
+# incrementally (never registry/git deps), so this is cache-safe: it does NOT
+# change the fingerprint of the sbo crates or rocksdb, and combined with the
+# deploy's persisted BuildKit target/ cache mount it makes redeploys recompile
+# only the changed codegen units of our own crates.
 [profile.release]
 incremental = true
 
@@ -15,50 +14,20 @@ incremental = true
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/user/sbo"
+repository = "https://github.com/vthunder/mingo"
 
 [workspace.dependencies]
-# Crypto
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-sha2 = "0.10"
-rand = "0.8"
-hex = "0.4"
-
-# Storage
-rocksdb = "0.22"
-
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Async
-tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
-futures = "0.3"
-
-# HTTP
-reqwest = { version = "0.12", features = ["json"] }
-axum = "0.7"
-tower-http = { version = "0.5", features = ["cors", "set-header"] }
-base64 = "0.22"
-
-# Compression
-flate2 = "1.0"
-
 # Error handling
-thiserror = "1"
 anyhow = "1"
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Internal crates
-sbo-core = { path = "sbo-core" }
-sbo-crypto = { path = "sbo-crypto" }
-sbo-avail = { path = "sbo-avail" }
-sbo-daemon = { path = "sbo-daemon" }
-sbo-rpc = { path = "sbo-rpc" }
+# The application-agnostic SBO reference implementation lives in vthunder/sbo.
+# Pinned git dependency (bump the rev to adopt SBO changes); mingo's forum layer
+# (mingo-app) builds on top of it.
+sbo-core = { git = "https://github.com/vthunder/sbo", rev = "a3483a136679633899d558dc5db5818b11519be4" }
