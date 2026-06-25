@@ -327,10 +327,11 @@ async function hasMembership() {
     // Path-scoped list (NOT getObject: /v1/object matches by id regardless of
     // path, which would falsely match another user's membership).
     const objs = await listPrefix(`/${session.email}/attestations/${session.email}/`);
-    // Membership gating stays confirmed-only (Phase A): ignore overlay entries
-    // so Join shows "Joining…" until the membership actually confirms — avoids
-    // showing as a member while posts are still rejected against confirmed state.
-    return objs.some((o) => o.content_schema === "attestation.v1" && o.id === "membership" && o.confirmed !== false);
+    // Membership gating counts PENDING memberships (Phase B): the daemon now
+    // validates posts against confirmed+pending state (StateView/Overlay), so a
+    // just-submitted membership authorizes posting immediately — no need to wait
+    // for the attestation to confirm on-chain before flipping "Join" → "New post".
+    return objs.some((o) => o.content_schema === "attestation.v1" && o.id === "membership");
   } catch { return false; }
 }
 async function joinHub() {
@@ -472,15 +473,11 @@ async function viewCommunity(commId) {
     e.target.disabled = true; e.target.textContent = "Joining…";
     try {
       await joinHub();
-      toast("Joining the hub — confirming on-chain (~30s)…");
-      e.target.textContent = "Confirming…";
-      // Poll until the membership attestation is visible in state, then re-render
-      // so the action button flips to "New post" without a manual reload.
-      for (let i = 0; i < 24; i++) {
-        await new Promise((r) => setTimeout(r, 5000));
-        if (await hasMembership()) { toast("You're in — you can post now."); return void route(); }
-      }
-      toast("Still confirming — reload in a moment if the button hasn't updated.");
+      // The daemon serves the membership from its overlay immediately and now
+      // validates posts against confirmed+pending state, so the user can post
+      // right away — flip the button without waiting for on-chain confirmation.
+      toast("You're in — you can post now.");
+      route();
     } catch (err) { toast("join failed: " + err.message); e.target.disabled = false; e.target.textContent = "Join to post"; }
   };
   else $("#signin2").onclick = signIn;

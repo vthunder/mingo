@@ -1004,7 +1004,8 @@ impl SyncEngine {
         // Update state DB (keyed by URI)
         let uri = repo.uri.to_string();
         let state_db = self.state_dbs.get(&uri).map(|a| a.as_ref());
-        if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_db, object_hash, l2) {
+        let state_view = state_db.map(|d| d as &dyn crate::state_view::StateView);
+        if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_view, object_hash, l2) {
             // Reconcile the mempool overlay: this write is now confirmed, so
             // drop its (or any superseded) shadow at the same (path, id).
             if let Ok(mut pool) = self.pending.write() {

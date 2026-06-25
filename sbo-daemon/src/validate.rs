@@ -8,7 +8,9 @@ use sbo_core::message::{Message, Action, Id, Path as SboPath};
 use sbo_core::policy::{evaluate, ActionType, AttestedSource, PolicyResult};
 use sbo_core::resolve::{resolve_controller, Controller, NameRecord, DEFAULT_HOP_LIMIT};
 use sbo_core::schema::{parse_attestation, validate_schema, SchemaError};
-use sbo_core::state::{StateDb, StoredObject};
+use sbo_core::state::StoredObject;
+
+use crate::state_view::StateView;
 use std::path::Path;
 
 /// Validation stage that failed
@@ -51,7 +53,7 @@ pub struct L2Context {
 
 impl L2Context {
     /// Build the L2 context for a block, sourcing trust anchors from state.
-    pub fn for_block(inclusion_time: Option<i64>, state: &StateDb) -> Self {
+    pub fn for_block(inclusion_time: Option<i64>, state: &dyn StateView) -> Self {
         Self {
             inclusion_time,
             anchors: load_trust_anchors(state),
@@ -69,7 +71,7 @@ const TRUST_BROKERS_ID: &str = "brokers";
 /// provider domains. Absent or unparseable → an empty broker set (only
 /// primary-IdP attribution will succeed). The DNS root KSK is hardcoded inside
 /// `dnssec-prover`, so `/sys/trust/dns-root` is not consulted here.
-fn load_trust_anchors(state: &StateDb) -> TrustAnchors {
+fn load_trust_anchors(state: &dyn StateView) -> TrustAnchors {
     let brokers = (|| {
         let path = SboPath::parse(TRUST_BROKERS_PATH).ok()?;
         let id = Id::new(TRUST_BROKERS_ID).ok()?;
@@ -84,7 +86,7 @@ fn load_trust_anchors(state: &StateDb) -> TrustAnchors {
 /// Build a `/sys/names/<name>` resolver closure over the state DB, mapping each
 /// name record to its [`NameRecord`] kind (key-rooted `identity.v1` vs
 /// email-rooted `identity.email.v1`) for [`resolve_controller`] indirection.
-fn name_lookup(state: &StateDb) -> impl Fn(&str) -> Option<NameRecord> + '_ {
+fn name_lookup(state: &dyn StateView) -> impl Fn(&str) -> Option<NameRecord> + '_ {
     move |name: &str| {
         let path = SboPath::parse("/sys/names/").ok()?;
         let id = Id::new(name).ok()?;
@@ -110,7 +112,7 @@ fn name_lookup(state: &StateDb) -> impl Fn(&str) -> Option<NameRecord> + '_ {
 /// Run the L2 attribution check: does the message's signer speak for
 /// `owner_ref` at the block's inclusion time? Returns `Ok(())` if authorized,
 /// `Err(reason)` if the write must be carried-but-filtered.
-fn l2_authorize(msg: &Message, state: &StateDb, l2: &L2Context, owner_ref: &str) -> Result<(), String> {
+fn l2_authorize(msg: &Message, state: &dyn StateView, l2: &L2Context, owner_ref: &str) -> Result<(), String> {
     let signer = msg.signing_key.to_string();
     let lookup = name_lookup(state);
     // Resolve referenced / conventional evidence to inline bytes the pure
@@ -146,7 +148,7 @@ fn l2_authorize(msg: &Message, state: &StateDb, l2: &L2Context, owner_ref: &str)
 /// (carried-but-filtered for an email-rooted owner). Because a referenced
 /// `dnssec.v1` object is self-authenticating (re-validated against the pinned
 /// root KSK by the verifier), resolving it is not a trusted read.
-pub fn resolve_evidence(msg: &Message, state: &StateDb) -> Option<String> {
+pub fn resolve_evidence(msg: &Message, state: &dyn StateView) -> Option<String> {
     match msg.auth_evidence.as_deref() {
         Some(inline) if inline.starts_with("inline:") => Some(inline.to_string()),
         Some(reference) if reference.starts_with("ref:") => {
@@ -168,7 +170,7 @@ pub fn resolve_evidence(msg: &Message, state: &StateDb) -> Option<String> {
 /// an `sbo-path` ref like `/sys/dnssec/<issuer>`: the final segment is the
 /// object id, the rest the path. Creator-independent (the object is
 /// self-authenticating, so any creator's copy is equivalent).
-fn fetch_evidence_object(state: &StateDb, ref_path: &str) -> Option<Vec<u8>> {
+fn fetch_evidence_object(state: &dyn StateView, ref_path: &str) -> Option<Vec<u8>> {
     let (path_str, id_str) = ref_path.trim_end_matches('/').rsplit_once('/')?;
     let path = SboPath::parse(&format!("{path_str}/")).ok()?;
     let id = Id::new(id_str).ok()?;
@@ -199,7 +201,7 @@ const ROOT_POLICY_ID: &str = "root";
 /// inclusion time (valid `Auth-Cert` + DNSSEC evidence), or `None` if the
 /// signer carries no valid attribution. Deterministic given the message and
 /// chain state — the same inclusion-time-pinned check the L2 gate uses.
-fn attributed_email(msg: &Message, state: Option<&StateDb>, l2: &L2Context) -> Option<String> {
+fn attributed_email(msg: &Message, state: Option<&dyn StateView>, l2: &L2Context) -> Option<String> {
     let signer = msg.signing_key.to_string();
     // Evidence resolution (ref:/dnssec) needs state; inline works without it.
     let evidence = state.and_then(|db| resolve_evidence(msg, db));
@@ -220,7 +222,7 @@ fn attributed_email(msg: &Message, state: Option<&StateDb>, l2: &L2Context) -> O
 /// **attributed email** (so an email author's writes share a stable creator
 /// across browserid key rotation, instead of fragmenting under each ephemeral
 /// key) → the signer's claimed name → truncated key hex.
-pub fn resolve_creator(msg: &Message, state: Option<&StateDb>, l2: &L2Context) -> Id {
+pub fn resolve_creator(msg: &Message, state: Option<&dyn StateView>, l2: &L2Context) -> Id {
     // If message has explicit creator, use it
     if let Some(creator) = &msg.creator {
         return creator.clone();
@@ -273,7 +275,7 @@ pub fn resolve_creator(msg: &Message, state: Option<&StateDb>, l2: &L2Context) -
 ///
 /// `W` (max authoring lag) defaults to [`sbo_core::hlc::DEFAULT_MAX_AUTHORING_LAG_MS`];
 /// per-collection `W` from a `collection.v1` descriptor is wired in a later step.
-fn check_hlc_bound(msg: &Message, state: &StateDb, l2: &L2Context) -> Result<(), String> {
+fn check_hlc_bound(msg: &Message, state: &dyn StateView, l2: &L2Context) -> Result<(), String> {
     let hlc_str = match &msg.hlc {
         Some(h) => h,
         None => return Ok(()), // no HLC → base inclusion-order semantics
@@ -305,7 +307,7 @@ fn check_hlc_bound(msg: &Message, state: &StateDb, l2: &L2Context) -> Result<(),
 /// collection defaults to a small `W` ([`sbo_core::hlc::DEFAULT_MAX_AUTHORING_LAG_MS`]).
 /// The descriptor is looked up at the write's own path; deeper ancestor
 /// resolution is a later refinement.
-fn collection_max_lag_ms(msg: &Message, state: &StateDb) -> i64 {
+fn collection_max_lag_ms(msg: &Message, state: &dyn StateView) -> i64 {
     let descriptor = state
         .get_first_object_at_path_id(&msg.path, &Id::new(sbo_core::schema::COLLECTION_CONFIG_ID).unwrap())
         .ok()
@@ -389,7 +391,7 @@ fn effective_owner_ref(msg: &Message) -> String {
 /// Validate a message against the current state
 pub fn validate_message(
     msg: &Message,
-    state: &StateDb,
+    state: &dyn StateView,
     _repo_path: &Path,
     l2: &L2Context,
 ) -> ValidationResult {
@@ -481,7 +483,7 @@ enum RootPolicyCheck {
 
 /// Check if the root policy (/sys/policies/root) exists
 /// SECURITY: Returns explicit error on DB failure (fail closed)
-fn check_root_policy_exists(state: &StateDb) -> RootPolicyCheck {
+fn check_root_policy_exists(state: &dyn StateView) -> RootPolicyCheck {
     let path = match SboPath::parse(ROOT_POLICY_PATH) {
         Ok(p) => p,
         Err(e) => return RootPolicyCheck::Error(format!("Invalid root policy path: {}", e)),
@@ -506,7 +508,7 @@ fn check_root_policy_exists(state: &StateDb) -> RootPolicyCheck {
 /// Validate a post action
 fn validate_post(
     msg: &Message,
-    state: &StateDb,
+    state: &dyn StateView,
     root_policy_exists: bool,
     l2: &L2Context,
 ) -> ValidationResult {
@@ -577,7 +579,7 @@ fn is_name_claim_path(path: &SboPath) -> bool {
 /// Validate a name claim (enforces uniqueness by path/id, not path/creator/id)
 fn validate_name_claim(
     msg: &Message,
-    state: &StateDb,
+    state: &dyn StateView,
     _root_policy_exists: bool,
     l2: &L2Context,
 ) -> ValidationResult {
@@ -622,7 +624,7 @@ fn validate_name_claim(
 /// Validate a transfer action
 fn validate_transfer(
     msg: &Message,
-    state: &StateDb,
+    state: &dyn StateView,
     root_policy_exists: bool,
     l2: &L2Context,
 ) -> ValidationResult {
@@ -671,7 +673,7 @@ fn validate_transfer(
 /// Validate a delete action
 fn validate_delete(
     msg: &Message,
-    state: &StateDb,
+    state: &dyn StateView,
     root_policy_exists: bool,
     l2: &L2Context,
 ) -> ValidationResult {
@@ -690,7 +692,7 @@ fn stored_owner_ref(obj: &StoredObject) -> &str {
 /// Check if an action is allowed by policy
 /// Returns Ok(()) if allowed, Err(reason) if denied
 fn check_policy(
-    state: &StateDb,
+    state: &dyn StateView,
     msg: &Message,
     action: ActionType,
     owner: Option<&str>,
@@ -776,7 +778,7 @@ fn check_policy(
 /// issuer, including a self-attestation). All inputs are on-chain and
 /// inclusion-time-pinned, so the decision is deterministic on replay.
 fn attested_subject_matches(
-    state: &StateDb,
+    state: &dyn StateView,
     l2: &L2Context,
     requester: &Controller,
     source: &AttestedSource,
@@ -825,7 +827,7 @@ fn attested_subject_matches(
 pub fn message_to_stored_object(
     msg: &Message,
     block_number: u64,
-    state: Option<&StateDb>,
+    state: Option<&dyn StateView>,
     object_hash: [u8; 32],
     l2: &L2Context,
 ) -> Option<StoredObject> {

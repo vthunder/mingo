@@ -119,6 +119,12 @@ impl PendingPool {
             .collect()
     }
 
+    /// An owned snapshot of every pending object, for building a read overlay
+    /// without holding the pool lock across validation.
+    pub fn snapshot(&self) -> Vec<StoredObject> {
+        self.entries.values().map(|e| e.obj.clone()).collect()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

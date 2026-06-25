@@ -401,21 +401,29 @@ impl RepoApi for DaemonState {
             return Err(ApiError::bad_request("no SBO messages in submit body"));
         }
 
-        // Validate against the daemon's sole repo's confirmed state, using the
-        // current wall-clock as the inclusion time (Phase A: confirmed-only
-        // validation — see the mempool overlay plan).
+        // Validate against the daemon's sole repo's confirmed state **plus** the
+        // mempool's pending tip (Phase B: pending-aware validation via Overlay).
+        // Validating against confirmed+pending lets chained optimistic writes
+        // (e.g. join → post in one submit) succeed before the earlier write has
+        // landed in a block.
         let repo = resolve_repo(&self.repos, None)?;
         let db = repo
             .state_db()
             .map_err(|e| ApiError::internal(format!("Failed to open state db: {e}")))?;
         let now = unix_now();
 
+        // Seed an overlay from the current pending snapshot. As each message in
+        // the batch validates, stage its object into the overlay so later
+        // messages in the same submit observe it.
+        let snapshot = self.pending.read().unwrap().snapshot();
+        let mut overlay = sbo_daemon::state_view::Overlay::new(&db, snapshot);
+
         // Fully validate every message and pre-build its overlay object before
         // mutating the pool, so a rejected message leaves the pool untouched.
         let mut staged: Vec<(StoredObject, [u8; 32])> = Vec::with_capacity(messages.len());
         for msg in &messages {
-            let l2 = L2Context::for_block(Some(now), &db);
-            match validate_message(msg, &db, &repo.path, &l2) {
+            let l2 = L2Context::for_block(Some(now), &overlay);
+            match validate_message(msg, &overlay, &repo.path, &l2) {
                 ValidationResult::Valid { .. } => {}
                 ValidationResult::Invalid { stage, reason } => {
                     return Err(ApiError::bad_request(format!("{stage:?}: {reason}")));
@@ -424,9 +432,16 @@ impl RepoApi for DaemonState {
             let object_hash = sbo_core::sha256(&sbo_core::wire::serialize(msg));
             // Only content-bearing writes (Post) produce an overlay object;
             // Deletes have no stored object and simply wait for confirmation.
-            if let Some(obj) =
-                message_to_stored_object(msg, repo.head, Some(&db), object_hash, &l2)
-            {
+            if let Some(obj) = message_to_stored_object(
+                msg,
+                repo.head,
+                Some(&overlay as &dyn sbo_daemon::state_view::StateView),
+                object_hash,
+                &l2,
+            ) {
+                // Make this write visible to the next message in the batch, then
+                // record it for pool insertion once the whole batch is accepted.
+                overlay.stage(obj.clone());
                 staged.push((obj, object_hash));
             }
         }
