@@ -426,11 +426,14 @@ pub struct SyncEngine {
     rpc_only: bool,
     /// StateDb instances per repo URI (shared process-wide handles)
     state_dbs: HashMap<String, std::sync::Arc<StateDb>>,
+    /// Mempool overlay shared with the HTTP/IPC read path. When a write
+    /// confirms, its shadow is evicted here (reconciliation).
+    pending: crate::pending::SharedPending,
 }
 
 impl SyncEngine {
-    pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool, verbose_rpc_decode: bool, light_mode: bool, rpc_only: bool) -> Self {
-        Self { lc, rpc, verbose_raw, verbose_rpc_decode, light_mode, rpc_only, state_dbs: HashMap::new() }
+    pub fn new(lc: LcManager, rpc: RpcClient, verbose_raw: bool, verbose_rpc_decode: bool, light_mode: bool, rpc_only: bool, pending: crate::pending::SharedPending) -> Self {
+        Self { lc, rpc, verbose_raw, verbose_rpc_decode, light_mode, rpc_only, state_dbs: HashMap::new(), pending }
     }
 
     /// Get or open StateDb for a repo by URI
@@ -1002,6 +1005,11 @@ impl SyncEngine {
         let uri = repo.uri.to_string();
         let state_db = self.state_dbs.get(&uri).map(|a| a.as_ref());
         if let Some(stored_obj) = message_to_stored_object(msg, block_number, state_db, object_hash, l2) {
+            // Reconcile the mempool overlay: this write is now confirmed, so
+            // drop its (or any superseded) shadow at the same (path, id).
+            if let Ok(mut pool) = self.pending.write() {
+                pool.reconcile_applied(&stored_obj);
+            }
             if let Some(db) = state_db {
                 if let Err(e) = db.put_object(&stored_obj) {
                     tracing::warn!("Failed to update state DB: {}", e);

@@ -12,6 +12,7 @@ pub mod sync;
 pub mod ipc;
 pub mod http;
 pub mod validate;
+pub mod pending;
 pub mod prover;
 
 use thiserror::Error;

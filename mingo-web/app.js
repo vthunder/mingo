@@ -46,7 +46,17 @@ async function submitWire(bytes) {
     headers: { "Content-Type": "application/octet-stream" },
     body: bytes,
   });
-  if (!r.ok) throw new Error(`submit ${r.status} ${await r.text()}`);
+  if (!r.ok) {
+    // The daemon now validates at submit and returns 400 with a stage+reason
+    // (e.g. "Attribution: not a member") — surface that, not the raw status.
+    let reason = await r.text();
+    try { reason = JSON.parse(reason).error || reason; } catch {}
+    const err = new Error(reason);
+    err.status = r.status;
+    throw err;
+  }
+  // { submission_id, accepted, pending, hash } — the write is validated and
+  // staged in the daemon's mempool overlay, visible to all clients within ~1s.
   return r.json();
 }
 
@@ -79,6 +89,8 @@ function toItem(o) {
     parent: o.value?.parent,
     block: o.block,
     hlc: o.hlc,
+    // false when served from the daemon's unconfirmed overlay (render pending).
+    confirmed: o.confirmed !== false,
   };
 }
 function shortAuthor(ref) {
@@ -315,7 +327,10 @@ async function hasMembership() {
     // Path-scoped list (NOT getObject: /v1/object matches by id regardless of
     // path, which would falsely match another user's membership).
     const objs = await listPrefix(`/${session.email}/attestations/${session.email}/`);
-    return objs.some((o) => o.content_schema === "attestation.v1" && o.id === "membership");
+    // Membership gating stays confirmed-only (Phase A): ignore overlay entries
+    // so Join shows "Joining…" until the membership actually confirms — avoids
+    // showing as a member while posts are still rejected against confirmed state.
+    return objs.some((o) => o.content_schema === "attestation.v1" && o.id === "membership" && o.confirmed !== false);
   } catch { return false; }
 }
 async function joinHub() {
@@ -426,22 +441,12 @@ async function viewHub() {
 }
 
 function feedRow(p, votes) {
-  return `<div class="card feed-row">
+  const pending = p.confirmed === false;
+  return `<div class="card feed-row${pending ? " pending" : ""}">
     <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
     <div style="flex:1">
-      <div class="post-meta">m/${esc(p.comm)} · ${esc(p.author)}</div>
+      <div class="post-meta">m/${esc(p.comm)} · ${esc(p.author)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
       <div class="post-title"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
-    </div></div>`;
-}
-
-// A lightweight placeholder shown immediately after posting, until the real
-// object is indexed and the view re-renders.
-function pendingRow(body) {
-  return `<div class="card feed-row pending">
-    <div class="votes"><span class="muted">▲</span><span class="n">·</span></div>
-    <div style="flex:1">
-      <div class="post-meta muted">${esc(session.email || "")} · posting…</div>
-      <div class="post-title">${esc((body || "").slice(0, 120))}</div>
     </div></div>`;
 }
 
@@ -498,18 +503,19 @@ function showCompose(commId) {
     $("#post-submit").disabled = true;
     try {
       const id = await composePost(commId, CONFIG.space, body);
-      toast("posting… confirming on-chain (~30s)…", 0); // sticky until indexed
+      toast("posted — pending confirmation…");
       box.innerHTML = "";
-      // Show a placeholder where the post will land, so it doesn't vanish.
-      const posts = $("#posts");
-      if (posts) posts.insertAdjacentHTML("afterbegin", pendingRow(body));
-      // Poll until the post is visible in state, then refresh the view.
+      // The daemon overlay already serves the post (marked pending) to every
+      // client. Re-render shortly to show it, then poll until it confirms so
+      // its "pending…" affordance clears.
+      await new Promise((r) => setTimeout(r, 1200));
+      route();
       for (let i = 0; i < 24; i++) {
         await new Promise((r) => setTimeout(r, 5000));
         const { posts: list } = await getSpaceItems(commId, CONFIG.space);
-        if (list.find((p) => p.id === id)) { toast("posted!"); return void route(); }
+        const p = list.find((x) => x.id === id);
+        if (p && p.confirmed) { toast("post confirmed on-chain."); return void route(); }
       }
-      toast("Still confirming — reload in a moment to see your post.");
     } catch (e) { toast("post failed: " + e.message); $("#post-submit").disabled = false; }
   };
 }
@@ -536,15 +542,19 @@ async function viewThread(commId, postId) {
     $("#c-submit").disabled = true;
     try {
       await addComment(commId, CONFIG.space, post.uri, body);
-      toast("commenting… confirming on-chain (~30s)…", 0);
+      toast("commented — pending confirmation…");
       $("#c-body").value = "";
+      // Overlay serves the comment immediately; re-render to show it (pending),
+      // then poll until the count of confirmed comments grows.
       const before = kids.length;
+      await new Promise((r) => setTimeout(r, 1200));
+      route();
       for (let i = 0; i < 24; i++) {
         await new Promise((r) => setTimeout(r, 5000));
         const { comments: cs } = await getSpaceItems(commId, CONFIG.space);
-        if (cs.filter((c) => c.parent === post.uri).length > before) { toast("commented!"); return void route(); }
+        const mine = cs.filter((c) => c.parent === post.uri);
+        if (mine.length > before && mine.every((c) => c.confirmed)) { toast("comment confirmed."); return void route(); }
       }
-      toast("Still confirming — reload in a moment to see your comment.");
     } catch (e) { toast("comment failed: " + e.message); }
     finally { $("#c-submit").disabled = false; }
   };
@@ -558,14 +568,15 @@ function wireVoteButtons() {
   document.querySelectorAll("[data-vote]").forEach((b) => {
     b.onclick = async () => {
       const [comm, uri] = b.getAttribute("data-vote").split("|");
-      if (b.dataset.voted) return; // already optimistically counted
-      // Optimistic LWW update: bump just this count + mark the button, without
-      // re-rendering the page (so content doesn't jump). Reconciles on next load.
+      if (b.dataset.voted) return; // already counted
+      // Bump just this count + mark the button without re-rendering (so content
+      // doesn't jump). The daemon overlay also stages the vote server-side, so
+      // the bump is now backed by shared state and visible to other users.
       const span = document.querySelector(`[data-count="${CSS.escape(uri)}"]`);
       const prev = span ? span.textContent : null;
       if (span) span.textContent = String((parseInt(span.textContent, 10) || 0) + 1);
       b.dataset.voted = "1"; b.classList.add("voted");
-      try { await upvote(comm, CONFIG.space, uri); toast("vote submitted — confirming on-chain…", 0); }
+      try { await upvote(comm, CONFIG.space, uri); toast("vote counted — confirming on-chain…"); }
       catch (e) {
         if (span && prev !== null) span.textContent = prev; // revert
         delete b.dataset.voted; b.classList.remove("voted");

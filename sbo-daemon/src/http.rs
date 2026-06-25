@@ -82,6 +82,10 @@ pub struct ObjectView {
     pub payload_text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sboq: Option<String>,
+    /// `true` for objects served from confirmed (proof-backed) state; `false`
+    /// for objects served from the unconfirmed mempool overlay. The UI renders
+    /// `false` as a pending affordance that clears on confirmation.
+    pub confirmed: bool,
 }
 
 /// What a list query selects: objects under a path prefix, or by content schema.
@@ -97,10 +101,19 @@ pub struct StateRootView {
     pub state_root: String,
 }
 
-/// Result of a successful DA submission.
+/// Result of a successful DA submission. The write was validated against
+/// confirmed state, staged in the mempool overlay (so it is visible to all
+/// clients within ~1s), and forwarded to the DA layer.
 #[derive(Debug, Serialize)]
 pub struct SubmitResultView {
     pub submission_id: String,
+    /// Always `true` on success — the write was accepted (validated).
+    pub accepted: bool,
+    /// `true` while the write lives in the overlay (not yet confirmed on-chain).
+    pub pending: bool,
+    /// Hex `object_hash` of the accepted write; clients can poll for it to flip
+    /// to `confirmed: true`.
+    pub hash: String,
 }
 
 /// Data operations the `/v1/*` routes need from the daemon's state. `repo` (the
@@ -638,6 +651,7 @@ mod tests {
             value: Some(serde_json::json!({ "name": "Cooks" })),
             payload_text: "{\"name\":\"Cooks\"}".to_string(),
             sboq: None,
+            confirmed: true,
         }
     }
 
@@ -674,7 +688,12 @@ mod tests {
             Ok(StateRootView { block: 7, state_root: "ab".repeat(32) })
         }
         async fn submit(&self, _data: Vec<u8>) -> Result<SubmitResultView, ApiError> {
-            Ok(SubmitResultView { submission_id: "sub-123".to_string() })
+            Ok(SubmitResultView {
+                submission_id: "sub-123".to_string(),
+                accepted: true,
+                pending: true,
+                hash: "ab".repeat(16),
+            })
         }
     }
 

@@ -113,6 +113,9 @@ struct DaemonState {
     turbo: TurboDaClient,
     /// Pending sign requests from apps (keyed by request_id)
     sign_requests: HashMap<String, IpcSignRequest>,
+    /// Shared mempool overlay (validated-but-unconfirmed writes). Cloned into the
+    /// sync task so confirmed writes reconcile (evict) their shadows.
+    pending: SharedPending,
 }
 
 impl DaemonState {
@@ -134,6 +137,7 @@ impl DaemonState {
             rpc,
             turbo,
             sign_requests: HashMap::new(),
+            pending: std::sync::Arc::new(std::sync::RwLock::new(PendingPool::new())),
         })
     }
 }
@@ -155,6 +159,7 @@ impl SignRequestStore for DaemonState {
 // ===========================================================================
 
 use sbo_core::state::{StateDb, StoredObject};
+use sbo_daemon::pending::{PendingPool, SharedPending};
 use sbo_daemon::http::{
     ApiError, ListSelector, ObjectView, RepoApi, StateRootView, SubmitResultView,
 };
@@ -189,7 +194,7 @@ fn resolve_repo<'a>(repos: &'a RepoManager, sel: Option<&str>) -> Result<&'a Rep
 }
 
 /// Render a stored object into the browser view, attaching `sboq` if supplied.
-fn build_object_view(obj: &StoredObject, sboq: Option<String>) -> ObjectView {
+fn build_object_view(obj: &StoredObject, sboq: Option<String>, confirmed: bool) -> ObjectView {
     let payload_text = String::from_utf8_lossy(&obj.payload).to_string();
     let value = if obj.content_type == "application/json" {
         serde_json::from_slice::<serde_json::Value>(&obj.payload).ok()
@@ -210,6 +215,7 @@ fn build_object_view(obj: &StoredObject, sboq: Option<String>) -> ObjectView {
         value,
         payload_text,
         sboq,
+        confirmed,
     }
 }
 
@@ -253,6 +259,7 @@ fn read_object_view(
     path_str: &str,
     id_str: &str,
     with_proof: bool,
+    pending: &SharedPending,
 ) -> Result<ObjectView, ApiError> {
     let db = repo
         .state_db()
@@ -262,9 +269,26 @@ fn read_object_view(
     let id = sbo_core::message::Id::new(id_str)
         .map_err(|e| ApiError::bad_request(format!("Invalid id: {e}")))?;
 
-    let obj = db
+    let confirmed = db
         .get_first_object_at_path_id(&path, &id)
-        .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?
+        .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?;
+
+    // Proof requests only ever serve confirmed objects — the overlay has no
+    // proofs. Otherwise merge the mempool overlay over confirmed state (LWW).
+    if !with_proof {
+        let pool = pending.read().unwrap();
+        if let Some(p) = pool.object_at(&path, &id) {
+            let wins = match &confirmed {
+                Some(c) => sbo_daemon::pending::overlay_wins(p, c),
+                None => true,
+            };
+            if wins {
+                return Ok(build_object_view(p, None, false));
+            }
+        }
+    }
+
+    let obj = confirmed
         .ok_or_else(|| ApiError::not_found(format!("object not found: {path_str}{id_str}")))?;
 
     let sboq = if with_proof {
@@ -273,20 +297,55 @@ fn read_object_view(
     } else {
         None
     };
-    Ok(build_object_view(&obj, sboq))
+    Ok(build_object_view(&obj, sboq, true))
 }
 
-/// List object views from a repo's confirmed state (shared by IPC + HTTP).
-fn read_object_list(repo: &Repo, selector: &ListSelector) -> Result<Vec<ObjectView>, ApiError> {
+/// List object views from a repo's confirmed state, merged with the mempool
+/// overlay (shared by IPC + HTTP). Pending objects shadow confirmed ones at the
+/// same `(path, id)` when they win LWW; pending-only objects are appended.
+fn read_object_list(
+    repo: &Repo,
+    selector: &ListSelector,
+    pending: &SharedPending,
+) -> Result<Vec<ObjectView>, ApiError> {
     let db = repo
         .state_db()
         .map_err(|e| ApiError::internal(format!("Failed to open state db: {e}")))?;
-    let objs = match selector {
+    let confirmed = match selector {
         ListSelector::Prefix(p) => db.list_objects_by_path_prefix(p),
         ListSelector::Schema(s) => db.list_objects_by_schema(s),
     }
     .map_err(|e| ApiError::internal(format!("State DB error: {e}")))?;
-    Ok(objs.iter().map(|o| build_object_view(o, None)).collect())
+
+    let pool = pending.read().unwrap();
+    let pend: Vec<&StoredObject> = match selector {
+        ListSelector::Prefix(p) => pool.objects_under_prefix(p),
+        ListSelector::Schema(s) => pool.objects_by_schema(s),
+    };
+
+    // Index pending by (path, id) so confirmed entries can defer to a winning
+    // shadow; remaining pending-only entries are appended afterward.
+    use std::collections::HashMap;
+    let mut pend_by_key: HashMap<(String, String), &StoredObject> = pend
+        .into_iter()
+        .map(|o| ((o.path.to_string(), o.id.as_str().to_string()), o))
+        .collect();
+
+    let mut views = Vec::with_capacity(confirmed.len() + pend_by_key.len());
+    for c in &confirmed {
+        let key = (c.path.to_string(), c.id.as_str().to_string());
+        match pend_by_key.remove(&key) {
+            Some(p) if sbo_daemon::pending::overlay_wins(p, c) => {
+                views.push(build_object_view(p, None, false));
+            }
+            _ => views.push(build_object_view(c, None, true)),
+        }
+    }
+    // Pending objects with no confirmed counterpart.
+    for p in pend_by_key.values() {
+        views.push(build_object_view(p, None, false));
+    }
+    Ok(views)
 }
 
 #[async_trait::async_trait]
@@ -299,7 +358,7 @@ impl RepoApi for DaemonState {
         with_proof: bool,
     ) -> Result<ObjectView, ApiError> {
         let repo = resolve_repo(&self.repos, repo)?;
-        read_object_view(repo, path, id, with_proof)
+        read_object_view(repo, path, id, with_proof, &self.pending)
     }
 
     fn list_objects(
@@ -308,7 +367,7 @@ impl RepoApi for DaemonState {
         selector: &ListSelector,
     ) -> Result<Vec<ObjectView>, ApiError> {
         let repo = resolve_repo(&self.repos, repo)?;
-        read_object_list(repo, selector)
+        read_object_list(repo, selector, &self.pending)
     }
 
     fn state_root(&self, repo: Option<&str>) -> Result<StateRootView, ApiError> {
@@ -330,6 +389,61 @@ impl RepoApi for DaemonState {
     }
 
     async fn submit(&self, data: Vec<u8>) -> Result<SubmitResultView, ApiError> {
+        use sbo_daemon::validate::{
+            message_to_stored_object, validate_message, L2Context, ValidationResult,
+        };
+
+        // Parse the wire envelope(s). A malformed body is a hard 400 — far
+        // better UX than today's silent DA-layer filtering.
+        let messages = sbo_core::wire::parse_batch(&data)
+            .map_err(|e| ApiError::bad_request(format!("wire parse failed: {e}")))?;
+        if messages.is_empty() {
+            return Err(ApiError::bad_request("no SBO messages in submit body"));
+        }
+
+        // Validate against the daemon's sole repo's confirmed state, using the
+        // current wall-clock as the inclusion time (Phase A: confirmed-only
+        // validation — see the mempool overlay plan).
+        let repo = resolve_repo(&self.repos, None)?;
+        let db = repo
+            .state_db()
+            .map_err(|e| ApiError::internal(format!("Failed to open state db: {e}")))?;
+        let now = unix_now();
+
+        // Fully validate every message and pre-build its overlay object before
+        // mutating the pool, so a rejected message leaves the pool untouched.
+        let mut staged: Vec<(StoredObject, [u8; 32])> = Vec::with_capacity(messages.len());
+        for msg in &messages {
+            let l2 = L2Context::for_block(Some(now), &db);
+            match validate_message(msg, &db, &repo.path, &l2) {
+                ValidationResult::Valid { .. } => {}
+                ValidationResult::Invalid { stage, reason } => {
+                    return Err(ApiError::bad_request(format!("{stage:?}: {reason}")));
+                }
+            }
+            let object_hash = sbo_core::sha256(&sbo_core::wire::serialize(msg));
+            // Only content-bearing writes (Post) produce an overlay object;
+            // Deletes have no stored object and simply wait for confirmation.
+            if let Some(obj) =
+                message_to_stored_object(msg, repo.head, Some(&db), object_hash, &l2)
+            {
+                staged.push((obj, object_hash));
+            }
+        }
+
+        // All valid → stage in the overlay (visible to every client within ~1s),
+        // then forward the unchanged bytes to the DA layer.
+        let last_hash = staged
+            .last()
+            .map(|(_, h)| hex::encode(h))
+            .unwrap_or_default();
+        {
+            let mut pool = self.pending.write().unwrap();
+            for (obj, hash) in staged {
+                pool.insert(obj, hash, now);
+            }
+        }
+
         let result = self
             .turbo
             .submit_raw(&data)
@@ -337,8 +451,19 @@ impl RepoApi for DaemonState {
             .map_err(|e| ApiError::internal(e.to_string()))?;
         Ok(SubmitResultView {
             submission_id: result.submission_id,
+            accepted: true,
+            pending: true,
+            hash: last_hash,
         })
     }
+}
+
+/// Current wall-clock time in Unix seconds.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[tokio::main]
@@ -510,6 +635,7 @@ async fn run_daemon(config: Config, verbose: VerboseFlags, debug: DebugFlags) ->
 
     // Start sync engine
     let state_for_sync = Arc::clone(&state);
+    let pending_for_sync = state.read().await.pending.clone();
     let verbose_for_sync = verbose.clone();
     let debug_for_sync = debug.clone();
     let prover_config = config.prover.clone();
@@ -589,7 +715,19 @@ async fn run_daemon(config: Config, verbose: VerboseFlags, debug: DebugFlags) ->
                 verbose_for_sync.rpc_decode,
                 light_mode,
                 rpc_only,
+                pending_for_sync.clone(),
             );
+
+            // Sweep mempool overlay entries whose writes never confirmed (TTL).
+            {
+                let swept = pending_for_sync
+                    .write()
+                    .map(|mut p| p.sweep_expired(unix_now(), sbo_daemon::pending::DEFAULT_TTL_SECS))
+                    .unwrap_or(0);
+                if swept > 0 {
+                    tracing::debug!("Swept {} expired pending overlay entries", swept);
+                }
+            }
 
             // Get repo info with read lock
             let repos_info: Vec<_> = {
@@ -907,7 +1045,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 Some(r) => r,
                 None => return Response::error(format!("No repo at path: {}", repo_path.display())),
             };
-            match read_object_view(repo, &path, &id, with_proof) {
+            match read_object_view(repo, &path, &id, with_proof, &state.pending) {
                 Ok(view) => Response::ok(view),
                 Err(e) => Response::error(e.message),
             }
@@ -927,7 +1065,7 @@ async fn handle_request(req: Request, state: Arc<RwLock<DaemonState>>) -> Respon
                 }
                 (None, None) => return Response::error("`prefix` or `schema` is required"),
             };
-            match read_object_list(repo, &selector) {
+            match read_object_list(repo, &selector, &state.pending) {
                 Ok(views) => Response::ok(serde_json::json!({ "objects": views })),
                 Err(e) => Response::error(e.message),
             }
