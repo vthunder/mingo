@@ -446,7 +446,7 @@ function feedRow(p, votes) {
   return `<div class="card feed-row${pending ? " pending" : ""}">
     <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
     <div style="flex:1">
-      <div class="post-meta">m/${esc(p.comm)} · ${esc(p.author)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
+      <div class="post-meta">c/${esc(p.comm)} · ${esc(p.author)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
       <div class="post-title"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
     </div></div>`;
 }
@@ -463,7 +463,7 @@ async function viewCommunity(commId) {
       ? `<button class="primary" id="newpost">+ New post</button>`
       : `<button class="primary" id="join">Join to post</button>`;
   main.innerHTML = `
-    <div class="row-between"><div class="h1">m/${esc(c.id)} ${c.open ? "✓" : ""}</div>
+    <div class="row-between"><div class="h1">c/${esc(c.id)} ${c.open ? "✓" : ""}</div>
       ${actionBtn}</div>
     <div class="card muted">${esc(c.description || "")} · issuer ${esc(c.issuer)}</div>
     <div id="compose"></div>
@@ -489,7 +489,7 @@ async function viewCommunity(commId) {
 
 function showCompose(commId) {
   const box = $("#compose");
-  box.innerHTML = `<div class="card"><div class="h2">New post in m/${esc(commId)}/${esc(CONFIG.space)}</div>
+  box.innerHTML = `<div class="card"><div class="h2">New post in c/${esc(commId)}/${esc(CONFIG.space)}</div>
     <textarea id="post-body" placeholder="Share something…"></textarea>
     <div class="row-between" style="margin-top:8px"><span class="muted tiny">posts to the DA layer</span>
     <span><button id="post-cancel">Cancel</button> <button class="primary" id="post-submit">Post</button></span></div></div>`;
@@ -525,7 +525,7 @@ async function viewThread(commId, postId) {
   if (!post) { main.innerHTML = `<div class="card">Post not found.</div>`; return; }
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
-    <a class="muted" href="#/c/${esc(commId)}">← m/${esc(commId)}</a>
+    <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
     <div class="card"><div class="post-meta">${esc(post.author)}</div>
       <div class="post-body">${esc(post.body)}</div>
       <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · <span data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div>
