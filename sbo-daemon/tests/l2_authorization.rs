@@ -943,7 +943,7 @@ fn open_community_membership_post_and_ban_end_to_end() {
 // Per-community membership: a `membership:<id>` scoped to one community does NOT
 // authorize posting in another. This is the enforcement behind the SPA's
 // per-community Join — each open community's policy requires its own scoped
-// membership type (presets::community_policy_open), so joining c/cooks grants
+// membership type (mingo_app::genesis::community_policy_open), so joining c/cooks grants
 // nothing in c/books.
 #[test]
 fn community_scoped_membership_does_not_cross_communities() {

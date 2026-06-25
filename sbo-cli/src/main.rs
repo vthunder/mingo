@@ -408,21 +408,6 @@ enum DomainCommands {
         #[arg(long, default_value = "dnssec.wire")]
         out: String,
     },
-
-    /// Re-issue a community's policy as OPEN (anyone can join by self-issuing a
-    /// membership attestation). Writes the signed wire to --out.
-    OpenCommunity {
-        /// Community id (e.g., cooks)
-        community_id: String,
-        /// Community issuer (e.g., cooks@mingo.place) — still governs bans
-        issuer: String,
-        /// Key alias to sign with (must have authority over /communities/<id>/)
-        #[arg(long)]
-        key: Option<String>,
-        /// File to write the signed wire bytes to
-        #[arg(long, default_value = "policy.wire")]
-        out: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -459,14 +444,6 @@ enum RepoCommands {
         /// Key alias for domain signing (default: uses same key as --key)
         #[arg(long)]
         domain_key: Option<String>,
-        /// Emit the Mingo aggregated genesis (domain-certified sys + pinned
-        /// broker + the cooks/woodworking/homelab starter communities + hub
-        /// root policy). Requires --domain. The broker defaults to id.<domain>.
-        #[arg(long)]
-        mingo: bool,
-        /// Override the pinned attribution broker (default: id.<domain>).
-        #[arg(long)]
-        broker: Option<String>,
     },
     /// Add a repository to follow
     Add {
@@ -669,7 +646,7 @@ async fn main() -> anyhow::Result<()> {
             let client = IpcClient::new(config.daemon.socket_path);
 
             match repo_cmd {
-                RepoCommands::Create { uri, path, key, domain, domain_key, mingo, broker } => {
+                RepoCommands::Create { uri, path, key, domain, domain_key } => {
                     use sbo_core::keyring::Keyring;
 
                     // Open keyring and get signing key
@@ -719,77 +696,7 @@ async fn main() -> anyhow::Result<()> {
                     };
 
                     // Generate genesis payload
-                    let genesis_data = if mingo {
-                        // Mingo aggregated genesis (Phase 7.2): domain-certified
-                        // sys + pinned broker + starter communities + hub root
-                        // policy, in one atomic batch.
-                        let domain_name = match domain {
-                            Some(ref d) => d.clone(),
-                            None => {
-                                eprintln!("Error: --mingo requires --domain (e.g. --domain mingo.place)");
-                                std::process::exit(1);
-                            }
-                        };
-                        let domain_alias = match domain_key {
-                            Some(ref dk) => match keyring.resolve_alias(Some(dk)) {
-                                Ok(a) => a,
-                                Err(e) => {
-                                    eprintln!("Error resolving domain key: {}", e);
-                                    std::process::exit(1);
-                                }
-                            },
-                            None => alias.clone(),
-                        };
-                        let domain_signing_key = match keyring.get_signing_key(&domain_alias) {
-                            Ok(k) => k,
-                            Err(e) => {
-                                eprintln!("Failed to get domain signing key: {}", e);
-                                std::process::exit(1);
-                            }
-                        };
-                        let broker = broker
-                            .clone()
-                            .unwrap_or_else(|| format!("id.{}", domain_name));
-                        let created_at = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs() as i64)
-                            .ok();
-                        let issuers: Vec<(String, String, String, String)> = [
-                            ("cooks", "Cooks", "Home cooks swapping recipes and technique."),
-                            ("woodworking", "Woodworking", "Makers, joinery, and finishing."),
-                            ("homelab", "Homelab", "Self-hosters and home infrastructure."),
-                        ]
-                        .iter()
-                        .map(|(id, name, desc)| {
-                            ((*id).to_string(), (*name).to_string(), (*desc).to_string(), format!("{}@{}", id, domain_name))
-                        })
-                        .collect();
-                        let communities: Vec<sbo_core::presets::MingoCommunity> = issuers
-                            .iter()
-                            .map(|(id, name, desc, issuer)| sbo_core::presets::MingoCommunity {
-                                id,
-                                name,
-                                description: desc,
-                                issuer,
-                            })
-                            .collect();
-
-                        println!("Creating Mingo aggregated repository at {}", display_uri);
-                        println!("  Domain:     {}", domain_name);
-                        println!("  Domain Key: {} ({})", domain_alias, domain_signing_key.public_key().to_string());
-                        println!("  Sys Key:    {} ({})", alias, signing_key.public_key().to_string());
-                        println!("  Broker:     {}", broker);
-                        println!("  Communities: {}", communities.iter().map(|c| c.id).collect::<Vec<_>>().join(", "));
-
-                        sbo_core::presets::mingo_genesis(
-                            &domain_signing_key,
-                            &signing_key,
-                            &domain_name,
-                            &broker,
-                            &communities,
-                            created_at,
-                        )
-                    } else if let Some(ref domain_name) = domain {
+                    let genesis_data = if let Some(ref domain_name) = domain {
                         // Mode B: Domain-certified genesis with restriction
                         let domain_alias = match domain_key {
                             Some(ref dk) => match keyring.resolve_alias(Some(dk)) {
@@ -1511,14 +1418,6 @@ async fn main() -> anyhow::Result<()> {
                         &domain_name,
                         key.as_deref(),
                         resolver.as_deref(),
-                        &out,
-                    ).await?;
-                }
-                DomainCommands::OpenCommunity { community_id, issuer, key, out } => {
-                    commands::domain::open_community(
-                        &community_id,
-                        &issuer,
-                        key.as_deref(),
                         &out,
                     ).await?;
                 }

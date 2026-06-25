@@ -3,19 +3,23 @@
 //! Community Specification).
 //!
 //! The descriptor **carries no logic**: membership, roles, and bans are
-//! [attestations](super::attestation) and access control is
-//! [policy](crate::policy) — a community adds almost no new machinery. This
-//! module validates only field presence and types; it does **not** check that
-//! the `issuer` or `policy` objects exist (those resolve at read time), and the
-//! storage location (`/sys/community` repo-per-community, or `/communities/<id>`
-//! aggregated) is a convention, not a validity rule. Authorization of a
-//! `community.v1` write is the existing L2 gate (the writer must speak for the
-//! `Owner`, conventionally `sys`); no new auth code lives here.
+//! attestations and access control is policy — a community adds almost no new
+//! machinery. This module validates only field presence and types; it does
+//! **not** check that the `issuer` or `policy` objects exist (those resolve at
+//! read time), and the storage location (`/sys/community` repo-per-community, or
+//! `/communities/<id>` aggregated) is a convention, not a validity rule.
+//! Authorization of a `community.v1` write is the existing L2 gate (the writer
+//! must speak for the `Owner`, conventionally `sys`); no new auth code lives
+//! here.
+//!
+//! This is a Mingo **application** schema, not a core SBO schema: the daemon's
+//! generic validator passes unknown schemas through, and Mingo validates the
+//! descriptor here at authoring time.
 
 use serde::Deserialize;
 
-use super::{SchemaError, SchemaResult};
-use crate::message::Message;
+use sbo_core::message::Message;
+use sbo_core::schema::{SchemaError, SchemaResult};
 
 /// Default path prefix under which membership is recorded.
 pub const DEFAULT_MEMBERS_PREFIX: &str = "/members/";

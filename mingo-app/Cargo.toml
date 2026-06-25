@@ -1,0 +1,21 @@
+[package]
+name = "mingo-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Mingo forum-application layer atop the application-agnostic SBO reference impl (community.v1 schema + aggregated genesis)"
+
+[lib]
+name = "mingo_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mingo"
+path = "src/bin/mingo.rs"
+
+[dependencies]
+sbo-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+anyhow.workspace = true

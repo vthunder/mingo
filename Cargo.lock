@@ -4113,6 +4113,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mingo-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "sbo-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mingo-idp"
 version = "0.1.0"
 dependencies = [

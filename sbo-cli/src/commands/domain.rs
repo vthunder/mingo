@@ -131,33 +131,6 @@ pub async fn evidence(
     Ok(())
 }
 
-/// Build an OPEN community policy (member = any-issuer membership, incl. self)
-/// for `community_id` and write the signed wire to `out`. Submit with curl to
-/// <daemon>/v1/submit. Lets users join open communities by self-issuing a
-/// membership attestation.
-pub async fn open_community(
-    community_id: &str,
-    issuer: &str,
-    key_alias: Option<&str>,
-    out: &str,
-) -> Result<()> {
-    let keyring = Keyring::open()?;
-    let alias = keyring.resolve_alias(key_alias)?;
-    let signing_key = keyring.get_signing_key(&alias)?;
-
-    let wire = sbo_core::presets::community_policy_open(&signing_key, community_id, issuer);
-    std::fs::write(out, &wire)?;
-    println!(
-        "✓ wrote OPEN policy for /communities/{}/ (issuer {}) to {} ({} bytes, signed by {})",
-        community_id, issuer, out, wire.len(), alias
-    );
-    println!(
-        "\nSubmit: curl --data-binary @{} -H 'Content-Type: application/octet-stream' <daemon>/v1/submit",
-        out
-    );
-    Ok(())
-}
-
 /// List domains from synced repos
 pub async fn list(uri_filter: Option<&str>) -> Result<()> {
     let config = Config::load(&Config::config_path())?;
