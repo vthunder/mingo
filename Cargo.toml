@@ -1,11 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["sbo-core", "sbo-avail", "sbo-daemon", "sbo-cli", "sbo-types", "sbo-crypto", "sbo-capture", "sbo-wasm", "sbo-zkvm", "sbo-zkvm/methods", "sbo-rpc"]
-# mingo-idp is a standalone reference service (the mingo.place primary IdP). It
-# depends on the sibling browserid-ng/browserid-core crate via a path dependency,
-# so it is excluded from this workspace to avoid coupling the main build to that
-# checkout. Build it directly: `cargo build --manifest-path mingo-idp/Cargo.toml`.
-exclude = ["mingo-idp"]
+members = ["sbo-core", "sbo-avail", "sbo-daemon", "sbo-cli", "sbo-types", "sbo-crypto", "sbo-capture", "sbo-wasm", "sbo-zkvm", "sbo-zkvm/methods", "sbo-rpc", "mingo-idp"]
 
 [workspace.package]
 version = "0.1.0"

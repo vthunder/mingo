@@ -13,7 +13,7 @@ path = "src/main.rs"
 # BrowserID protocol primitives (certificate signing, assertion verify, discovery).
 # Path dependency on the sibling browserid-ng checkout for local dev; switch to a
 # pinned git dependency for deploy.
-browserid-core = { path = "../../../browserid-ng/browserid-core" }
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "7d69c948890eb19e6d06daf2c97b68fb66951c9a" }
 
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"

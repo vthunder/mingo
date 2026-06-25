@@ -1,0 +1,22 @@
+# sbo-daemon container config — Mingo demo (Avail turing, app 506). Paths live
+# under the dokku persistent mount /data so state survives redeploys.
+[daemon]
+socket_path = "/data/daemon.sock"
+pid_file = "/data/daemon.pid"
+repos_dir = "/data/repos"
+repos_index = "/data/repos.json"
+
+[light_client]
+network = "turing"
+http_port = 7007
+
+[rpc]
+endpoints = ["https://turing-rpc.avail.so/rpc"]
+timeout_secs = 30
+
+[turbo_da]
+endpoint = "https://staging.turbo-api.availproject.org"
+# api_key is injected at runtime from the SBO_TURBO_DA_API_KEY env var
+# (`dokku config:set sbo-daemon SBO_TURBO_DA_API_KEY=…`) so it stays out of this
+# public repo. See Config::apply_env_overrides.
+app_id = 506

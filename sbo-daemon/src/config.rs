@@ -150,12 +150,25 @@ impl Default for Config {
 impl Config {
     /// Load config from file, or create default
     pub fn load(path: &Path) -> crate::Result<Self> {
-        if path.exists() {
+        let mut config = if path.exists() {
             let content = std::fs::read_to_string(path)?;
-            toml::from_str(&content)
-                .map_err(|e| crate::DaemonError::Config(format!("Failed to parse config: {}", e)))
+            toml::from_str::<Self>(&content)
+                .map_err(|e| crate::DaemonError::Config(format!("Failed to parse config: {}", e)))?
         } else {
-            Ok(Self::default())
+            Self::default()
+        };
+        config.apply_env_overrides();
+        Ok(config)
+    }
+
+    /// Overlay secrets/overrides from the environment so they need not live in a
+    /// committed config file (the repo is public). `SBO_TURBO_DA_API_KEY` sets
+    /// the TurboDA submit key (provided via `dokku config:set` in prod).
+    fn apply_env_overrides(&mut self) {
+        if let Ok(key) = std::env::var("SBO_TURBO_DA_API_KEY") {
+            if !key.is_empty() {
+                self.turbo_da.api_key = Some(key);
+            }
         }
     }
 

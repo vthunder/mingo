@@ -1,0 +1,30 @@
+# Mingo reference implementation — deploy targets.
+#
+# Both prod apps live on the dokku host (sandmill.org) and build from THIS repo's
+# root with an app-specific Dockerfile (set once via dokku builder-dockerfile:set,
+# see DEPLOYMENT.md). Deploys push the current branch to each app's git remote
+# using the service key. The cargo-chef Dockerfiles keep the rocksdb/dep compile
+# cached, and the mingo app copies the SPA in its final layer, so SPA-only
+# changes deploy in seconds.
+
+KEY ?= $(HOME)/.ssh/donotuse_id_ed25519_service
+HOST ?= dokku@sandmill.org
+BRANCH ?= main
+GIT_SSH = GIT_SSH_COMMAND="ssh -i $(KEY)"
+
+.PHONY: deploy-daemon deploy-mingo deploy build
+
+## Build the two deployed binaries locally (validates before pushing).
+build:
+	CARGO_NET_GIT_FETCH_WITH_CLI=true cargo build --release -p sbo-daemon -p mingo-idp
+
+## Deploy da.sandmill.org (sbo-daemon).
+deploy-daemon:
+	$(GIT_SSH) git push $(HOST):sbo-daemon $(BRANCH):master
+
+## Deploy mingo.place (mingo-idp + SPA).
+deploy-mingo:
+	$(GIT_SSH) git push $(HOST):mingo $(BRANCH):master
+
+## Deploy both.
+deploy: deploy-daemon deploy-mingo
