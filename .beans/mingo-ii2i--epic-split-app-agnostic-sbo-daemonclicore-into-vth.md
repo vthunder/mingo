@@ -5,7 +5,7 @@ status: completed
 type: epic
 priority: normal
 created_at: 2026-06-25T22:34:36Z
-updated_at: 2026-06-25T23:07:29Z
+updated_at: 2026-06-26T09:41:34Z
 ---
 
 Keep SBO app-agnostic by moving the generic crates back to vthunder/sbo and depending on them via pinned git dep (like browserid-ng). Decisions: revive vthunder/sbo; boundary B (generic content schemas stay in sbo as reference, community.v1 + mingo_genesis move to mingo); pinned git dep.
@@ -41,3 +41,9 @@ Follow-ups (non-blocking):
 - The new daemon Dockerfile dropped cargo-chef for a git-clone+build (cache-mount incremental); fine, but a periodic `dokku cleanup` / docker builder prune on the host is advisable given disk pressure.
 - Cosmetic: sbo crates still carry @mingo.place/cooks test fixtures; sbo-wasm still has a membership() helper. Neither couples; left for a later tidy.
 - Optional: preserve per-crate git history into vthunder/sbo (currently a single re-add commit; full history remains in mingo).
+
+## History preservation (done)
+
+vthunder/sbo main rewritten to carry full per-crate history instead of the single re-add commit. Method: git filter-repo on a clone of mingo @ Phase-1 (0a2d3af) keeping only the 10 generic crate paths (158 commits, crates always at root — no path rewrite needed), merged --allow-unrelated-histories with sbo's deb0089 (preserving docs/specs 25-commit history), then the workspace manifest on top. Final tree byte-identical to the prior a3483a1 (verified git diff empty). New HEAD 8d66ec7 (400 commits; e.g. sbo-core/src/state/db.rs shows 11 commits). Force-pushed (safe — no consumers).
+
+Re-pinned mingo (Cargo.toml rev + Dockerfile SBO_REV) to 8d66ec7; mingo builds green against it. Running daemon was built from the now-orphaned a3483a1 but is byte-identical, so NOT redeployed — SBO_REV updated for the next deploy. Both sites healthy.
