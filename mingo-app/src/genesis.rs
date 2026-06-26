@@ -268,10 +268,16 @@ pub fn mingo_genesis(
 
     // 5. Hub root policy (written LAST so all prior writes pass in genesis mode).
     let policy_payload = serde_json::json!({
+        // `admin` is the sys identity. SBO has no superuser; sys-level authority
+        // to relocate/remove any object (e.g. moderation, layout migrations) is
+        // this explicit, auditable grant — every admin action is a signed,
+        // replayable on-chain message. Deny rules still override it.
+        "roles": { "admin": ["sys"] },
         "grants": [
             { "to": "*", "can": ["create"], "on": "/sys/names/*" },
             { "to": "owner", "can": ["update", "delete"], "on": "/sys/names/*" },
-            { "to": "owner", "can": ["*"], "on": "/$owner/**" }
+            { "to": "owner", "can": ["*"], "on": "/$owner/**" },
+            { "to": { "role": "admin" }, "can": ["post", "transfer", "delete"], "on": "/**" }
         ],
         "restrictions": [
             { "on": "/communities/*/spaces/**", "require": { "not_attested": { "type": "ban" } } }
@@ -348,6 +354,34 @@ mod tests {
         assert_eq!(msg.id.as_str(), "root");
         let _policy: sbo_core::policy::Policy =
             serde_json::from_slice(msg.payload.as_ref().unwrap()).expect("parses as policy.v2");
+    }
+
+    #[test]
+    fn root_policy_grants_admin_role_transfer_and_delete() {
+        let domain_key = SigningKey::generate();
+        let sys_key = SigningKey::generate();
+        let batch = mingo_genesis(
+            &domain_key, &sys_key, "mingo.place", "id.mingo.place", &[],
+            Some(1_700_000_000),
+        );
+        let msgs = wire::parse_batch(&batch).expect("batch parses");
+        let policy_msg = msgs.iter()
+            .find(|m| m.path.to_string() == "/sys/policies/" && m.id.as_str() == "root")
+            .expect("root policy present");
+        // It is a valid policy.v2 document.
+        let _typed: sbo_core::policy::Policy =
+            serde_json::from_slice(policy_msg.payload.as_ref().unwrap()).expect("parses as policy.v2");
+        // The admin role is the sys identity, granted transfer+delete over /**.
+        let v: serde_json::Value =
+            serde_json::from_slice(policy_msg.payload.as_ref().unwrap()).unwrap();
+        assert_eq!(v["roles"]["admin"][0], serde_json::json!("sys"));
+        let admin_grant = v["grants"].as_array().unwrap().iter().find(|g| {
+            g["to"]["role"] == serde_json::json!("admin") && g["on"] == serde_json::json!("/**")
+        }).expect("admin grant on /** present");
+        let can: Vec<&str> = admin_grant["can"].as_array().unwrap()
+            .iter().filter_map(|c| c.as_str()).collect();
+        assert!(can.contains(&"transfer"), "admin must be granted transfer");
+        assert!(can.contains(&"delete"), "admin must be granted delete");
     }
 
     #[test]
