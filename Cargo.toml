@@ -30,4 +30,4 @@ clap = { version = "4", features = ["derive"] }
 # The application-agnostic SBO reference implementation lives in vthunder/sbo.
 # Pinned git dependency (bump the rev to adopt SBO changes); mingo's forum layer
 # (mingo-app) builds on top of it.
-sbo-core = { git = "https://github.com/vthunder/sbo", rev = "8d66ec7e0366face03cc145dd7f0fb8b936cb048" }
+sbo-core = { git = "https://github.com/vthunder/sbo", rev = "4b7f07807b0b6efd5d48da975b963adbadd3a6cd" }
