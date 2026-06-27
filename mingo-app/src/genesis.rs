@@ -276,7 +276,7 @@ pub fn mingo_genesis(
         "grants": [
             { "to": "*", "can": ["create"], "on": "/sys/names/*" },
             { "to": "owner", "can": ["update", "delete"], "on": "/sys/names/*" },
-            { "to": "owner", "can": ["*"], "on": "/$owner/**" },
+            { "to": "owner", "can": ["*"], "on": "/u/$owner/**" },
             { "to": { "role": "admin" }, "can": ["post", "transfer", "delete"], "on": "/**" }
         ],
         "restrictions": [
@@ -382,6 +382,17 @@ mod tests {
             .iter().filter_map(|c| c.as_str()).collect();
         assert!(can.contains(&"transfer"), "admin must be granted transfer");
         assert!(can.contains(&"delete"), "admin must be granted delete");
+
+        // User namespaces live under the reserved /u/ container, keyed on the
+        // owner: `/u/$owner/**` (not root-level `/$owner/**`).
+        let owner_grant = v["grants"].as_array().unwrap().iter().find(|g| {
+            g["to"] == serde_json::json!("owner") && g["on"] == serde_json::json!("/u/$owner/**")
+        });
+        assert!(owner_grant.is_some(), "owner namespace grant must be /u/$owner/**");
+        assert!(
+            !v["grants"].as_array().unwrap().iter().any(|g| g["on"] == serde_json::json!("/$owner/**")),
+            "root-level /$owner/** grant must be gone (moved under /u/)"
+        );
     }
 
     #[test]

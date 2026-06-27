@@ -329,7 +329,7 @@ async function hasMembership(commId) {
   try {
     // Path-scoped list (NOT getObject: /v1/object matches by id regardless of
     // path, which would falsely match another user's membership).
-    const objs = await listPrefix(`/${session.email}/attestations/${session.email}/`);
+    const objs = await listPrefix(`/u/${session.email}/attestations/${session.email}/`);
     // Counts PENDING memberships too (Phase B): the daemon validates posts
     // against confirmed+pending state, so a just-submitted membership authorizes
     // posting immediately — Join flips to New post without waiting for on-chain
@@ -351,7 +351,7 @@ async function joinHub(commId) {
   };
   const payload = new TextEncoder().encode(JSON.stringify(att));
   await writeContent({
-    path: `/${session.email}/attestations/${session.email}/`,
+    path: `/u/${session.email}/attestations/${session.email}/`,
     id: `membership-${commId}`,
     schema: "attestation.v1",
     contentType: "application/json",
