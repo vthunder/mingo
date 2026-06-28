@@ -1,0 +1,157 @@
+SBO-Version: 0.5
+Action: post
+Path: /sys/domains/
+ID: mingo.place
+Type: object
+Content-Type: application/jwt
+Content-Length: 310
+Content-Hash: sha256:676bd782f092e6a04ab20d4bd20d1efd4b671eda593700e66991beb6a2fb75d0
+Content-Schema: domain.v1
+Public-Key: ed25519:8ef0381e356a7f10e48ab8be637862586e8c8088f39b7c672a16cbb2f0503ad2
+Signature: 3985f6eb8ff63793712ea337b574218c1e0e7d4ad39759858e3423fa08717db1509abb98a69692732683c79087e5971895b35ea8d16abafe5f636eb841ae7f0c
+
+eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzZWxmIiwic3ViIjoibWluZ28ucGxhY2UiLCJwdWJsaWNfa2V5IjoiZWQyNTUxOTo4ZWYwMzgxZTM1NmE3ZjEwZTQ4YWI4YmU2Mzc4NjI1ODZlOGM4MDg4ZjM5YjdjNjcyYTE2Y2JiMmYwNTAzYWQyIiwiaWF0IjoxNzgyNjgwNDQyfQ.cSDI8tnJccxwYnCd3X4vcHHmUK-5PUPbfNVBNqtUnKCRN0cM-s__tZWdi7FF2QSiMYkeSP-5u60tBzDIsYnNCASBO-Version: 0.5
+Action: post
+Path: /sys/names/
+ID: sys
+Type: object
+Content-Type: application/jwt
+Content-Length: 334
+Content-Hash: sha256:28d3929f065a7afe7ba904dc4263ee7a0db4c1f01fa8472ca9ded5d8ba356488
+Content-Schema: identity.v1
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: de55067a6ae4e2872912389f1302bd4ef27572ef3b4f1465dd83e6a721bf67869400b00cec83eac96317018219d85c909f044d67eb4561512c51ca221537b007
+
+eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJkb21haW46bWluZ28ucGxhY2UiLCJzdWIiOiJzeXNAbWluZ28ucGxhY2UiLCJwdWJsaWNfa2V5IjoiZWQyNTUxOTo1NjRhYWZlNDY5NGRlMzExYzg1ZjhmYWVkNTJiMjk0MzMzNjY3ODAxOGY5ZTFkZGQyNTk0YzEwN2M1Y2NmNGJkIiwiaWF0IjoxNzgyNjgwNDQyfQ.ye3AxzBFvtYf3dcKdHgClmj8sdTEPiwfEBX3u8q7iisbXPRVzGDfwNG9uyUnHmzZxxKzyOhrUA1-ZvkTejVoBASBO-Version: 0.5
+Action: post
+Path: /sys/trust/
+ID: brokers
+Type: object
+Content-Type: application/json
+Content-Length: 16
+Content-Hash: sha256:3e7bdc4b634d8631e7d374aa80db3f59201d260dadfb0eb5857c7b8d7a15ad86
+Content-Schema: trust.brokers.v1
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: 4ab16baf7dae10ed291291f0158088d7d39cafe7e0a95ce728cc758c589a8c3fe55f0e1fd5616e709a0a882ca187c7c7f38e729771a3dabbf6decc7f972d9601
+
+["browserid.me"]SBO-Version: 0.5
+Action: post
+Path: /communities/cooks/
+ID: community
+Type: object
+Content-Type: application/json
+Content-Length: 171
+Content-Hash: sha256:081af137f6a84ff7510d3a28a01359923f274654f560cd557ddaeb9bb47348b1
+Content-Schema: community.v1
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: d0ffd3db55e0cc94f5a1a14919a18aa49e42147497e33d089578afda189255ae9bcc74041deb5a79759c86774f3286c3164e44403a6d790016b2fb671eb2b10c
+
+{"created_at":1782680442,"description":"Home cooks swapping recipes and technique.","issuer":"cooks@mingo.place","name":"Cooks","open":true,"policy":"/communities/cooks/"}SBO-Version: 0.5
+Action: post
+Path: /communities/cooks/
+ID: root
+Type: object
+Content-Type: application/json
+Content-Length: 272
+Content-Hash: sha256:01dc6748634a0e6a9233c9c1698a3f13db9091a58a85ff270dc847254b2df091
+Content-Schema: policy.v2
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: e87db87983b8198382d906abc25ee18814460a83bf9145ba26e0ef29f53adb5458812174357b6bbf4b94dc8cd119af5ec86f39c40beeab7f682d4f5a9425370a
+
+{"grants":[{"can":["post"],"on":"/communities/cooks/spaces/**","to":{"role":"member"}}],"restrictions":[{"on":"/communities/cooks/spaces/**","require":{"not_attested":{"by":"cooks@mingo.place","type":"ban"}}}],"roles":{"member":[{"attested":{"type":"membership:cooks"}}]}}SBO-Version: 0.5
+Action: post
+Path: /communities/cooks/spaces/general/
+ID: _config
+Type: object
+Content-Type: application/json
+Content-Length: 92
+Content-Hash: sha256:9bc7554df27169da4045da3a8cd6a7d786b1c924c9daf3ac19094d43cf3ffbea
+Content-Schema: collection.v1
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: db9ef3c666dddeda4fd5e38fcb9cb798c81e06c25ad2275e3d883aa37013d77da65c522a77e47011921adbd71d73f2eaa8700bb9503de008c1763e6792a92107
+
+{"batch_interval_s":5,"durability":"batched","max_authoring_lag_s":86400,"schema":"post.v1"}SBO-Version: 0.5
+Action: post
+Path: /communities/woodworking/
+ID: community
+Type: object
+Content-Type: application/json
+Content-Length: 178
+Content-Hash: sha256:1b04893ddec7aef0c96291f9ac8d268c2f2acc24eb8ab487bc3d44878075ac53
+Content-Schema: community.v1
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: 2538137677f095c103589503e4e0a9c9443f62375c7220f16c7a27deb47cef4e5109cace1b07596698edf49dddae5c109f68f75d2497db68311da1c8c1b25204
+
+{"created_at":1782680442,"description":"Makers, joinery, and finishing.","issuer":"woodworking@mingo.place","name":"Woodworking","open":true,"policy":"/communities/woodworking/"}SBO-Version: 0.5
+Action: post
+Path: /communities/woodworking/
+ID: root
+Type: object
+Content-Type: application/json
+Content-Length: 296
+Content-Hash: sha256:de91845280d80a9725c5327fc2c62736612b98eed6fed8f0383c80ea4c01e755
+Content-Schema: policy.v2
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: c88f520eea775f71ccabce3fd07da148fcbb8946915fad161fc5bbf9e0df70f69ea52e69c606dcd45dcf31f2705e7e4e622a1123aa6d6801b5af804e469a450e
+
+{"grants":[{"can":["post"],"on":"/communities/woodworking/spaces/**","to":{"role":"member"}}],"restrictions":[{"on":"/communities/woodworking/spaces/**","require":{"not_attested":{"by":"woodworking@mingo.place","type":"ban"}}}],"roles":{"member":[{"attested":{"type":"membership:woodworking"}}]}}SBO-Version: 0.5
+Action: post
+Path: /communities/woodworking/spaces/general/
+ID: _config
+Type: object
+Content-Type: application/json
+Content-Length: 92
+Content-Hash: sha256:9bc7554df27169da4045da3a8cd6a7d786b1c924c9daf3ac19094d43cf3ffbea
+Content-Schema: collection.v1
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: 87a38b20d6845e87a2ddc5c5d0a4be841fb7e6d0e3a1dfea5d25253ce57f22595da24901e2ff223deed8c2e5efc309c41609b4e6cc56c0be7b51eb5509c1b808
+
+{"batch_interval_s":5,"durability":"batched","max_authoring_lag_s":86400,"schema":"post.v1"}SBO-Version: 0.5
+Action: post
+Path: /communities/homelab/
+ID: community
+Type: object
+Content-Type: application/json
+Content-Length: 172
+Content-Hash: sha256:fd3883244139387a7f36921a35ba5392fab98ac4bd85d466d6853f64053cbb92
+Content-Schema: community.v1
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: 619e7c62470071c1c3341701c1c9af6399596c51f204e3d4de43965a40522298419f2d926c2ae27bd7424af94358c81e7bbe38c717f475f3d7f5feedf460000e
+
+{"created_at":1782680442,"description":"Self-hosters and home infrastructure.","issuer":"homelab@mingo.place","name":"Homelab","open":true,"policy":"/communities/homelab/"}SBO-Version: 0.5
+Action: post
+Path: /communities/homelab/
+ID: root
+Type: object
+Content-Type: application/json
+Content-Length: 280
+Content-Hash: sha256:9d4d7852823ad2968a4076021f4ff087312ec40221508133637901240c3c10f0
+Content-Schema: policy.v2
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: 18a11126e12ca79d8533511f4a517a5f0363700777d5ec1c602c1bb2e3fe18e990ea832a516baa5abc88e1ae7d9b01744d0f5c0e14b1e3105da4887153f14b03
+
+{"grants":[{"can":["post"],"on":"/communities/homelab/spaces/**","to":{"role":"member"}}],"restrictions":[{"on":"/communities/homelab/spaces/**","require":{"not_attested":{"by":"homelab@mingo.place","type":"ban"}}}],"roles":{"member":[{"attested":{"type":"membership:homelab"}}]}}SBO-Version: 0.5
+Action: post
+Path: /communities/homelab/spaces/general/
+ID: _config
+Type: object
+Content-Type: application/json
+Content-Length: 92
+Content-Hash: sha256:9bc7554df27169da4045da3a8cd6a7d786b1c924c9daf3ac19094d43cf3ffbea
+Content-Schema: collection.v1
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: 0f7aa35f31cd42477c971263ae29692c42996c1f2cccfbdb1d8475adfdc33fbec666269853c23c6d51957ebf8bcbdf176ea616197e8d011ec65dcdc699f5d00f
+
+{"batch_interval_s":5,"durability":"batched","max_authoring_lag_s":86400,"schema":"post.v1"}SBO-Version: 0.5
+Action: post
+Path: /sys/policies/
+ID: root
+Type: object
+Content-Type: application/json
+Content-Length: 357
+Content-Hash: sha256:214cd5831123b9cf63ccebb90dfbdfea9a7edfa31269c740c964b7f3bffa8d79
+Content-Schema: policy.v2
+Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+Signature: 30cb484f0f06821025573655e1e97c9c8c58df1fe7ef8da62bcf12ba706284de98973589fa89e05b84ab80722f23f70dbdc7a676880c0e0ce334858bec984a0e
+
+{"grants":[{"can":["create"],"on":"/sys/names/*","to":"*"},{"can":["update","delete"],"on":"/sys/names/*","to":"owner"},{"can":["*"],"on":"/u/$owner/**","to":"owner"},{"can":["post","transfer","delete"],"on":"/**","to":{"role":"admin"}}],"restrictions":[{"on":"/communities/*/spaces/**","require":{"not_attested":{"type":"ban"}}}],"roles":{"admin":["sys"]}}
