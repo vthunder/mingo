@@ -6,6 +6,21 @@ mkdir -p /data/repos
 # daemon refuses to start ("Socket already exists").
 rm -f /data/daemon.sock
 
+# One-shot fresh-genesis reset (Phase 7). The pre-genesis container persisted an
+# OLD-format repos.json (pre-SboRawUri `path_prefix`, head=3528751) and old-chain
+# state under /data/.sbo — both incompatible with this build. On the first boot of
+# this image we wipe /data state unconditionally so the seed below rebuilds from the
+# NEW genesis (B=3545910). The marker makes this idempotent across later restarts;
+# it also wins any race with the retiring old container (which may rewrite /data
+# during the deploy overlap). To re-run a reset, bump the marker name.
+RESET_MARKER=/data/.reset-genesis-3545910
+if [ ! -f "$RESET_MARKER" ]; then
+  echo "fresh-genesis reset: wiping /data state to rebuild from B=3545910"
+  rm -rf /data/.sbo /data/repos /data/repos.json
+  mkdir -p /data/repos
+  touch "$RESET_MARKER"
+fi
+
 # Self-heal a head/state mismatch: the RocksDB state index lives under
 # $HOME/.sbo (now /data/.sbo, persistent). If it's missing but a repo head was
 # carried over in repos.json, the head sits past genesis while state is empty —
