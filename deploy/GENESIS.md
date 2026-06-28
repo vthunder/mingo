@@ -42,6 +42,28 @@ _sbo.mingo.place.  IN  TXT  "v=sbo1 repo=sbo+raw://avail:turing:506@3545910/ gen
 identity hash; `node=` is the `/v1/*` data RPC. No `h=` — identity is on-chain. Requires the
 sbo build at pin `cc207f8` (URI/DNS dialect).
 
+## Post-genesis: DNSSEC evidence (REQUIRED for @mingo.place writes)
+
+The genesis establishes `/sys/trust/brokers` and `/sys/domains/mingo.place` but **not**
+`/sys/dnssec/mingo.place`. Primary-domain (`@mingo.place`) writes carry an `Auth-Cert`
+with no inline evidence, so the daemon resolves the DNSSEC proof from the conventional
+on-chain `/sys/dnssec/<issuer>` object (`validate.rs::resolve_evidence`). Without it,
+email-rooted writes fail L2 attribution ("email-rooted but signer carries no valid
+attribution"). Established post-genesis on 2026-06-29 at block **3546123**:
+
+```
+sbo domain evidence mingo.place --key sys --out dnssec.wire   # captures RFC 9102 proof of _browserid.mingo.place
+sbo debug da submit --file dnssec.wire --turbo                # → /sys/dnssec/mingo.place (dnssec.v1, sys-signed)
+```
+
+> **Operational caveat — expiry.** The DNSSEC proof carries RRSig validity windows
+> (days–weeks). A write's attribution window is the intersection of the cert window and
+> the proof window, so `/sys/dnssec/mingo.place` must be **re-captured and re-submitted
+> periodically** (re-run the two commands) before the RRSigs expire, or `@mingo.place`
+> writes will start failing again. Worth automating (cron). **Follow-up:** have
+> `mingo_genesis` emit `/sys/dnssec/<domain>` (or the runbook include this step) so a
+> fresh genesis is write-ready out of the box.
+
 ## Reproduce / recover
 
 ```
