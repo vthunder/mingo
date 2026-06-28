@@ -22,11 +22,14 @@ fi
 # genesis lands at some block B>C, so RPC-only sync (starting at head+1) replays
 # the *new* genesis + all later app-506 writes and rebuilds state from Avail. The
 # old (pre-3545906) chain stays below this head and is invisible.
+# The new genesis landed at B=3545910 (sys=ed25519:564aafe4…, domain=ed25519:8ef0381e…).
+# uri.first_block + expected_genesis make the daemon verify the reconstructed genesis
+# hash at block B (non-fatal; logs "Genesis verified" / "GENESIS VERIFICATION FAILED").
 # NOTE: the uri object is the canonical SboRawUri serialization (chain/app_id/
 # first_block/path/query); the id is sha256(to_string)[..8] of the bare repo URI.
 if [ ! -f /data/repos.json ]; then
   cat > /data/repos.json <<'JSON'
-[{"id":"f86a7b415defc6cf","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":506,"first_block":null,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:506/","path":"/data/repos/mingo","head":3545906,"created_at":1782336171}]
+[{"id":"f86a7b415defc6cf","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":506,"first_block":3545910,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:506/","path":"/data/repos/mingo","head":3545906,"created_at":1782336171,"expected_genesis":"sha256:a3f28de0f9e185328693b106e8368ab6539607d27e0142d147263fbf1da5d8b3"}]
 JSON
   echo "seeded /data/repos.json (head=3545906, will backfill from new genesis)"
 fi
