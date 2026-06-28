@@ -113,18 +113,35 @@ old container retires; a `ps:stop` + `ps:start` forces a single clean container.
 Deploy the mingo web/idp image (`deploy/mingo/`, the `/u/` app.js) via its usual
 pipeline/remote (not `dokku-daemon`). Confirm mingo.place loads.
 
-### 8. Set the DNS record (point `sbo://mingo.place` at the chain)
-Add this **TXT** record (app 506 reused):
+### 8. Set the DNS record (point `sbo://mingo.place` at the chain **+ its genesis**)
+Add this **TXT** record (app 506 reused), per the locked SBO URI/DNS dialect (see
+`~/src/sbo/docs/plans/2026-06-28-uri-dns-dialect-and-genesis-identity.md`). The genesis
+**anchor** rides *inside* the `repo=` URI as `@B` (block **B** from step 6); `genesis=`
+carries the hash (database identity `{chain}:{appId}:{firstBlock}:{genesisHash}`, recorded
+in step 9); `node=` is the `/v1/*` data RPC:
 ```
-_sbo.mingo.place.  IN  TXT  "v=sbo1 r=sbo+raw://avail:turing:506/ h=https://da.sandmill.org"
+_sbo.mingo.place.  IN  TXT  "v=sbo1 repo=sbo+raw://avail:turing:506@B/ genesis=sha256:<genesis-hash> node=https://da.sandmill.org"
 ```
-(If you went with a new app-id N instead, use `r=sbo+raw://avail:turing:N/`.)
+(If you went with a new app-id N instead, use `repo=sbo+raw://avail:turing:N@B/`.)
+
+> **Dialect notes:** `@B` is the genesis anchor (database-level; inherited by all paths,
+> *not* a snapshot). `repo=` must be a **bare** repository URI (no path/query). There is
+> **no `h=`** field — identity discovery is on-chain (browserid broker pinned in genesis
+> + `/sys/names`). The *operational* sync pin is still the daemon seed (`head=C`, step 5);
+> this record is the discovery/identity surface. **Requires the new sbo build** that
+> parses `@firstBlock`/`repo=`/`genesis=` — ship the implementation pass before relying
+> on third-party resolution.
 
 ### 9. Save the genesis (so this is reproducible / recoverable)
 Commit a genesis record to the mingo repo:
 - `genesis.wire` (the exact batch),
-- a `deploy/GENESIS.md` noting: genesis **block B**, app_id 506, sys pubkey, domain
-  pubkey, seed `head = C`, and where the key backups live.
+- a `deploy/GENESIS.md` noting: genesis **block B**, the **genesis hash**
+  (`sha256(all_genesis_objects_bytes)` → canonical identity
+  `avail:turing:506:sha256:<hash>`, Genesis Spec §Database Identity), app_id 506,
+  sys pubkey, domain pubkey, seed `head = C`, and where the key backups live.
+
+  The genesis hash + block B are exactly the `genesis=` / `firstBlock=` values for the
+  DNS record in step 8, so fill those placeholders once recorded here.
 ```
 git add genesis.wire deploy/GENESIS.md && git commit -m "chore: record new genesis (block B, app 506)" && git push
 ```

@@ -52,8 +52,12 @@ Follow **`docs/plans/2026-06-28-u-layout-migration-runbook.md`** end to end. Sum
 ## DNS record to set (when ready)
 
 ```
-_sbo.mingo.place.  IN  TXT  "v=sbo1 r=sbo+raw://avail:turing:506/ h=https://da.sandmill.org"
+_sbo.mingo.place.  IN  TXT  "v=sbo1 repo=sbo+raw://avail:turing:506@B/ genesis=sha256:<genesis-hash> node=https://da.sandmill.org"
 ```
+The genesis anchor `@B` rides inside `repo=` (database-level, inherited by all paths);
+`genesis=` carries the hash; `node=` is the `/v1/*` data RPC. No `h=` (identity is
+on-chain). Requires the new sbo URI/DNS build — see runbook step 8 and
+`~/src/sbo/docs/plans/2026-06-28-uri-dns-dialect-and-genesis-identity.md`.
 
 ## Key facts / gotchas
 
