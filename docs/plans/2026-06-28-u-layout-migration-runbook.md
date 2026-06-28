@@ -1,126 +1,152 @@
-# `/u/` Layout + Sovereignty — Production Migration Runbook (Phase 7)
+# `/u/` Layout + Sovereignty — Fresh-Genesis Deployment Runbook (Phase 7)
 
-**Status:** Ready to run; **not executed** (needs the sys signing key + live
-verification — your call). Prepared overnight 2026-06-28.
+**Status:** Ready to run; **not executed**. Prepared 2026-06-28.
 
-Branches to ship:
-- sbo `feat/identity-sovereignty-and-policy-vars` (Phases 1–4, 6: policy vars,
-  Creator validation, sovereignty resolution, anti-hijack, lifecycle test).
-- mingo `feat/u-layout` (Phase 5: genesis `/u/$owner/**`, app.js `/u/` paths).
+> **Why fresh genesis (not in-place migration):** the original **sys signing key was
+> lost** (wiped with `~/.sbo`). Without it the existing app-506 chain can't be
+> re-governed (no key to post the new root policy or sign admin moves). There are
+> **zero real users**, so the clean move is to **re-genesis with a new sys key** —
+> which also ships the new `/u/$owner/**` policy and sovereignty-ready layout from
+> the start, with no data migration.
 
-Both are pushed, fully tested, and ready for PR/merge.
+Branches to ship (pushed, tested):
+- sbo `feat/identity-sovereignty-and-policy-vars` — Phases 1–4, 6.
+- mingo `feat/u-layout` — Phase 5 (genesis `/u/$owner/**`, app.js `/u/` paths).
 
 ---
 
-## Why a specific order
+## Decisions baked in
 
-- The **new daemon is backward-compatible with the old on-chain policy**: with the
-  de-circularized `$owner`, the existing `/$owner/**` grant still authorizes
-  existing root-level writes (`$owner` = the declared `Owner` = `dan@mingo.place`,
-  which matches `/dan@mingo.place/**`). So deploying the daemon first breaks
-  nothing.
-- But the **new app writes to `/u/…`**, which the *old* `/$owner/**` policy does
-  **not** match. So the on-chain root policy must be updated to `/u/$owner/**`
-  **before** the new app is deployed (or those writes are denied).
-- There are **zero real users**, so no dual-read / transition window is needed.
-
-Order: **daemon → root policy → data → app**.
+- **Reuse Avail turing app 506** (not a new app-id): the existing TurboDA key is
+  app-506-scoped, and re-seeding the daemon to start at the *new* genesis block
+  makes the old data below it invisible. (A brand-new app-id is the alternative if
+  you'd rather a pristine chain — it needs a new app-id + TurboDA key; see the note
+  at the end.)
+- **New sys + domain keys, BACKED UP THIS TIME** (the whole reason we're here).
+- No data migration, no dual-read (zero users).
 
 ## Prerequisites
 
-- The **sys signing key** in the keyring (the genesis signer for app 506; the
-  `~/.sbo` move wiped it — re-import it):
-  `sbo key import <sys-key> --name sys`
-- A local daemon built from the merged sbo branch, or just use the deployed one.
-- `SBO_TURBO_DA_API_KEY` set (already in `~/.sbo/config.toml`).
+- sbo CLI + daemon built from the merged sbo branch.
+- `SBO_TURBO_DA_API_KEY` (existing app-506 key) available.
+- DNS access to `mingo.place` (for the `_sbo` TXT record, step 8).
 
 ---
 
 ## Steps
 
-### 1. Merge + push both branches
+### 1. Merge + push both branches; bump the mingo pin
 ```
 cd ~/src/sbo   && git checkout main && git merge --no-ff feat/identity-sovereignty-and-policy-vars && git push origin main
+SBO_REV=$(git rev-parse HEAD)
 cd ~/src/mingo && git checkout main && git merge --no-ff feat/u-layout && git push origin main
+#  - Cargo.toml: sbo-core rev = $SBO_REV
+#  - deploy/sbo-daemon/Dockerfile: ARG SBO_REV=$SBO_REV
+cargo update -p sbo-core && cargo build
+git commit -am "chore: bump sbo pin to $SBO_REV (/u layout + sovereignty)"
 ```
-Capture the new sbo main SHA → `SBO_REV`.
 
-### 2. Re-pin mingo to the new sbo + deploy the daemon
+### 2. Generate the new keys — and BACK THEM UP
+```
+sbo key generate --name sys
+sbo key generate --name mingo-domain        # domain root-of-trust (can reuse sys, but separate is cleaner)
+# >>> EXPORT AND STORE SECURELY (do NOT lose these again) <<<
+sbo key export sys           --output ~/secure-backup/mingo-sys.key
+sbo key export mingo-domain  --output ~/secure-backup/mingo-domain.key
+```
+Record both public keys (`sbo key list`) — the sys pubkey is the admin identity; the
+domain pubkey is the mingo.place root-of-trust.
+
+### 3. Build the new genesis batch
 ```
 cd ~/src/mingo
-#  - Cargo.toml: sbo-core rev = <SBO_REV>
-#  - deploy/sbo-daemon/Dockerfile: ARG SBO_REV=<SBO_REV>
-cargo update -p sbo-core      # refresh Cargo.lock
-cargo build                   # sanity
-git commit -am "chore: bump sbo pin to <SBO_REV> (/u layout + sovereignty)"
+cargo run -p mingo-app --bin mingo -- genesis mingo.place \
+    --key sys --domain-key mingo-domain --out genesis.wire
+```
+This emits the domain-certified `sys`, the `/sys/domains/mingo.place` object, the
+pinned broker, the starter communities + space configs, and the **new root policy**
+(`/u/$owner/**` + admin `/**`). Keep `genesis.wire`.
+
+### 4. Submit genesis to app 506 and find its block
+```
+# Note the current finalized tip C (we'll seed the daemon just below the genesis):
+curl -s -d '{"id":1,"jsonrpc":"2.0","method":"chain_getFinalizedHead","params":[]}' \
+     -H 'Content-Type: application/json' https://turing-rpc.avail.so/rpc   # -> hash -> chain_getHeader -> number C
+sbo debug da submit --file genesis.wire --turbo                            # submits to app 506; note submission_id
+```
+The genesis lands at some block **B > C**. Seeding the daemon at `head = C` (step 5)
+lets it backfill forward and pick up genesis at B; record the actual B from the
+daemon's sync log once it processes it.
+
+### 5. Update deploy config + re-seed the daemon
+In `deploy/sbo-daemon/`:
+- `config.toml`: `app_id` stays **506**.
+- `entrypoint.sh`: change the seed so a fresh `/data` registers at `head = C`
+  (the tip from step 4) instead of the old `3528751`, and **force a clean state
+  rebuild** (the genesis self-heal already drops `repos.json` when state is
+  missing — here we want a full reset, so wipe `/data` state on this one deploy).
+  Repo `id`/`uri`/`path` are unchanged (same app 506 URI).
+```
+git commit -am "deploy: re-seed daemon at new genesis (head=C, fresh /data)"
 git push origin main
-git push dokku-daemon main    # rebuild + redeploy da.sandmill.org
 ```
-Verify: `curl -s https://da.sandmill.org/v1/state-root` returns a block;
-`ssh dokku@sandmill.org -- enter sbo-daemon web -- cat /data/repos.json` head ≈ chain tip.
-(NB: the deploy uses dokku's 60s zero-downtime overlap on a single-writer RocksDB;
-if `/v1` briefly errors with a LOCK message, it self-resolves once the old
-container retires — see the prior deploy notes.)
 
-### 3. Update the live root policy in place (sign as sys)
-The new root policy is the mingo genesis policy (now `/u/$owner/**`). Post it over
-the existing `/sys/policies/ root` object — sys owns it and the admin `/**` grant
-also authorizes it. Build the exact JSON from `mingo-app/src/genesis.rs` (the
-`policy_payload` in `mingo_genesis`), write it to `root-policy.json`, then:
+### 6. Deploy the daemon (wipe old state) and verify
 ```
-sbo uri post "sbo+raw://avail:turing:506/sys/policies/root" root-policy.json \
-    --schema policy.v2 --owner sys --key sys
+# Wipe the persisted old-chain state so it rebuilds from the new genesis:
+ssh dokku@sandmill.org -- enter sbo-daemon web -- sh -c 'rm -rf /data/.sbo /data/repos /data/repos.json /data/daemon.sock'
+git push dokku-daemon main      # rebuild (new SBO_REV) + redeploy
 ```
-Wait ~1 block for it to confirm + sync (watch state-root advance).
+Verify:
+```
+curl -s https://da.sandmill.org/v1/state-root                                  # block advancing
+curl -s "https://da.sandmill.org/v1/object?path=%2Fsys%2Fnames%2F&id=sys"      # new sys identity present
+curl -s "https://da.sandmill.org/v1/object?path=%2Fsys%2Fdomains%2F&id=mingo.place"
+curl -s "https://da.sandmill.org/v1/list?prefix=%2Fcommunities%2F"             # starter communities
+ssh dokku@sandmill.org -- logs sbo-daemon | grep -i "Processed block"          # record genesis block B
+```
+(Re NB: dokku's 60s zero-downtime overlap on a single-writer RocksDB — if `/v1`
+briefly errors `LOCK: Resource temporarily unavailable`, it self-resolves once the
+old container retires; a `ps:stop` + `ps:start` forces a single clean container.)
 
-> After this, root-level `/<email>/**` writes are no longer authorized; existing
-> objects there are still **readable** until moved (step 4).
+### 7. Deploy the new web app
+Deploy the mingo web/idp image (`deploy/mingo/`, the `/u/` app.js) via its usual
+pipeline/remote (not `dokku-daemon`). Confirm mingo.place loads.
 
-### 4. Migrate (or clear) existing user objects
-List what's at the root (the only user data is `dan@mingo.place` and
-`danmills@mingo.place`):
+### 8. Set the DNS record (point `sbo://mingo.place` at the chain)
+Add this **TXT** record (app 506 reused):
 ```
-sbo uri list "sbo+raw://avail:turing:506/dan@mingo.place/attestations/dan@mingo.place/"
-sbo uri list "sbo+raw://avail:turing:506/danmills@mingo.place/attestations/danmills@mingo.place/"
+_sbo.mingo.place.  IN  TXT  "v=sbo1 r=sbo+raw://avail:turing:506/ h=https://da.sandmill.org"
 ```
-Then **either** move each object (preserves it), signing as sys (admin transfer):
-```
-sbo uri mv \
-  "sbo+raw://avail:turing:506/dan@mingo.place/attestations/dan@mingo.place/membership-cooks" \
-  "sbo+raw://avail:turing:506/u/dan@mingo.place/attestations/dan@mingo.place/membership-cooks" \
-  --key sys
-# …repeat per object…
-```
-**or** (simplest, zero users) just delete them and re-join via the app afterward:
-```
-sbo uri rm "sbo+raw://avail:turing:506/dan@mingo.place/attestations/dan@mingo.place/membership-cooks" --key sys
-# …etc…
-```
-Each is one transfer/delete tx (~1 block to confirm + sync).
+(If you went with a new app-id N instead, use `r=sbo+raw://avail:turing:N/`.)
 
-### 5. Deploy the new web app
-The app.js `/u/` change ships with the mingo web/idp image (`deploy/mingo/`).
-Deploy it the usual way (its dokku remote / pipeline — not `dokku-daemon`, which is
-the DA gateway). Confirm mingo.place loads and a join writes under
-`/u/<email>/attestations/…`.
+### 9. Save the genesis (so this is reproducible / recoverable)
+Commit a genesis record to the mingo repo:
+- `genesis.wire` (the exact batch),
+- a `deploy/GENESIS.md` noting: genesis **block B**, app_id 506, sys pubkey, domain
+  pubkey, seed `head = C`, and where the key backups live.
+```
+git add genesis.wire deploy/GENESIS.md && git commit -m "chore: record new genesis (block B, app 506)" && git push
+```
 
-### 6. Verify end-to-end
-- Join a community in the UI → membership appears under
+### 10. Verify end-to-end
+- Join a community in the UI → membership under
   `/u/<email>/attestations/<email>/membership-<id>` (`uri get` it).
-- Post in a community → still works (community policy unchanged).
-- `uri list "sbo+raw://avail:turing:506/u/"` shows the user namespaces; root is
-  clean (`sys`, `communities`, `u`).
-
-### 7. (Optional, later) Sovereignty dry-run on the proving ground
-Once stable: pick a throwaway handle, claim `/sys/names/<h>` with a key while
-browserid-attributed as `<h>@mingo.place`, then post a key-signed write owned by
-`<h>@mingo.place` and confirm it's authorized via the record (control flipped).
-This exercises the live browserid→key path that unit tests can't (DNSSEC).
+- Post in a community; confirm it works.
+- `uri list "sbo+raw://avail:turing:506/u/"` shows user namespaces; root is clean.
+- (Optional) sovereignty dry-run: browserid-claim `/sys/names/<h>` with a key, then
+  a key-signed write owned by `<h>@mingo.place` is authorized via the record.
 
 ---
 
 ## Rollback
-- Daemon: redeploy the prior `SBO_REV` (revert the pin commit, `git push dokku-daemon`).
-- Policy: re-post the previous root policy (`/$owner/**`) signed as sys.
-- App: redeploy the prior web image.
-Objects moved in step 4 can be moved back with `uri mv` (admin).
+Fresh genesis is additive (old data still on app 506 below block B). To revert,
+re-seed the daemon at the old `head=3528751` and redeploy the prior `SBO_REV` +
+prior web image; the old chain reappears. Keep `genesis.wire` + key backups so the
+new chain can always be re-stood-up.
+
+## Alternative: brand-new app-id
+If you prefer a pristine chain: obtain a new Avail turing app-id N + a TurboDA key
+scoped to it, set `config.toml app_id = N`, seed `head = C`, submit genesis to N,
+and use `r=sbo+raw://avail:turing:N/` in DNS. More operational friction (new key);
+otherwise identical.
