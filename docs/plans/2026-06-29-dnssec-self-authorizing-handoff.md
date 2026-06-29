@@ -40,17 +40,37 @@ predicate, `dnssec_proof`, in the same family as `require_payload_signed_by`.
 ## What's REMAINING
 
 ### 1. Daemon `/v1/dnssec` query/capture API (sbo) — generic, READ-ONLY, no submits
-- **Read status**: `GET /v1/dnssec?domain=…` → on-chain proof window (inception,
-  expiration) + a `needs_refresh`/`null` flag. Implementation note/**gotcha**:
-  `RepoApi::get_object` returns `ObjectView` whose `payload_text` is **lossy UTF-8** —
-  useless for the binary proof. Add a raw-bytes getter to the `RepoApi` trait
-  (`crates/sbo-daemon/src/http.rs:126`) and impl it on `DaemonState`
-  (`crates/sbo-daemon/src/main.rs:352`) + the test `MockState`. Then parse the window
-  with `attribution::verify_dnssec_proof_for_domain`.
-- **Capture**: return freshly-captured proof bytes from live DNS (browser can't do
-  DNS). `sbo-capture` is **not** currently a daemon dependency — add it
-  (`crates/sbo-daemon/Cargo.toml`) and call its capture fn. CLI precedent:
-  `crates/sbo-cli/src/commands/domain.rs:84`, lib `crates/sbo-capture/src/lib.rs:187`.
+**Request:** `GET /v1/dnssec?domain=<d>&needed_by=<unix>&margin=<secs>&repo=<opt>`
+- `needed_by` (optional, default = now): the time the client needs the proof valid for.
+- `margin` (optional): extra headroom added to `needed_by` for inclusion latency.
+
+**Response (JSON, UTF-8 safe):**
+```
+{ "on_chain": { "inception": <unix>, "expiration": <unix> } | null,
+  "needs_refresh": <bool>,
+  "proof_b64": "<base64url>"   // present ONLY when needs_refresh is true
+}
+```
+- `needs_refresh = on_chain is null OR on_chain.expiration < needed_by + margin`.
+- When `needs_refresh` is true, the daemon **captures a fresh proof from live DNS** and
+  returns it base64url-encoded; the client decodes and submits it. When false, the
+  client submits a bare write and `proof_b64` is omitted (no bandwidth). This is the
+  timestamp-gated, return-only-when-needed behavior we agreed on.
+
+**Implementation notes:**
+- **Encode the proof, don't pass raw through ObjectView.** `RepoApi::get_object`'s
+  `ObjectView.payload_text` is **lossy UTF-8** — corrupts the binary proof. For the
+  on-chain window read, add a small raw-bytes getter to the `RepoApi` trait
+  (`crates/sbo-daemon/src/http.rs:126`), impl on `DaemonState`
+  (`crates/sbo-daemon/src/main.rs:352`) + test `MockState`, then parse the window with
+  `attribution::verify_dnssec_proof_for_domain`. (Returning base64url in the *response*
+  is the right call per review — but the daemon still needs the real bytes internally;
+  the lossy `payload_text` can't provide them.)
+- **Capture** (the `needs_refresh` path): `sbo-capture` is NOT yet a daemon dependency —
+  add it (`crates/sbo-daemon/Cargo.toml`) and call its capture fn. The returned proof is
+  the *fresh* one (the on-chain one is stale by definition when a refresh is needed).
+  CLI precedent: `crates/sbo-cli/src/commands/domain.rs:84`, lib
+  `crates/sbo-capture/src/lib.rs:187`.
 - Router: add `.route("/v1/dnssec", get(...))` at `http.rs:222`.
 
 ### 2. mingo client (bean mingo-3sle)
@@ -77,8 +97,9 @@ Specification.md`, `SBO Authorization Specification.md`, `SBO Genesis Specificat
 > wanted verification. Steps, in order:
 
 1. **Merge** both branches (after review): sbo `feat/self-authorizing-dnssec-writes`,
-   mingo `feat/self-authorizing-dnssec-policy`. Bump mingo's sbo pin so the **daemon**
-   builds from the merged sbo (genesis.rs itself needs no bump — it's just JSON).
+   mingo `feat/self-authorizing-dnssec-policy`. **Bump mingo's sbo pin** (workspace
+   `Cargo.toml:33`, currently `cc207f81…`) to the merged sbo rev — now REQUIRED because
+   `genesis.rs` calls `sbo_core::presets::dnssec_self_auth_policy_entries()`.
 2. **Deploy the daemon FIRST** (dokku app `sbo-daemon` on da.sandmill.org). Rebuild
    from merged sbo. ⚠️ Stop the old container before re-seeding `/data` (single-writer
    RocksDB; the entrypoint marker-reset guards this). The new daemon must understand
@@ -87,11 +108,15 @@ Specification.md`, `SBO Authorization Specification.md`, `SBO Genesis Specificat
      field to nothing → the restriction becomes empty → the `to:*` grant is
      UNGUARDED → anyone could write arbitrary bytes to `/sys/dnssec/*`. Never post
      the policy against an old daemon.
-3. **Post the updated LIVE root policy** to `/sys/policies/root` (sys-signed, the
-   backed-up `~/secure-backup/mingo-sys.key`). Take the exact JSON from the merged
-   `mingo-app/src/genesis.rs` hub root policy (the two added entries). Additive +
-   reversible (post again to revert). Build the wire with a small `set`/`signed_object`
-   preset or `sbo` CLI; submit via `sbo debug da submit --turbo`.
+3. **Post the updated root policy to the CURRENT (already-existing) live repo.** The
+   genesis change only governs *future* geneses; the running mingo.place repo (app 506,
+   genesis block 3545910) already has a root policy on chain, so this must be an
+   explicit **update of `/sys/policies/root`** on that repo. Sys-signed with the
+   backed-up `~/secure-backup/mingo-sys.key`. Use the exact merged hub-root-policy JSON
+   (now sourced from the shared sbo fragment, so it matches the daemon predicate). It's
+   an `update` to an existing object (LWW), additive + reversible (post again to revert).
+   Build the wire (small preset / `sbo` CLI) and submit via `sbo debug da submit --turbo`.
+   Confirm afterward with `GET /v1/object?path=/sys/policies/&id=root`.
 4. **Verify:** as a non-sys user, submit a `/sys/dnssec/<domain>` write carrying a
    freshly-captured valid proof → should be accepted; a garbage payload → rejected
    with `dnssec_proof: invalid proof…`; a valid proof for the WRONG domain → rejected.
