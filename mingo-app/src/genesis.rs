@@ -267,6 +267,9 @@ pub fn mingo_genesis(
     }
 
     // 5. Hub root policy (written LAST so all prior writes pass in genesis mode).
+    // The self-authorizing /sys/dnssec/** grant+restriction are the shared sbo
+    // fragment, kept in lockstep with the daemon's `dnssec_proof` predicate.
+    let (dnssec_grant, dnssec_restriction) = sbo_core::presets::dnssec_self_auth_policy_entries();
     let policy_payload = serde_json::json!({
         // `admin` is the sys identity. SBO has no superuser; sys-level authority
         // to relocate/remove any object (e.g. moderation, layout migrations) is
@@ -277,22 +280,18 @@ pub fn mingo_genesis(
             { "to": "*", "can": ["create"], "on": "/sys/names/*" },
             { "to": "owner", "can": ["update", "delete"], "on": "/sys/names/*" },
             { "to": "owner", "can": ["*"], "on": "/u/$owner/**" },
-            // Self-authorizing DNSSEC proof refresh: ANY signer may (re)write
-            // /sys/dnssec/<domain>, because the `dnssec_proof` restriction below
-            // forces the payload to be a valid RFC 9102 proof for <domain>. This
-            // lets clients keep the on-chain attribution evidence fresh on their
-            // own writes (the proof's RRSIG window expires), with no privileged
-            // refresher. The proof IS the authority; see the restriction.
-            { "to": "*", "can": ["create", "update"], "on": "/sys/dnssec/**" },
+            // Self-authorizing DNSSEC proof refresh (shared sbo fragment): ANY
+            // signer may (re)write /sys/dnssec/<domain> because the paired
+            // restriction forces the payload to be a valid RFC 9102 proof for
+            // that domain. Lets clients keep attribution evidence fresh on their
+            // own writes with no privileged refresher. Reused from sbo so the
+            // grant/restriction stay in lockstep with the daemon's predicate.
+            dnssec_grant,
             { "to": { "role": "admin" }, "can": ["post", "transfer", "delete"], "on": "/**" }
         ],
         "restrictions": [
             { "on": "/communities/*/spaces/**", "require": { "not_attested": { "type": "ban" } } },
-            // Invariant for EVERY /sys/dnssec/<domain> write (admin included): the
-            // payload must be a DNSSEC proof for that exact domain. Domain-binding
-            // is intrinsic to `dnssec_proof` (it checks `_browserid.<id>`), so a
-            // valid proof for a different domain cannot be written here.
-            { "on": "/sys/dnssec/**", "require": { "schema": "dnssec.v1", "content_type": "application/octet-stream", "dnssec_proof": true } }
+            dnssec_restriction
         ]
     });
     let policy_bytes = serde_json::to_vec(&policy_payload).unwrap();
