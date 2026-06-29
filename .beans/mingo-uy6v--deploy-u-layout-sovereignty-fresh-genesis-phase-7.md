@@ -1,11 +1,11 @@
 ---
 # mingo-uy6v
 title: Deploy /u layout + sovereignty (fresh genesis, Phase 7)
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-06-28T08:43:48Z
-updated_at: 2026-06-28T20:25:28Z
+updated_at: 2026-06-28T22:05:42Z
 ---
 
 Execute docs/plans/2026-06-28-u-layout-migration-runbook.md end to end. Tweak: DNS record must pin to the new chain's genesis block specifically (per SBO URI/DNS spec), not just the app.
@@ -65,3 +65,54 @@ Tracked follow-ups (NOT gaps in the dialect; separate efforts):
 - Prover/proof discovery (SBOP unserved by design; trust on-chain).
 
 NEXT: merge feat/uri-dns-dialect into sbo (after the sovereignty branch per deploy runbook step 1), then the mingo pin bump picks it up and the deploy DNS record (repo=...@B genesis=sha256:.. node=..) is honored by the new build.
+
+## DEPLOY IN PROGRESS (2026-06-28)
+
+Genesis SUBMITTED + landed:
+- Genesis block B = 3545910 (confirmed via da scan: post /sys/domains/mingo.place)
+- Genesis hash = sha256:a3f28de0f9e185328693b106e8368ab6539607d27e0142d147263fbf1da5d8b3
+- Canonical identity: avail:turing:506:3545910:sha256:a3f28de0...
+- app_id 506; seed head C = 3545906; broker = browserid.me
+- sys pubkey ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
+- domain pubkey ed25519:8ef0381e356a7f10e48ab8be637862586e8c8088f39b7c672a16cbb2f0503ad2
+- TurboDA submission_id d3123661-6d43-4117-8e18-383ac1a0f7aa
+- Key backups: ~/secure-backup/mingo-sys.key, ~/secure-backup/mingo-domain.key (mode 600)
+
+Done: merges+pin (sbo cc207f8, mingo main), keys+backup, genesis build+submit, deploy/GENESIS.md written, entrypoint reseed (head=C, new SboRawUri format, marker-reset, verify anchor B+expected_genesis).
+
+In progress: daemon rebuild on dokku (~40-50 min Rust build; old container stopped pre-build to avoid /data race). Polling da.sandmill.org/health for completion.
+
+Remaining: verify new chain (sys/domains/communities, head advancing, "Genesis verified" log at B); deploy web app (dokku-mingo); commit genesis.wire+GENESIS.md; SET DNS (user-manual): _sbo.mingo.place TXT "v=sbo1 repo=sbo+raw://avail:turing:506@3545910/ genesis=sha256:a3f28de0... node=https://da.sandmill.org"; end-to-end verify.
+
+## Daemon LIVE + genesis VERIFIED on-chain (2026-06-28 ~21:51)
+
+Daemon rebuilt (sbo cc207f8) and came up after ~37min. Logs confirm:
+- "fresh-genesis reset: wiping /data state" + "seeded /data/repos.json (head=3545906)" → marker-reset worked
+- All genesis objects applied at block 3545910 (sys domain, communities cooks/woodworking/homelab + spaces, /sys/policies/root)
+- "Genesis verified for repo f86a7b415defc6cf at block 3545910" → Phase D pt2 verify PASSED on real chain
+- /v1/state-root, /v1/object (sys/domains/mingo.place), /v1/list (communities) all serving correctly
+
+DNS verified: _sbo.mingo.place TXT set + parses with real sbo parser; anchor inheritance confirmed (compose /communities/cooks/ → ...@3545910/communities/cooks/).
+
+genesis.wire + deploy/GENESIS.md committed (mingo aa7ddf1).
+
+In progress: web app redeploy (dokku-mingo, /u app.js — required because new root policy is /u/$owner/**; old app paths would be denied).
+Remaining: confirm web app up; end-to-end (join community → /u/<email>/attestations/.../membership; post).
+
+## Summary of Changes — DEPLOY COMPLETE (2026-06-29)
+
+Fresh-genesis cutover of mingo.place (Avail turing app 506) is live:
+- Implemented the genesis-anchored URI/DNS dialect end-to-end in sbo (Phases A–G, merged to sbo main cc207f8) + aligned all specs.
+- Merged mingo /u layout to main, bumped sbo pin to cc207f8.
+- Generated NEW sys+domain keys, BACKED UP to ~/secure-backup/ (mode 600).
+- Built + submitted genesis to app 506 → landed at block 3545910, hash sha256:a3f28de0f9e185328693b106e8368ab6539607d27e0142d147263fbf1da5d8b3.
+- Rebuilt daemon (race-safe marker reset, reseed head=3545906); daemon VERIFIED genesis on-chain ("Genesis verified ... at block 3545910").
+- DNS _sbo.mingo.place set (repo=...@3545910 genesis=sha256:a3f28de0... node=https://da.sandmill.org), propagated + parses.
+- Redeployed web app (/u app.js) — new container live, mingo.place 200, SPA is /u-aware.
+- Committed genesis.wire + deploy/GENESIS.md (mingo aa7ddf1).
+- Verified: /sys/domains/mingo.place, communities, clean /u/ root.
+
+REMAINING (user-side, requires live browser + browserid — can't be done headlessly):
+- End-to-end UI test: log in at mingo.place, join a community → confirm membership lands under /u/<email>/attestations/.../membership-<id>; post a message in a community.
+
+Tracked follow-ups (separate from deploy): serve ?as_of (versioned state); block-only genesis ambiguity (DA inspection); appId opaqueness; prover/proof discovery.
