@@ -1,11 +1,11 @@
 ---
 # mingo-3sle
 title: 'mingo: client-driven, lazy DNSSEC proof refresh (call daemon API, inline-when-stale)'
-status: todo
+status: in-progress
 type: task
 priority: high
 created_at: 2026-06-28T22:20:01Z
-updated_at: 2026-06-29T15:00:39Z
+updated_at: 2026-06-29T16:51:03Z
 blocked_by:
     - mingo-c9ci
 ---
@@ -32,3 +32,11 @@ Design: the sbo daemon exposes a generic READ-ONLY DNSSEC query/capture API (see
 
 ## TIME-SENSITIVE caveat
 Current on-chain proofs expire ~2026-07-09. Until this ships, @mingo.place writes break again at expiry. Interim stopgap: manually re-run `sbo domain evidence mingo.place --key sys --out d.wire && sbo debug da submit --file d.wire --turbo` before the window lapses (block 3546123 precedent).
+
+## Built 2026-06-29 (NOT deployed)
+
+Client lazy-refresh implemented + committed + pushed (branch feat/self-authorizing-dnssec-policy, web commit d16a8e8). Daemon /v1/dnssec API + dnssec_proof predicate + shared sbo policy fragment also done + pushed (sbo branch feat/self-authorizing-dnssec-writes, e276ac6). All build+test green.
+
+Design note: did NOT inline proof into the user write (Auth-Evidence is part of signed content → would need signer change). Instead the refresh is a KEY-ROOTED /sys/dnssec/<domain> write (authorized by the self-authorizing policy); the subsequent email-rooted write attributes against it via the daemon confirmed+pending overlay. Freshness margin 1h.
+
+Deploy deferred (needs eyes on da.sandmill.org): stop-first daemon redeploy (dokku zero-downtime + single-writer RocksDB confirmed) then irreversible-but-repostable on-chain /sys/policies/root update. Full runbook: docs/plans/2026-06-29-dnssec-self-authorizing-handoff.md

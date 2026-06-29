@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-06-29T14:59:24Z
-updated_at: 2026-06-29T15:10:51Z
+updated_at: 2026-06-29T16:37:26Z
 ---
 
 NB: this is **sbo-side** work (repo ~/src/sbo), tracked here because sbo has no beans tracker and this blocks the mingo work.
@@ -42,3 +42,7 @@ A write to /sys/dnssec/<domain> satisfies `dnssec_proof` iff ALL of:
 ## Progress 2026-06-29
 DONE (sbo branch feat/self-authorizing-dnssec-writes, commit 2c3d4d8): predicate impl + guards 1+2 + tests, sbo-core + sbo-daemon build green. DONE (mingo branch feat/self-authorizing-dnssec-policy, ccaa577): default genesis policy.
 REMAINING: daemon /v1/dnssec read+capture API (needs RepoApi raw-bytes getter — ObjectView.payload_text is lossy UTF-8, unusable for the binary proof; capture half needs sbo-capture as a new daemon dep), guard-3 monotonicity, spec zettels, LIVE deploy. See docs/plans/2026-06-29-dnssec-self-authorizing-handoff.md.
+
+
+## Update 2026-06-29 (later)
+DONE: shared sbo policy fragment (presets::dnssec_self_auth_policy_entries, commit aca8b9e); daemon GET /v1/dnssec read+capture API (commit e276ac6, sbo-capture added as daemon dep, base64url response, timestamp-gated via needed_by+margin). sbo-daemon builds + http tests green. Remaining on sbo side: guard-3 monotonicity (deferred), spec zettels. Client side = mingo-3sle (in progress).
