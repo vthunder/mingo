@@ -91,36 +91,82 @@ Document the `dnssec_proof` predicate, its guards, the intrinsic id→domain bin
 `$domain` variable), and the default `/sys/dnssec/*` policy. Files: `SBO Policy
 Specification.md`, `SBO Authorization Specification.md`, `SBO Genesis Specification.md`.
 
-## DEPLOY runbook — ORDER MATTERS (not yet executed)
+## STATUS 2026-06-29: all code built, tested, committed, PUSHED. Deploy not run.
 
-> Not done autonomously: live-chain mutation + daemon redeploy are consequential and
-> wanted verification. Steps, in order:
+Everything below the code line is done. Branches pushed to origin:
+`sbo:feat/self-authorizing-dnssec-writes` (HEAD e276ac6),
+`mingo:feat/self-authorizing-dnssec-policy` (HEAD d16a8e8). The mingo client
+(`mingo-web/app.js`) lazy-refresh is implemented and committed.
 
-1. **Merge** both branches (after review): sbo `feat/self-authorizing-dnssec-writes`,
-   mingo `feat/self-authorizing-dnssec-policy`. **Bump mingo's sbo pin** (workspace
-   `Cargo.toml:33`, currently `cc207f81…`) to the merged sbo rev — now REQUIRED because
-   `genesis.rs` calls `sbo_core::presets::dnssec_self_auth_policy_entries()`.
-2. **Deploy the daemon FIRST** (dokku app `sbo-daemon` on da.sandmill.org). Rebuild
-   from merged sbo. ⚠️ Stop the old container before re-seeding `/data` (single-writer
-   RocksDB; the entrypoint marker-reset guards this). The new daemon must understand
-   `dnssec_proof` BEFORE the policy below is posted.
+**Verified deploy preconditions:**
+- `sbo key list` has alias `sys` = `ed25519:564aafe4…` (genesis sys key), default key →
+  `sbo uri post … --key sys` is ready for the policy update.
+- Daemon `entrypoint.sh` will NOT wipe `/data` on a routine redeploy (the one-shot
+  reset marker `/data/.reset-genesis-3545910` already exists); it just restarts + resumes sync.
+- ⚠️ **Daemon dokku app has zero-downtime ON** (`dokku checks:report sbo-daemon` →
+  `wait to retire: 60`). Old + new containers overlap 60s. The daemon is single-writer
+  RocksDB on `/data/.sbo`, so the new container can't open the DB while the old holds it →
+  a plain `git push dokku-daemon` will fail/abort. **Must stop the old container first**
+  (brief da.sandmill.org downtime). This is why the redeploy wasn't auto-driven.
+
+## DEPLOY runbook — ORDER MATTERS, stop-first daemon deploy
+
+> Remaining = production-operational: a stop-first maintenance redeploy of the live DA
+> node + an irreversible (though repostable) on-chain governance change. Run with eyes on
+> da.sandmill.org. Exact sequence:
+
+1. **Merge** both branches (after review) and **bump mingo's sbo pin** (workspace
+   `Cargo.toml:33`, currently `cc207f81…`) to the merged sbo rev — REQUIRED because
+   `genesis.rs` + the daemon both now need the new sbo (`dnssec_self_auth_policy_entries`
+   + `dnssec_proof` + `/v1/dnssec`). Push the pin bump to mingo `main`.
+   Exact commands:
+   ```
+   # after merging sbo to main and noting its commit <SBO_SHA>:
+   cd ~/src/mingo
+   sed -i '' 's#rev = "cc207f81.*"#rev = "<SBO_SHA>"#' Cargo.toml
+   cargo update -p sbo-core && cargo build -p sbo-app   # refresh lock, sanity build
+   git commit -am "chore: bump sbo pin to <SBO_SHA> (dnssec self-auth)"
+   ```
+2. **Deploy the daemon FIRST** (dokku `sbo-daemon`, da.sandmill.org), stop-first:
+   ```
+   ssh dokku@sandmill.org ps:stop sbo-daemon      # frees the RocksDB lock; ~downtime starts
+   cd ~/src/mingo && git push dokku-daemon main    # builds new image (new sbo), restarts
+   ssh dokku@sandmill.org ps:report sbo-daemon     # confirm Running: true
+   curl -s https://da.sandmill.org/v1/state-root   # confirm it advances / responds
+   curl -s 'https://da.sandmill.org/v1/dnssec?domain=mingo.place'  # NEW endpoint must 200
+   ```
+   The new daemon MUST be confirmed healthy + expose `/v1/dnssec` BEFORE the policy post.
    - **Why order matters:** an OLD daemon deserializes the unknown `dnssec_proof`
      field to nothing → the restriction becomes empty → the `to:*` grant is
      UNGUARDED → anyone could write arbitrary bytes to `/sys/dnssec/*`. Never post
      the policy against an old daemon.
 3. **Post the updated root policy to the CURRENT (already-existing) live repo.** The
    genesis change only governs *future* geneses; the running mingo.place repo (app 506,
-   genesis block 3545910) already has a root policy on chain, so this must be an
-   explicit **update of `/sys/policies/root`** on that repo. Sys-signed with the
-   backed-up `~/secure-backup/mingo-sys.key`. Use the exact merged hub-root-policy JSON
-   (now sourced from the shared sbo fragment, so it matches the daemon predicate). It's
-   an `update` to an existing object (LWW), additive + reversible (post again to revert).
-   Build the wire (small preset / `sbo` CLI) and submit via `sbo debug da submit --turbo`.
-   Confirm afterward with `GET /v1/object?path=/sys/policies/&id=root`.
-4. **Verify:** as a non-sys user, submit a `/sys/dnssec/<domain>` write carrying a
-   freshly-captured valid proof → should be accepted; a garbage payload → rejected
-   with `dnssec_proof: invalid proof…`; a valid proof for the WRONG domain → rejected.
-5. Then ship the client (remaining #2) so refresh happens automatically.
+   genesis 3545910) already has `/sys/policies/root` on chain — so update it explicitly.
+   It's an LWW `update`, additive, and **reversible** (re-post the prior JSON to revert).
+   - First capture the CURRENT policy as a rollback artifact:
+     `curl -s 'https://da.sandmill.org/v1/object?path=/sys/policies/&id=root' | jq -r .value > /tmp/root-policy.prev.json`
+   - Write the NEW policy JSON = the current one + the two dnssec entries (the exact
+     fragment from `sbo_core::presets::dnssec_self_auth_policy_entries`):
+     grant `{"to":"*","can":["create","update"],"on":"/sys/dnssec/**"}` and restriction
+     `{"on":"/sys/dnssec/**","require":{"schema":"dnssec.v1","content_type":"application/octet-stream","dnssec_proof":true}}`.
+     (Match `mingo-app/src/genesis.rs` exactly.) Save to `/tmp/root-policy.new.json`.
+   - Post it sys-signed:
+     ```
+     sbo uri post sbo+raw://avail:turing:506/sys/policies/root /tmp/root-policy.new.json \
+       --schema policy.v2 --content-type application/json --key sys
+     ```
+   - Verify: `curl -s '…/v1/object?path=/sys/policies/&id=root' | jq .value` shows the entries.
+4. **Deploy the web app** (client lazy-refresh): `git push dokku-mingo main` (dokku app
+   `mingo`). No chain interaction; safe anytime after the daemon + policy are live.
+5. **Smoke-test end-to-end:**
+   - On mingo.place, sign in and make a post. With the on-chain proof currently expired,
+     the client should auto-submit a key-rooted `/sys/dnssec/mingo.place` refresh first,
+     then the post succeeds. Confirm `…/v1/object?path=/sys/dnssec/&id=mingo.place` shows a
+     fresh window, and a second post does a bare write (no refresh).
+   - Negative checks (CLI): garbage payload → rejected `dnssec_proof: invalid proof…`;
+     a valid proof for the WRONG domain into `/sys/dnssec/mingo.place` → rejected.
+   - Rollback if needed: re-post `/tmp/root-policy.prev.json` (step 3) with `--key sys`.
 
 ## ⏰ Interim outage stopgap (until the above ships)
 
