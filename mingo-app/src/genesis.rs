@@ -277,10 +277,22 @@ pub fn mingo_genesis(
             { "to": "*", "can": ["create"], "on": "/sys/names/*" },
             { "to": "owner", "can": ["update", "delete"], "on": "/sys/names/*" },
             { "to": "owner", "can": ["*"], "on": "/u/$owner/**" },
+            // Self-authorizing DNSSEC proof refresh: ANY signer may (re)write
+            // /sys/dnssec/<domain>, because the `dnssec_proof` restriction below
+            // forces the payload to be a valid RFC 9102 proof for <domain>. This
+            // lets clients keep the on-chain attribution evidence fresh on their
+            // own writes (the proof's RRSIG window expires), with no privileged
+            // refresher. The proof IS the authority; see the restriction.
+            { "to": "*", "can": ["create", "update"], "on": "/sys/dnssec/**" },
             { "to": { "role": "admin" }, "can": ["post", "transfer", "delete"], "on": "/**" }
         ],
         "restrictions": [
-            { "on": "/communities/*/spaces/**", "require": { "not_attested": { "type": "ban" } } }
+            { "on": "/communities/*/spaces/**", "require": { "not_attested": { "type": "ban" } } },
+            // Invariant for EVERY /sys/dnssec/<domain> write (admin included): the
+            // payload must be a DNSSEC proof for that exact domain. Domain-binding
+            // is intrinsic to `dnssec_proof` (it checks `_browserid.<id>`), so a
+            // valid proof for a different domain cannot be written here.
+            { "on": "/sys/dnssec/**", "require": { "schema": "dnssec.v1", "content_type": "application/octet-stream", "dnssec_proof": true } }
         ]
     });
     let policy_bytes = serde_json::to_vec(&policy_payload).unwrap();
