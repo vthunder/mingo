@@ -68,6 +68,8 @@ pub async fn session_from_assertion(
     .map_err(|e| AppError::Internal(format!("verify task: {}", e)))?
     .map_err(AppError::InvalidAssertion)?;
 
+    reject_own_domain(&email, &st.config.domain)?;
+
     let account = st.store.find_or_create_account(&email)?;
     let (sid, csrf) = st.store.create_session(account.id)?;
     set_session_cookie(&cookies, &sid, st.config.allow_http_verify);
@@ -205,11 +207,28 @@ pub async fn admin_seed(
         return Err(AppError::Forbidden);
     }
     let handle = normalize_handle(&req.handle)?;
+    reject_own_domain(&req.external_email, &st.config.domain)?;
     let account = st.store.find_or_create_account(&req.external_email)?;
     if !st.store.set_handle(account.id, &handle)? {
         return Err(AppError::HandleTaken);
     }
     Ok(Json(ClaimResp { email: format!("{}@{}", handle, st.config.domain) }))
+}
+
+/// Reject the IdP's own domain as an *external* identity. A `<handle>@<domain>`
+/// address must never become an `external_email` account: doing so creates a
+/// self-referential loop (the handle email logs in and claims its own handle)
+/// and pollutes the handle namespace. Users must sign in with a real external
+/// email; the `<handle>@<domain>` identity is *issued* by this IdP, never an input.
+fn reject_own_domain(email: &str, domain: &str) -> Result<(), AppError> {
+    let email_domain = email.rsplit('@').next().unwrap_or("");
+    if email_domain.eq_ignore_ascii_case(domain) {
+        return Err(AppError::BadRequest(format!(
+            "{email} cannot be used to sign in — it is a @{domain} identity issued by this \
+             service, not an external email. Sign in with your real email instead."
+        )));
+    }
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -282,6 +301,17 @@ fn normalize_handle(raw: &str) -> Result<String, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_own_domain_as_external_identity() {
+        // The IdP's own domain (and case variants) must be rejected as a sign-in email.
+        assert!(reject_own_domain("dan@mingo.place", "mingo.place").is_err());
+        assert!(reject_own_domain("danmills@mingo.place", "mingo.place").is_err());
+        assert!(reject_own_domain("dan@MINGO.PLACE", "mingo.place").is_err());
+        // Real external emails are allowed.
+        assert!(reject_own_domain("danmills@sandmill.org", "mingo.place").is_ok());
+        assert!(reject_own_domain("user@gmail.com", "mingo.place").is_ok());
+    }
 
     #[test]
     fn handle_validation() {
