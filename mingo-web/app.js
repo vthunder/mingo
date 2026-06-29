@@ -40,6 +40,19 @@ const getObject = (path, id, proof = false) =>
 const listPrefix = (prefix) => api(`/v1/list?prefix=${encodeURIComponent(prefix)}`);
 const listSchema = (schema) => api(`/v1/list?schema=${encodeURIComponent(schema)}`);
 const stateRoot = () => api(`/v1/state-root`);
+// Report whether /sys/dnssec/<domain>'s on-chain proof covers needed_by+margin,
+// returning a freshly-captured RFC 9102 proof (base64url) only when it doesn't.
+const getDnssec = (domain, neededBy, margin) =>
+  api(`/v1/dnssec?domain=${encodeURIComponent(domain)}&needed_by=${neededBy}&margin=${margin}`);
+
+// Decode base64url (no padding) → Uint8Array (the daemon returns the binary
+// proof base64url-encoded so the JSON stays UTF-8 safe).
+function b64urlToBytes(s) {
+  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 async function submitWire(bytes) {
   const r = await fetch(`${CONFIG.daemon}/v1/submit`, {
     method: "POST",
@@ -298,19 +311,62 @@ function sbo() {
   return sboP;
 }
 
-// Build → sign → assemble → submit a content write owned by the session email.
-async function writeContent({ path, id, schema, payload, hlc, prev, owner, contentType }) {
+// De-dupes concurrent /sys/dnssec refreshes within a session (all mingo writes
+// share the mingo.place domain, so one refresh covers everyone in flight).
+let dnssecRefreshInFlight = null;
+
+// Ensure /sys/dnssec/<domain> carries a proof still valid through now+margin.
+// If not (expired/absent), capture a fresh proof via the daemon and submit it as
+// a KEY-ROOTED write — authorized by the self-authorizing policy (the proof
+// payload proves its own authority), so it lands even though the stale on-chain
+// proof can't attribute an email-rooted write yet. The caller's subsequent
+// email-rooted write then attributes against this fresh proof via the daemon's
+// confirmed+pending overlay. Cheap on the common fresh path (no proof returned).
+async function ensureDnssecFresh(domain) {
+  const now = Math.floor(Date.now() / 1000);
+  const MARGIN = 3600; // 1h headroom for inclusion latency + clock skew
+  let info;
+  try {
+    info = await getDnssec(domain, now, MARGIN);
+  } catch (e) {
+    // The check is best-effort; the daemon is authoritative at submit time.
+    console.warn("dnssec freshness check failed, proceeding:", e.message);
+    return;
+  }
+  if (!info || !info.needs_refresh || !info.proof_b64) return;
+  if (dnssecRefreshInFlight) return dnssecRefreshInFlight;
+  dnssecRefreshInFlight = writeContent({
+    path: "/sys/dnssec/", id: domain, schema: "dnssec.v1",
+    payload: b64urlToBytes(info.proof_b64),
+    contentType: "application/octet-stream",
+    keyRooted: true,
+  }).finally(() => { dnssecRefreshInFlight = null; });
+  return dnssecRefreshInFlight;
+}
+
+// Build → sign → assemble → submit a write. Email-rooted by default (Owner =
+// session email); pass `keyRooted: true` for self-authorizing writes like the
+// /sys/dnssec refresh, which omit Owner so the daemon's L2 gate passes by
+// signing-key match without needing attribution.
+async function writeContent({ path, id, schema, payload, hlc, prev, owner, contentType, keyRooted }) {
   if (!session.email) { signIn(); return; }
   const wasm = await sbo();
+  // For email-rooted writes, make sure this domain's on-chain DNSSEC proof will
+  // still be valid at inclusion time — refresh it first if not, so attribution
+  // succeeds. Key-rooted writes need no attribution, so they skip this.
+  if (!keyRooted) {
+    const domain = (owner || session.email).split("@")[1];
+    if (domain) await ensureDnssecFresh(domain);
+  }
   const spec = {
     action: "", path, id,
     public_key: "ed25519:" + "00".repeat(32), // overridden by the signer
     content_schema: schema,
-    owner: owner || session.email,
     payload: Array.from(payload),
     hlc: hlc || `${Date.now()}.0`,
     prev,
   };
+  if (!keyRooted) spec.owner = owner || session.email;
   if (contentType) spec.content_type = contentType;
   const res = await signEnvelope(session.email, spec);
   const bound = { ...spec, public_key: res.pubkey, auth_cert: res.cert };
