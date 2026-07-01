@@ -5,9 +5,10 @@ status: in-progress
 type: task
 priority: high
 created_at: 2026-06-28T22:20:01Z
-updated_at: 2026-06-29T16:51:03Z
+updated_at: 2026-06-30T22:06:08Z
 blocked_by:
     - mingo-c9ci
+    - mingo-stho
 ---
 
 Reframed 2026-06-29. Supersedes the original genesis-emit + cron plan (both dropped — see below). Depends on the sbo self-authorizing /sys/dnssec write predicate ([[mingo-c9ci]]).

@@ -265,6 +265,39 @@ fn require_session(st: &Shared, cookies: &Cookies) -> Result<i64, AppError> {
         .ok_or(AppError::NotAuthenticated)
 }
 
+// --------------------------------------------------------------------------
+// POST /logout  ->  { success }
+// Real sign-out: invalidate the server session AND clear the cookie. (mingo-web's
+// old client-only signOut left the session valid, so a stale cookie could still
+// mint certs via /cert_key — see mingo-n153.) Scoped to the mingo.place session;
+// the browserid broker session is separate and untouched.
+// --------------------------------------------------------------------------
+pub async fn logout(
+    State(st): State<Shared>,
+    cookies: Cookies,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if let Some(c) = cookies.get(SESSION_COOKIE) {
+        st.store.delete_session(c.value())?;
+    }
+    clear_session_cookie(&cookies, st.config.allow_http_verify);
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// Expire the session cookie. Attributes must match `set_session_cookie` (path +
+/// SameSite/Secure) or the browser won't overwrite the third-party-context cookie.
+fn clear_session_cookie(cookies: &Cookies, dev_insecure: bool) {
+    let mut b = Cookie::build((SESSION_COOKIE, ""))
+        .path("/")
+        .http_only(true)
+        .max_age(CookieDuration::seconds(0));
+    b = if dev_insecure {
+        b.same_site(SameSite::Lax)
+    } else {
+        b.same_site(SameSite::None).secure(true)
+    };
+    cookies.add(b.build());
+}
+
 fn set_session_cookie(cookies: &Cookies, sid: &str, dev_insecure: bool) {
     // The /provision page runs in a hidden iframe inside the broker dialog
     // (top origin = browserid.me), so the cookie is a third-party context and

@@ -223,7 +223,19 @@ async function signIn() {
     toast("Sign-in failed: " + e.message);
   }
 }
-function signOut() { session.email = null; renderAuth(); route(); toast("Signed out"); }
+async function signOut() {
+  // Real sign-out: end the mingo.place server session + clear its cookie, not
+  // just client state (a stale session could otherwise still mint certs — mingo-n153).
+  try {
+    await fetch(`${CONFIG.idp}/logout`, { method: "POST", credentials: "include" });
+  } catch (e) {
+    console.warn("logout request failed (clearing local state anyway):", e);
+  }
+  session.email = null;
+  renderAuth();
+  route();
+  toast("Signed out");
+}
 
 // In-page handle picker (a Mingo product decision — never inside the broker dialog).
 function promptHandle() {

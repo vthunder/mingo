@@ -1,11 +1,10 @@
 // mingo.place primary-IdP interactive auth page (fallback).
 //
 // The broker dialog opens this in a popup when silent provisioning found no
-// mingo session. Our supported login flow is SPA-driven (the app re-authenticates
-// the external identity and POSTs the assertion to /session/from-assertion), so
-// here we simply check whether a mingo session already exists: if so we complete
-// authentication (the dialog then retries provisioning silently); otherwise we
-// hand control back so the app's own flow can establish the session.
+// mingo session. Signed in → complete authentication (the dialog retries
+// provisioning silently). Signed out → hand control back with a non-revealing
+// message; the browserid account, once authenticated, drives the parent auth for
+// a subordinate identity (see mingo-cm8z). We never disclose the owner mapping.
 (function () {
   "use strict";
   var msg = document.getElementById("msg");
@@ -18,7 +17,7 @@
           msg.textContent = "Signed in — returning…";
           navigator.id.completeAuthentication();
         } else {
-          msg.textContent = "Please sign in from mingo.place, then try again.";
+          msg.textContent = "Please sign in to browserid first, then try again.";
           navigator.id.raiseAuthenticationFailure("no mingo session");
         }
       })

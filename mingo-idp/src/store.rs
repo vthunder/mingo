@@ -141,6 +141,12 @@ impl Store {
     }
 
     /// Resolve a session id to its account id.
+    /// Invalidate a single session (logout). Idempotent.
+    pub fn delete_session(&self, session_id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
+        Ok(())
+    }
     pub fn account_for_session(&self, session_id: &str) -> rusqlite::Result<Option<i64>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -204,5 +210,17 @@ mod tests {
         let (sid, _csrf) = s.create_session(a.id).unwrap();
         assert_eq!(s.account_for_session(&sid).unwrap(), Some(a.id));
         assert_eq!(s.account_for_session("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn delete_session_invalidates_it() {
+        let s = store();
+        let a = s.find_or_create_account("a@x.com").unwrap();
+        let (sid, _csrf) = s.create_session(a.id).unwrap();
+        assert_eq!(s.account_for_session(&sid).unwrap(), Some(a.id));
+        s.delete_session(&sid).unwrap();
+        assert_eq!(s.account_for_session(&sid).unwrap(), None, "logout must invalidate the session");
+        // Idempotent.
+        s.delete_session(&sid).unwrap();
     }
 }

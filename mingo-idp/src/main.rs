@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/.well-known/browserid", get(routes::well_known))
         .route("/session/from-assertion", post(routes::session_from_assertion))
         .route("/whoami", get(routes::whoami))
+        .route("/logout", post(routes::logout))
         .route("/claim_handle", post(routes::claim_handle))
         .route("/cert_key", post(routes::cert_key))
         .route("/admin/seed", post(routes::admin_seed))

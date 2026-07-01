@@ -5,7 +5,9 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-06-29T14:59:24Z
-updated_at: 2026-06-29T16:37:26Z
+updated_at: 2026-06-30T22:06:08Z
+blocked_by:
+    - mingo-stho
 ---
 
 NB: this is **sbo-side** work (repo ~/src/sbo), tracked here because sbo has no beans tracker and this blocks the mingo work.
@@ -46,3 +48,11 @@ REMAINING: daemon /v1/dnssec read+capture API (needs RepoApi raw-bytes getter �
 
 ## Update 2026-06-29 (later)
 DONE: shared sbo policy fragment (presets::dnssec_self_auth_policy_entries, commit aca8b9e); daemon GET /v1/dnssec read+capture API (commit e276ac6, sbo-capture added as daemon dep, base64url response, timestamp-gated via needed_by+margin). sbo-daemon builds + http tests green. Remaining on sbo side: guard-3 monotonicity (deferred), spec zettels. Client side = mingo-3sle (in progress).
+
+
+## ROOT CAUSE (2026-06-30): daemon was in genesis mode
+The deployed daemon accepted ALL /sys/dnssec writes (garbage, wrong-domain, non-admin) NOT because the dnssec_proof predicate was wrong, but because check_root_policy_exists looked up /sys/policies/root with a hardcoded creator "sys". This Mode-B genesis has an EMAIL-rooted sys identity, so the root policy object creator is "sys@mingo.place" — the lookup missed it and the daemon fell into genesis mode (accept-all, ZERO policy enforcement chain-wide, exposed by the genesis-anchored-identity sbo upgrade). Fix (sbo 8c78a4c): check_root_policy_exists uses get_first_object_at_path_id (creator-agnostic). Proven via full-path validate_message regression test. The dnssec_proof predicate itself was correct all along.
+
+
+## Status 2026-07-01: code DONE + enforcement fix verified live; feature activation BLOCKED by [[mingo-stho]]
+CRITICAL fix shipped: the daemon was in genesis mode (no policy enforcement) due to check_root_policy_exists hardcoding creator "sys" vs the email-rooted sys@mingo.place — fixed in sbo 8c78a4c (merged main, deployed). VERIFIED LIVE: daemon log shows "Policy denied Create on /sys/dnssec/ ... No matching grant"; predicate + full-path regression test pass. dnssec_proof predicate, daemon /v1/dnssec API, shared policy fragment, and mingo client lazy-refresh all merged. Live policy currently reverted (safe). Re-applying the feature policy is pending because [[mingo-stho]] (sync stall) prevents new writes from confirming. Once sync is healthy: re-post feature policy, verify valid-accepted/garbage-denied, restore mingo.place to sys control, delete junk /sys/dnssec test objects (enftest*, dbgtest*, randtest.example, evil.example, test.invalid, finaltest.example).
