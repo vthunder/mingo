@@ -15,7 +15,7 @@
 # Base pinned to a specific toolchain (not the moving `rust:1` tag) so the
 # rocksdb dependency layer stays cached across deploys.
 FROM rust:1.93-bookworm AS build
-ARG SBO_REV=8c78a4c2213db05cf664970d6fc17764cd6a95a6
+ARG SBO_REV=5d5b4fa3c2d6b1b6f022e0ff1d278737c6ed78c0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler git \
