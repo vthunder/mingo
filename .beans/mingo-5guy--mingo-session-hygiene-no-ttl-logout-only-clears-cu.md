@@ -1,11 +1,11 @@
 ---
 # mingo-5guy
 title: 'mingo session hygiene: no TTL, /logout only clears current session, UI/cookie state uncoupled'
-status: todo
+status: completed
 type: bug
 priority: normal
 created_at: 2026-07-02T14:43:29Z
-updated_at: 2026-07-02T14:43:29Z
+updated_at: 2026-07-02T14:52:32Z
 ---
 
 Found while diagnosing a 'signed out but browserid still mints a cert' report (2026-07-02).
@@ -21,3 +21,9 @@ Problems in mingo-idp:
 - /logout (or a 'sign out everywhere') option to delete all of the account's sessions.
 - Consider whether /cert_key for a login-purpose cert should require a fresher proof.
 - Optionally: mingo-web verifies the server session (whoami) on load so UI matches reality.
+
+### FIXED + DEPLOYED 2026-07-02 (mingo fd8d062)
+- 30-day session TTL enforced + pruned on read (account_for_session).
+- delete_account_sessions(); /logout ends ALL of the account's sessions.
+- Tests: session_ttl_expires_and_prunes, delete_account_sessions_clears_all (passing).
+Note: the ~5 pre-existing sessions persist until read-past-TTL or the account's next sign-out (which now clears all). Not addressed here: mingo-web UI vs cookie coupling (whoami-on-load) — minor, left as follow-up.

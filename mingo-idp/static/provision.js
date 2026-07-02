@@ -34,7 +34,15 @@
       })
         .then(function (r) {
           if (r.status === 401 || r.status === 403) {
-            return fail("NOT_AUTHENTICATED");
+            // A <handle>@mingo.place identity is minted/parent-controlled — there's
+            // no interactive login page for it. When there's no mingo session we
+            // can't provision it; the user must sign in with the email that controls
+            // it first. (We don't name that email — it's private.) Report an
+            // actionable message rather than a cryptic token; redirecting to /auth
+            // would dead-end since /auth isn't an interactive login (mingo-cm8z).
+            return fail(
+              "Sign in to mingo.place with the email you registered first, then this identity will be available."
+            );
           }
           if (!r.ok) {
             return r.text().then(function (t) {

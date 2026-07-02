@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-01T20:38:32Z
-updated_at: 2026-07-02T14:43:29Z
+updated_at: 2026-07-02T14:52:32Z
 blocked_by:
     - mingo-z8im
 ---
@@ -93,3 +93,6 @@ Core cm8z (private parent metadata + parent substitution on chooser-selection) i
 - Chooser copy for derived identities; grey-out subordinate when parent proof expired.
 - Typed-email entry path doesn't substitute (only the chooser does) — see test-1 hardening.
 - Consider serving the broker's provisioning_api.js instead of mingo's copy (avoid drift).
+
+### Typed-path substitution DONE + DEPLOYED 2026-07-02 (browserid d403701)
+Extracted maybeSubstituteParent() (RP==issuer, session-gated parent_of, skipped during provisionEmail); used by BOTH the chooser and the typed email-entry path. So typing a subordinate to log into its issuer also substitutes the parent.
