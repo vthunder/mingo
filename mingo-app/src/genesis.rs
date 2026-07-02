@@ -306,6 +306,16 @@ pub fn mingo_genesis(
     // The self-authorizing /sys/dnssec/** grant+restriction are the shared sbo
     // fragment, kept in lockstep with the daemon's `dnssec_proof` predicate.
     let (dnssec_grant, dnssec_restriction) = sbo_core::presets::dnssec_self_auth_policy_entries();
+    // Match the checkpoint authority by its PUBLIC KEY, not a name. Policy actors
+    // for name-claimed identities canonicalize to `name@domain` (validate.rs
+    // resolve_creator), so a bare-name grant `to:"checkpointer"` never matches the
+    // `checkpointer@mingo.place` signer. Keying by the fixed pubkey is a clean
+    // pubkey compare (evaluate.rs Identity::Key) that sidesteps name resolution
+    // entirely — the right match for a machine authority whose key is set here.
+    let checkpoint_pubkey = format!(
+        "ed25519:{}",
+        hex::encode(checkpoint_signing_key.public_key().bytes)
+    );
     let policy_payload = serde_json::json!({
         // `admin` is the sys identity. SBO has no superuser; sys-level authority
         // to relocate/remove any object (e.g. moderation, layout migrations) is
@@ -326,7 +336,7 @@ pub fn mingo_genesis(
             // The dedicated checkpoint authority may CREATE (write-once, never
             // update) checkpoint objects. Least privilege: this is the ONLY thing
             // it can do — it is not `admin`.
-            { "to": "checkpointer", "can": ["create"], "on": "/sys/checkpoints/**" },
+            { "to": { "key": checkpoint_pubkey }, "can": ["create"], "on": "/sys/checkpoints/**" },
             { "to": { "role": "admin" }, "can": ["post", "transfer", "delete"], "on": "/**" }
         ],
         "restrictions": [
@@ -442,11 +452,15 @@ mod tests {
         });
         assert!(owner_grant.is_some(), "owner namespace grant must be /u/$owner/**");
 
-        // The checkpoint authority is granted CREATE (only) on /sys/checkpoints/**.
+        // The checkpoint authority is granted CREATE (only) on /sys/checkpoints/**,
+        // matched by its public key (not a bare name, which would canonicalize-mismatch).
         let ckpt_grant = v["grants"].as_array().unwrap().iter().find(|g| {
-            g["to"] == serde_json::json!("checkpointer")
-                && g["on"] == serde_json::json!("/sys/checkpoints/**")
-        }).expect("checkpointer grant present");
+            g["to"].get("key").is_some() && g["on"] == serde_json::json!("/sys/checkpoints/**")
+        }).expect("checkpointer key grant present");
+        assert!(
+            ckpt_grant["to"]["key"].as_str().unwrap().starts_with("ed25519:"),
+            "checkpointer grant must match by ed25519 pubkey"
+        );
         let ckpt_can: Vec<&str> = ckpt_grant["can"].as_array().unwrap()
             .iter().filter_map(|c| c.as_str()).collect();
         assert_eq!(ckpt_can, vec!["create"], "checkpointer must have create only (write-once), not update");
