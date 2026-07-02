@@ -44,6 +44,13 @@ enum Commands {
         /// daemon's [checkpoint] key_file.
         #[arg(long, default_value = "checkpoint-key.json")]
         checkpoint_key_out: String,
+        /// Self-certifying Mode B: path to the domain's `_browserid.<domain>`
+        /// DNSSEC chain (RFC 4034 wire). When given, it is seeded at
+        /// /sys/dnssec/<domain> before the domain object so the daemon can verify
+        /// domain.v1 against it (Identity Spec Rule 4) — use with `--domain-key`
+        /// set to the `_browserid` provider key. Omit for plain Mode B.
+        #[arg(long)]
+        dnssec_evidence: Option<String>,
         /// File to write the signed wire batch to.
         #[arg(long, default_value = "genesis.wire")]
         out: String,
@@ -71,7 +78,7 @@ fn main() -> Result<()> {
     let keyring = Keyring::open().context("opening keyring")?;
 
     match cli.command {
-        Commands::Genesis { domain, broker, key, domain_key, checkpoint_key, checkpoint_key_out, out } => {
+        Commands::Genesis { domain, broker, key, domain_key, checkpoint_key, checkpoint_key_out, dnssec_evidence, out } => {
             let sys_alias = keyring.resolve_alias(key.as_deref())?;
             let sys_key = keyring.get_signing_key(&sys_alias)?;
             let domain_alias = match domain_key.as_deref() {
@@ -112,6 +119,11 @@ fn main() -> Result<()> {
                 .map(|d| d.as_secs() as i64)
                 .ok();
 
+            let dnssec_bytes = match dnssec_evidence.as_deref() {
+                Some(p) => Some(std::fs::read(p).with_context(|| format!("reading dnssec evidence {p}"))?),
+                None => None,
+            };
+
             let wire = mingo_genesis(
                 &domain_signing_key,
                 &sys_key,
@@ -120,6 +132,7 @@ fn main() -> Result<()> {
                 &broker,
                 &communities,
                 created_at,
+                dnssec_bytes.as_deref(),
             );
             std::fs::write(&out, &wire).with_context(|| format!("writing {out}"))?;
 

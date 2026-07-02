@@ -167,11 +167,48 @@ pub fn mingo_genesis(
     broker: &str,
     communities: &[MingoCommunity<'_>],
     created_at: Option<i64>,
+    // Self-certifying Mode B (Identity Spec §Domain Objects, Rule 4): the
+    // `_browserid.<domain>` DNSSEC chain. When present, the domain key SHOULD be
+    // the `_browserid` provider key, and this proof is seeded at /sys/dnssec/<domain>
+    // BEFORE the domain object so the daemon can verify domain.v1 against it. `None`
+    // → plain (non-self-certifying) Mode B with a standalone domain key.
+    domain_dnssec_evidence: Option<&[u8]>,
 ) -> Vec<u8> {
     let domain_public_key = domain_signing_key.public_key();
     let sys_public_key = sys_signing_key.public_key();
 
     let mut batch = Vec::new();
+
+    // 0. (Self-certifying Mode B) Seed the domain's DNSSEC proof BEFORE the domain
+    // object, so domain.v1 validation finds it in state. The dnssec.v1 payload is
+    // the _browserid.<domain> chain; it self-authenticates against the pinned root
+    // KSK, so any signer may post it (we use the domain key).
+    if let Some(evidence) = domain_dnssec_evidence {
+        let ev_hash = ContentHash::sha256(evidence);
+        let mut ev_msg = Message {
+            action: Action::Post,
+            path: Path::parse("/sys/dnssec/").unwrap(),
+            id: Id::new(domain_name).unwrap(),
+            object_type: ObjectType::Object,
+            signing_key: domain_public_key.clone(),
+            signature: Signature([0u8; 64]),
+            content_type: Some("application/octet-stream".to_string()),
+            content_hash: Some(ev_hash),
+            payload: Some(evidence.to_vec()),
+            owner: None,
+            creator: None,
+            content_encoding: None,
+            content_schema: Some("dnssec.v1".to_string()),
+            policy_ref: None,
+            related: None,
+            hlc: None,
+            prev: None,
+            auth_cert: None,
+            auth_evidence: None,
+        };
+        ev_msg.sign(domain_signing_key);
+        batch.extend(wire::serialize(&ev_msg));
+    }
 
     // 1. Domain object (self-signed by the domain key).
     let domain_jwt = sbo_core::jwt::create_domain(domain_signing_key, domain_name)
@@ -424,7 +461,7 @@ mod tests {
         let ckpt_key = SigningKey::generate();
         let batch = mingo_genesis(
             &domain_key, &sys_key, &ckpt_key, "mingo.place", "id.mingo.place", &[],
-            Some(1_700_000_000),
+            Some(1_700_000_000), None,
         );
         let msgs = wire::parse_batch(&batch).expect("batch parses");
         let policy_msg = msgs.iter()
@@ -493,6 +530,7 @@ mod tests {
             "id.mingo.place",
             &communities,
             Some(1_700_000_000),
+            None,
         );
 
         // The batch parses into a stream of well-formed, signature-valid messages.
@@ -515,5 +553,41 @@ mod tests {
                 .any(|m| m.path.to_string() == "/sys/policies/" && m.id.as_str() == "root"),
             "root policy must be written exactly once, last"
         );
+    }
+
+    #[test]
+    fn self_certifying_mode_b_seeds_dnssec_before_domain() {
+        let domain_key = SigningKey::generate();
+        let sys_key = SigningKey::generate();
+        let ckpt_key = SigningKey::generate();
+        let evidence: &[u8] = b"fake-dnssec-chain-bytes";
+
+        let batch = mingo_genesis(
+            &domain_key, &sys_key, &ckpt_key, "mingo.place", "browserid.me", &[],
+            Some(1_700_000_000), Some(evidence),
+        );
+        let msgs = wire::parse_batch(&batch).expect("batch parses");
+
+        // A dnssec.v1 evidence object is seeded at /sys/dnssec/<domain>…
+        let dnssec_idx = msgs.iter().position(|m| {
+            m.path.to_string() == "/sys/dnssec/"
+                && m.id.as_str() == "mingo.place"
+                && m.content_schema.as_deref() == Some("dnssec.v1")
+        }).expect("dnssec.v1 seeded");
+        // …ordered BEFORE the domain object (so domain.v1 validation finds it)…
+        let domain_idx = msgs.iter().position(|m| {
+            m.path.to_string() == "/sys/domains/" && m.id.as_str() == "mingo.place"
+        }).expect("domain object present");
+        assert!(dnssec_idx < domain_idx, "dnssec.v1 must precede domain.v1");
+        // …with the evidence payload carried verbatim.
+        assert_eq!(msgs[dnssec_idx].payload.as_deref(), Some(evidence));
+
+        // Absent evidence (plain Mode B), no dnssec object is seeded.
+        let plain = mingo_genesis(
+            &domain_key, &sys_key, &ckpt_key, "mingo.place", "browserid.me", &[],
+            Some(1_700_000_000), None,
+        );
+        let pmsgs = wire::parse_batch(&plain).unwrap();
+        assert!(!pmsgs.iter().any(|m| m.content_schema.as_deref() == Some("dnssec.v1")));
     }
 }
