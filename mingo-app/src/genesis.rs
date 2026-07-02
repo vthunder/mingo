@@ -158,9 +158,11 @@ pub struct MingoCommunity<'a> {
 /// per-community scoped `membership`/`ban` rules enforce without any engine
 /// change, and each `community.v1`'s `policy` pointer names that same object.
 /// All signing for sys-owned objects uses `sys_signing_key`.
+#[allow(clippy::too_many_arguments)]
 pub fn mingo_genesis(
     domain_signing_key: &SigningKey,
     sys_signing_key: &SigningKey,
+    checkpoint_signing_key: &SigningKey,
     domain_name: &str,
     broker: &str,
     communities: &[MingoCommunity<'_>],
@@ -236,6 +238,40 @@ pub fn mingo_genesis(
     sys_msg.sign(sys_signing_key);
     batch.extend(wire::serialize(&sys_msg));
 
+    // 2b. Key-rooted checkpoint authority identity (`/sys/names/checkpointer`),
+    // self-signed by the checkpoint key. The root policy grants it `create` (only,
+    // never `update` — checkpoints are write-once) on `/sys/checkpoints/**`, so the
+    // daemon can publish `checkpoint.v1` roots signed by this dedicated key without
+    // ever holding the `sys` key (State Commitment §Checkpoint authority).
+    let checkpoint_public_key = checkpoint_signing_key.public_key();
+    let ckpt_jwt = sbo_core::jwt::create_self_signed_identity(checkpoint_signing_key, "checkpointer", None)
+        .expect("checkpointer JWT creation should not fail");
+    let ckpt_bytes = ckpt_jwt.as_bytes().to_vec();
+    let ckpt_hash = ContentHash::sha256(&ckpt_bytes);
+    let mut ckpt_msg = Message {
+        action: Action::Post,
+        path: Path::parse("/sys/names/").unwrap(),
+        id: Id::new("checkpointer").unwrap(),
+        object_type: ObjectType::Object,
+        signing_key: checkpoint_public_key,
+        signature: Signature([0u8; 64]),
+        content_type: Some("application/jwt".to_string()),
+        content_hash: Some(ckpt_hash),
+        payload: Some(ckpt_bytes),
+        owner: None,
+        creator: None,
+        content_encoding: None,
+        content_schema: Some("identity.v1".to_string()),
+        policy_ref: None,
+        related: None,
+        hlc: None,
+        prev: None,
+        auth_cert: None,
+        auth_evidence: None,
+    };
+    ckpt_msg.sign(checkpoint_signing_key);
+    batch.extend(wire::serialize(&ckpt_msg));
+
     // 3. Pinned broker list (on-chain attribution trust anchor).
     batch.extend(set_trust_brokers(sys_signing_key, &[broker]));
 
@@ -287,6 +323,10 @@ pub fn mingo_genesis(
             // own writes with no privileged refresher. Reused from sbo so the
             // grant/restriction stay in lockstep with the daemon's predicate.
             dnssec_grant,
+            // The dedicated checkpoint authority may CREATE (write-once, never
+            // update) checkpoint objects. Least privilege: this is the ONLY thing
+            // it can do — it is not `admin`.
+            { "to": "checkpointer", "can": ["create"], "on": "/sys/checkpoints/**" },
             { "to": { "role": "admin" }, "can": ["post", "transfer", "delete"], "on": "/**" }
         ],
         "restrictions": [
@@ -371,8 +411,9 @@ mod tests {
     fn root_policy_grants_admin_role_transfer_and_delete() {
         let domain_key = SigningKey::generate();
         let sys_key = SigningKey::generate();
+        let ckpt_key = SigningKey::generate();
         let batch = mingo_genesis(
-            &domain_key, &sys_key, "mingo.place", "id.mingo.place", &[],
+            &domain_key, &sys_key, &ckpt_key, "mingo.place", "id.mingo.place", &[],
             Some(1_700_000_000),
         );
         let msgs = wire::parse_batch(&batch).expect("batch parses");
@@ -400,6 +441,20 @@ mod tests {
             g["to"] == serde_json::json!("owner") && g["on"] == serde_json::json!("/u/$owner/**")
         });
         assert!(owner_grant.is_some(), "owner namespace grant must be /u/$owner/**");
+
+        // The checkpoint authority is granted CREATE (only) on /sys/checkpoints/**.
+        let ckpt_grant = v["grants"].as_array().unwrap().iter().find(|g| {
+            g["to"] == serde_json::json!("checkpointer")
+                && g["on"] == serde_json::json!("/sys/checkpoints/**")
+        }).expect("checkpointer grant present");
+        let ckpt_can: Vec<&str> = ckpt_grant["can"].as_array().unwrap()
+            .iter().filter_map(|c| c.as_str()).collect();
+        assert_eq!(ckpt_can, vec!["create"], "checkpointer must have create only (write-once), not update");
+        // And a key-rooted checkpointer identity exists.
+        assert!(
+            msgs.iter().any(|m| m.path.to_string() == "/sys/names/" && m.id.as_str() == "checkpointer"),
+            "checkpointer identity must be registered at genesis"
+        );
         assert!(
             !v["grants"].as_array().unwrap().iter().any(|g| g["on"] == serde_json::json!("/$owner/**")),
             "root-level /$owner/** grant must be gone (moved under /u/)"
@@ -415,9 +470,11 @@ mod tests {
             MingoCommunity { id: "woodworking", name: "Woodworking", description: "Makers.", issuer: "woodworking@mingo.place" },
             MingoCommunity { id: "homelab", name: "Homelab", description: "Self-hosters.", issuer: "homelab@mingo.place" },
         ];
+        let ckpt_key = SigningKey::generate();
         let batch = mingo_genesis(
             &domain_key,
             &sys_key,
+            &ckpt_key,
             "mingo.place",
             "id.mingo.place",
             &communities,
@@ -430,8 +487,8 @@ mod tests {
             sbo_core::message::verify_message(msg).expect("each message verifies");
         }
 
-        // 1 domain + 1 sys + 1 trust + 3 communities * 3 + 1 root policy = 13.
-        assert_eq!(msgs.len(), 13);
+        // 1 domain + 1 sys + 1 checkpointer + 1 trust + 3 communities * 3 + 1 root policy = 14.
+        assert_eq!(msgs.len(), 14);
         // The hub root policy is the final write (genesis-mode ordering).
         let last = msgs.last().unwrap();
         assert_eq!(last.path.to_string(), "/sys/policies/");

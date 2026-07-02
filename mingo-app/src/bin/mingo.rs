@@ -34,6 +34,16 @@ enum Commands {
         /// Key alias for the domain identity (default: same as --key).
         #[arg(long)]
         domain_key: Option<String>,
+        /// Key alias for the checkpoint authority (default: freshly generated).
+        /// This dedicated key is granted `create` on /sys/checkpoints/**; the
+        /// daemon signs `checkpoint.v1` roots with it. Its secret is written to
+        /// --checkpoint-key-out for deployment (never the sys key).
+        #[arg(long)]
+        checkpoint_key: Option<String>,
+        /// File to write the checkpoint authority key (JSON {secret_key}) for the
+        /// daemon's [checkpoint] key_file.
+        #[arg(long, default_value = "checkpoint-key.json")]
+        checkpoint_key_out: String,
         /// File to write the signed wire batch to.
         #[arg(long, default_value = "genesis.wire")]
         out: String,
@@ -61,7 +71,7 @@ fn main() -> Result<()> {
     let keyring = Keyring::open().context("opening keyring")?;
 
     match cli.command {
-        Commands::Genesis { domain, broker, key, domain_key, out } => {
+        Commands::Genesis { domain, broker, key, domain_key, checkpoint_key, checkpoint_key_out, out } => {
             let sys_alias = keyring.resolve_alias(key.as_deref())?;
             let sys_key = keyring.get_signing_key(&sys_alias)?;
             let domain_alias = match domain_key.as_deref() {
@@ -69,6 +79,16 @@ fn main() -> Result<()> {
                 None => sys_alias.clone(),
             };
             let domain_signing_key = keyring.get_signing_key(&domain_alias)?;
+            // Dedicated checkpoint authority key — from a keyring alias, or freshly
+            // generated for a brand-new chain. Its secret is written for the daemon.
+            let (checkpoint_signing_key, checkpoint_source) = match checkpoint_key.as_deref() {
+                Some(alias) => {
+                    let a = keyring.resolve_alias(Some(alias))?;
+                    let k = keyring.get_signing_key(&a)?;
+                    (k, format!("keyring alias `{a}`"))
+                }
+                None => (sbo_core::crypto::SigningKey::generate(), "freshly generated".to_string()),
+            };
             let broker = broker.unwrap_or_else(|| format!("id.{}", domain));
 
             // Starter communities (issuer = <id>@<domain>).
@@ -95,12 +115,22 @@ fn main() -> Result<()> {
             let wire = mingo_genesis(
                 &domain_signing_key,
                 &sys_key,
+                &checkpoint_signing_key,
                 &domain,
                 &broker,
                 &communities,
                 created_at,
             );
             std::fs::write(&out, &wire).with_context(|| format!("writing {out}"))?;
+
+            // Write the checkpoint authority key for the daemon (KEEP SECRET). The
+            // genesis grants its `checkpointer` identity `create` on /sys/checkpoints/**.
+            let key_file = serde_json::json!({
+                "secret_key": hex::encode(checkpoint_signing_key.to_bytes()),
+            });
+            std::fs::write(&checkpoint_key_out, serde_json::to_vec_pretty(&key_file)?)
+                .with_context(|| format!("writing {checkpoint_key_out}"))?;
+
             println!(
                 "✓ wrote Mingo genesis (domain {}, broker {}, communities: {}) to {} ({} bytes, sys {}, domain {})",
                 domain,
@@ -110,6 +140,12 @@ fn main() -> Result<()> {
                 wire.len(),
                 sys_alias,
                 domain_alias,
+            );
+            println!(
+                "✓ wrote checkpoint authority key ({}) to {} — deploy it to the daemon's [checkpoint] key_file and set publish=true (KEEP SECRET; pubkey {})",
+                checkpoint_source,
+                checkpoint_key_out,
+                hex::encode(checkpoint_signing_key.public_key().bytes),
             );
             println!(
                 "\nSubmit: curl --data-binary @{} -H 'Content-Type: application/octet-stream' <daemon>/v1/submit",
