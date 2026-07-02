@@ -1,11 +1,11 @@
 ---
 # mingo-c9ci
 title: '[sbo] Self-authorizing /sys/dnssec/<domain> writes via a content-validation policy predicate'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-06-29T14:59:24Z
-updated_at: 2026-06-30T22:06:08Z
+updated_at: 2026-07-02T15:26:47Z
 blocked_by:
     - mingo-stho
 ---
@@ -56,3 +56,7 @@ The deployed daemon accepted ALL /sys/dnssec writes (garbage, wrong-domain, non-
 
 ## Status 2026-07-01: code DONE + enforcement fix verified live; feature activation BLOCKED by [[mingo-stho]]
 CRITICAL fix shipped: the daemon was in genesis mode (no policy enforcement) due to check_root_policy_exists hardcoding creator "sys" vs the email-rooted sys@mingo.place — fixed in sbo 8c78a4c (merged main, deployed). VERIFIED LIVE: daemon log shows "Policy denied Create on /sys/dnssec/ ... No matching grant"; predicate + full-path regression test pass. dnssec_proof predicate, daemon /v1/dnssec API, shared policy fragment, and mingo client lazy-refresh all merged. Live policy currently reverted (safe). Re-applying the feature policy is pending because [[mingo-stho]] (sync stall) prevents new writes from confirming. Once sync is healthy: re-post feature policy, verify valid-accepted/garbage-denied, restore mingo.place to sys control, delete junk /sys/dnssec test objects (enftest*, dbgtest*, randtest.example, evil.example, test.invalid, finaltest.example).
+
+## Summary of Changes
+dnssec_proof policy predicate + GET /v1/dnssec (read-only query/capture) implemented in sbo and deployed; verified live (garbage /sys/dnssec writes rejected with real predicate reasons; valid mingo.place proof accepted; end-to-end attribution works). The self-authorizing write pattern is proven on-chain.
+DEFERRED (doc only): spec zettels under specs/ documenting the predicate + its guards — split to a follow-up, not blocking.

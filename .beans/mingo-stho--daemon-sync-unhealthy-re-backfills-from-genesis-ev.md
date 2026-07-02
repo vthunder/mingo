@@ -1,11 +1,11 @@
 ---
 # mingo-stho
 title: 'Daemon sync unhealthy: re-backfills from genesis every restart AND stalls before chain tip'
-status: todo
+status: completed
 type: bug
 priority: high
 created_at: 2026-06-30T22:05:51Z
-updated_at: 2026-07-01T12:51:27Z
+updated_at: 2026-07-02T15:26:47Z
 ---
 
 Found 2026-06-30/07-01 while deploying the dnssec fix. Two related sbo-daemon sync problems on da.sandmill.org (app 506):
@@ -75,3 +75,10 @@ Remaining tasks on this bean (mingo-vus5 relation; dokku zero-downtime/single-wr
 - Root cause (mingo side): entrypoint.sh self-heal checks unsuffixed `avail_turing_506/state`, but old daemon wrote suffixed `avail_turing_506_3545910` (uri.to_string includes @firstBlock) → check never passed → repos.json deleted every boot → reseed head=3545906 → full backfill. Fix aligns the daemon's write path with the entrypoint's expected path.
 
 Optional follow-up: remove the now-stale `avail_turing_506_3545910` dir to reclaim disk. Remaining bean task (mingo-vus5 cold-start relation) untouched.
+
+## Summary of Changes
+Both sync bugs fixed and deployed 2026-07-01 (sbo 5d5b4fa, mingo c6ef4de → later builds).
+- Problem 1 (re-backfill every restart): repo identity derived from anchor-independent SboRawUri::to_identity_string(); state-dir now the unsuffixed avail_turing_506 that entrypoint.sh expects. No more genesis replay per restart. Verified live (unsuffixed dir created; subsequent restarts skip backfill).
+- Problem 2 (stall before tip): fall back to RPC-only tailing when the LC availability window lags finality (no-op in the daemon's current RPC-only config; safe guard).
+- Enforcement guard + regression test added (mingo-9vck).
+Operational tasks (mingo-vus5 cold-start; dokku stop-first) tracked separately; zero-downtime disabled on sbo-daemon.

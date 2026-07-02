@@ -1,11 +1,11 @@
 ---
 # mingo-3sle
 title: 'mingo: client-driven, lazy DNSSEC proof refresh (call daemon API, inline-when-stale)'
-status: in-progress
+status: completed
 type: task
 priority: high
 created_at: 2026-06-28T22:20:01Z
-updated_at: 2026-06-30T22:06:08Z
+updated_at: 2026-07-02T15:26:47Z
 blocked_by:
     - mingo-c9ci
     - mingo-stho
@@ -41,3 +41,6 @@ Client lazy-refresh implemented + committed + pushed (branch feat/self-authorizi
 Design note: did NOT inline proof into the user write (Auth-Evidence is part of signed content → would need signer change). Instead the refresh is a KEY-ROOTED /sys/dnssec/<domain> write (authorized by the self-authorizing policy); the subsequent email-rooted write attributes against it via the daemon confirmed+pending overlay. Freshness margin 1h.
 
 Deploy deferred (needs eyes on da.sandmill.org): stop-first daemon redeploy (dokku zero-downtime + single-writer RocksDB confirmed) then irreversible-but-repostable on-chain /sys/policies/root update. Full runbook: docs/plans/2026-06-29-dnssec-self-authorizing-handoff.md
+
+## Summary of Changes
+Implemented + deployed + verified live 2026-07-01/02. mingo-web ensureDnssecFresh (app.js): before an email-rooted write it calls the daemon GET /v1/dnssec for the signer's domain; if fresh (needs_refresh:false) submits a bare write (daemon resolves evidence via conventional /sys/dnssec/<issuer>); if stale/absent it captures a fresh proof and submits a key-rooted self-authorizing /sys/dnssec refresh first. Freshness MARGIN=3600s. Verified: dan@mingo.place's post+membership applied under enforcement (attr:✓) on chain.

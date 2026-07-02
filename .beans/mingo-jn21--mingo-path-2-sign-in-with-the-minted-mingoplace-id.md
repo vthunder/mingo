@@ -1,11 +1,11 @@
 ---
 # mingo-jn21
 title: 'mingo Path 2: sign in with the minted @mingo.place identity (prove owner, re-issue)'
-status: todo
+status: scrapped
 type: feature
 priority: high
 created_at: 2026-07-01T16:48:17Z
-updated_at: 2026-07-01T20:38:47Z
+updated_at: 2026-07-02T15:26:47Z
 blocked_by:
     - mingo-z8im
     - mingo-cm8z
@@ -42,3 +42,6 @@ mingo-idp → mingo.place (owner_for + auth.js). Pairs with the browserid-ng W1/
 ### SUPERSEDED 2026-07-01 by [[mingo-cm8z]]
 The hinted-owner design here has a privacy flaw: the GET /owner_for endpoint I built is UNGATED, so anyone can map handle→owner (deanonymizes every @mingo.place identity). Replaced by browserid-native subordinate identities (mingo-cm8z): the parent↔subordinate mapping lives in the user's own browserid account (private), and browserid drives the parent auth natively (no nested RP-in-IdP).
 ACTION: revert the /owner_for endpoint (routes.rs + main.rs route) and the hinted auth.js (restore simple session-check). Path 2 UX is subsumed by cm8z.
+
+## Reasons for Scrapping
+Superseded by [[mingo-cm8z]] (browserid-native subordinate identities). The hinted-owner design here required an ungated /owner_for endpoint that deanonymized every handle→owner mapping (privacy leak), and the RP-nested-in-IdP flow. cm8z replaces it: the parent mapping lives privately in the browserid account, and browserid substitutes the parent on selection — no leak, no nesting. /owner_for + hinted auth.js were reverted.
