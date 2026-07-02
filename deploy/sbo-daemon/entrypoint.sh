@@ -6,16 +6,23 @@ mkdir -p /data/repos
 # daemon refuses to start ("Socket already exists").
 rm -f /data/daemon.sock
 
-# One-shot fresh-genesis reset (Phase 7). The pre-genesis container persisted an
-# OLD-format repos.json (pre-SboRawUri `path_prefix`, head=3528751) and old-chain
-# state under /data/.sbo — both incompatible with this build. On the first boot of
-# this image we wipe /data state unconditionally so the seed below rebuilds from the
-# NEW genesis (B=3545910). The marker makes this idempotent across later restarts;
-# it also wins any race with the retiring old container (which may rewrite /data
-# during the deploy overlap). To re-run a reset, bump the marker name.
-RESET_MARKER=/data/.reset-genesis-3545910
+# Write the checkpoint-authority secret key (KEEP SECRET) from the injected env
+# var into the persistent mount, where config.toml's [checkpoint] key_file points.
+# Kept out of the image/repo — set via `dokku config:set sbo-daemon SBO_CHECKPOINT_KEY=<hex>`.
+if [ -n "${SBO_CHECKPOINT_KEY:-}" ]; then
+  printf '{"secret_key":"%s"}' "$SBO_CHECKPOINT_KEY" > /data/checkpoint-key.json
+  chmod 600 /data/checkpoint-key.json
+fi
+
+# One-shot fresh-genesis reset. On the first boot of an image with a new genesis we
+# wipe /data state unconditionally so the seed below rebuilds from the NEW genesis
+# (B=3562721 — the regenesis carrying the /sys/checkpoints/** `checkpointer` grant).
+# The marker makes this idempotent across later restarts; it also wins any race with
+# the retiring old container (which may rewrite /data during the deploy overlap). To
+# re-run a reset for a future regenesis, bump the marker name to the new block.
+RESET_MARKER=/data/.reset-genesis-3562721
 if [ ! -f "$RESET_MARKER" ]; then
-  echo "fresh-genesis reset: wiping /data state to rebuild from B=3545910"
+  echo "fresh-genesis reset: wiping /data state to rebuild from B=3562721"
   rm -rf /data/.sbo /data/repos /data/repos.json
   mkdir -p /data/repos
   touch "$RESET_MARKER"
@@ -25,28 +32,29 @@ fi
 # $HOME/.sbo (now /data/.sbo, persistent). If it's missing but a repo head was
 # carried over in repos.json, the head sits past genesis while state is empty —
 # reads return nothing forever. Drop repos.json so the seed below re-registers
-# at head=3545906 and sync rebuilds state from Avail.
+# at head=3562720 and sync rebuilds state from Avail.
 STATE_DIR=/data/.sbo/repos/avail_turing_506/state
 if [ -f /data/repos.json ] && [ ! -d "$STATE_DIR" ]; then
   echo "state index missing at $STATE_DIR — resetting repo head to backfill from genesis"
   rm -f /data/repos.json
 fi
 
-# Seed the repo registration on first boot. head is set to the Avail turing
-# finalized tip captured at fresh-genesis submission time (C=3545906); the new
-# genesis lands at some block B>C, so RPC-only sync (starting at head+1) replays
-# the *new* genesis + all later app-506 writes and rebuilds state from Avail. The
-# old (pre-3545906) chain stays below this head and is invisible.
-# The new genesis landed at B=3545910 (sys=ed25519:564aafe4…, domain=ed25519:8ef0381e…).
+# Seed the repo registration on first boot. head is set to one below the genesis
+# block (3562720), so RPC-only sync (starting at head+1=3562721=B) replays the new
+# genesis + all later app-506 writes and rebuilds state from Avail. The old
+# (pre-3562721) chain stays below this head and is invisible.
+# The new genesis landed at B=3562721 (sys=ed25519:564aafe4…, domain=ed25519:8ef0381e…,
+# checkpointer=ed25519:37427ea4…, broker browserid.me).
 # uri.first_block + expected_genesis make the daemon verify the reconstructed genesis
 # hash at block B (non-fatal; logs "Genesis verified" / "GENESIS VERIFICATION FAILED").
 # NOTE: the uri object is the canonical SboRawUri serialization (chain/app_id/
-# first_block/path/query); the id is sha256(to_string)[..8] of the bare repo URI.
+# first_block/path/query); the id is sha256(to_string)[..8] of the bare repo URI
+# (anchor-independent, so it stays f86a7b415defc6cf across regenesis).
 if [ ! -f /data/repos.json ]; then
   cat > /data/repos.json <<'JSON'
-[{"id":"f86a7b415defc6cf","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":506,"first_block":3545910,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:506/","path":"/data/repos/mingo","head":3545906,"created_at":1782336171,"expected_genesis":"sha256:a3f28de0f9e185328693b106e8368ab6539607d27e0142d147263fbf1da5d8b3"}]
+[{"id":"f86a7b415defc6cf","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":506,"first_block":3562721,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:506/","path":"/data/repos/mingo","head":3562720,"created_at":1782336171,"expected_genesis":"sha256:b18043a806b87e28fe76050ec1f87e9bb6b8f900e48c21ac051293bd8984133a"}]
 JSON
-  echo "seeded /data/repos.json (head=3545906, will backfill from new genesis)"
+  echo "seeded /data/repos.json (head=3562720, will backfill from new genesis B=3562721)"
 fi
 
 exec sbo-daemon --config /app/config.toml start --foreground

@@ -1,11 +1,11 @@
 ---
 # mingo-lsjh
 title: 'T2.1 checkpoint publishing (daemon): dual-trigger, sign+submit checkpoint.v1'
-status: in-progress
+status: completed
 type: task
 priority: high
 created_at: 2026-07-02T16:25:37Z
-updated_at: 2026-07-02T17:34:58Z
+updated_at: 2026-07-02T19:00:43Z
 parent: mingo-o5t1
 ---
 
@@ -22,3 +22,9 @@ Local checkpoint scheduling + snapshot generation working in prod:
 - /v1/snapshot?block=latest streams gzip + X-Snapshot-* headers; decompresses to 17 objects.
 - Fast test cadence every_blocks=20 / every_writes=5; env-tunable (SBO_CHECKPOINT_EVERY_*).
 STILL REMAINING (this bean): on-chain checkpoint.v1 publishing (publish path, needs authority key).
+
+## DONE 2026-07-02 — on-chain publish + genesis authority
+- Daemon (sbo 7776903): [checkpoint].publish + key_file → build+sign+submit checkpoint.v1 (write-once /sys/checkpoints/block-<h>) via TurboDA at each checkpoint height; key loaded from {secret_key:hex}; gated/off by default.
+- Genesis (mingo 57b606b): key-rooted `checkpointer` identity (/sys/names/) + grant CREATE-ONLY on /sys/checkpoints/** (per user: create, not update — write-once). `mingo genesis` CLI mints/takes a checkpoint key and writes checkpoint-key.json for the daemon. Brand-new chains get it automatically; daemon never needs the sys key. Tests: create-only grant + checkpointer identity + batch count 14.
+
+ACTIVATION (deploy step, not done): on the LIVE chain, publishing needs a regenesis (to include the checkpointer grant) + deploy checkpoint-key.json + set publish=true + bump SBO_REV. A fresh chain is automatic. Until then bootstrap trust = ServingNode; once on, upgrades to OnChainCheckpoint.

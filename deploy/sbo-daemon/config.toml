@@ -22,14 +22,19 @@ endpoint = "https://staging.turbo-api.availproject.org"
 app_id = 506
 
 # State Commitment fast-sync (State Commitment spec v0.3). Generates a snapshot +
-# records a checkpoint at the current tip when either 5 writes or 20 DA blocks (fast TEST cadence; raise for prod, or override via SBO_CHECKPOINT_EVERY_*)
-# have elapsed, and serves them via /v1/snapshot + /v1/sync-points. On-chain
-# checkpoint publishing (publish=true) is OFF — it needs the sys/authority signing
-# key, a deliberate deploy decision, not auto-armed. snapshots_dir is on the
-# persistent /data mount so snapshots survive redeploys.
+# records a checkpoint at the current tip when either 5 writes accumulate or 500
+# DA blocks pass (the latter is a max-staleness bound, not a tight cadence —
+# every_blocks fires even on an idle chain, so keep it loose to avoid redundant
+# same-root checkpoints), and serves them via /v1/snapshot + /v1/sync-points.
+# On-chain publishing (publish=true) signs each checkpoint.v1 with the dedicated
+# `checkpointer` authority key (granted create-only on /sys/checkpoints/**) loaded
+# from key_file. entrypoint.sh writes that file from the SBO_CHECKPOINT_KEY env var
+# (`dokku config:set sbo-daemon SBO_CHECKPOINT_KEY=…`) so the secret stays out of
+# this public repo. snapshots_dir is on the persistent /data mount.
 [checkpoint]
 enabled = true
-publish = false
+publish = true
+key_file = "/data/checkpoint-key.json"
 every_writes = 5
-every_blocks = 20
+every_blocks = 500
 snapshots_dir = "/data/snapshots"
