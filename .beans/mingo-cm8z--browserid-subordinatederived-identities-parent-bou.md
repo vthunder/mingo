@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-01T20:38:32Z
-updated_at: 2026-07-01T21:09:59Z
+updated_at: 2026-07-02T13:03:46Z
 blocked_by:
     - mingo-z8im
 ---
@@ -62,3 +62,15 @@ browserid-core CertificateClaims is fixed (iss/exp/iat/public_key/principal) —
 5. Tests + live iteration.
 
 ## Prereqs status: W1 (mingo-1c6v) + W2 (mingo-z8im) DEPLOYED to browserid.me 2026-07-01 (commit 148eec1). Foundation live.
+
+
+## CORRECTION (2026-07-02): parent signal must NOT be in the cert
+The cert is embedded in assertions sent to EVERY RP, so a subordinate_to cert claim would leak the parent to every relying party. (Tried it, reverted.) The signal must travel a PRIVATE channel and land only in browserid's server-side account metadata:
+
+  mingo /cert_key response (subordinate_to, private) -> mingo provision.js -> postMessage (iframe<->dialog, never sent to RPs) -> browserid dialog -> POST /wsapi/set_parent {email, parent_email} (session-gated) -> emails.parent_email
+
+Parent email lives only in: mingo DB, mingo /cert_key response, a same-broker postMessage, browserid account row. NEVER in cert/assertion/RP.
+
+Iframe->dialog hop options: (a) extend provisioning API registerCertificate(cert, {subordinate_to}) to forward metadata (cleanest); (b) provision.js postMessages {subordinate_to} to the dialog, which validates origin==IdP.
+
+Cert-claim approach ABANDONED. browserid-core reverted (no cert change).

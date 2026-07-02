@@ -145,6 +145,11 @@ pub struct PubKeyJson {
 pub struct CertResp {
     pub success: bool,
     pub cert: String,
+    /// The account's external (parent) identity. Returned PRIVATELY to our own
+    /// provision page so browserid can record `<handle>@domain` as subordinate to
+    /// it — carried over the provisioning channel, never in the cert (mingo-cm8z).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subordinate_to: Option<String>,
 }
 
 pub async fn cert_key(
@@ -183,7 +188,16 @@ pub async fn cert_key(
     )
     .map_err(|e| AppError::Internal(format!("cert create: {}", e)))?;
 
-    Ok(Json(CertResp { success: true, cert: cert.encoded().to_string() }))
+    // The <handle>@domain identity is minted/derived; its controlling parent is
+    // the account's external identity. Hand it back privately so browserid can
+    // record the subordinate→parent link (mingo-cm8z).
+    let subordinate_to = st.store.get_account(account_id)?.map(|a| a.external_email);
+
+    Ok(Json(CertResp {
+        success: true,
+        cert: cert.encoded().to_string(),
+        subordinate_to,
+    }))
 }
 
 // --------------------------------------------------------------------------

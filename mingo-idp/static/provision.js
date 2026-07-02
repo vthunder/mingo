@@ -42,7 +42,13 @@
             });
           }
           return r.json().then(function (res) {
-            navigator.id.registerCertificate(res.cert);
+            // Pass the parent identity to the dialog as PRIVATE provisioning
+            // metadata (not in the cert), so browserid records this minted
+            // identity as subordinate to it (mingo-cm8z).
+            var metadata = res.subordinate_to
+              ? { subordinate_to: res.subordinate_to }
+              : null;
+            navigator.id.registerCertificate(res.cert, metadata);
           });
         })
         .catch(fail);
