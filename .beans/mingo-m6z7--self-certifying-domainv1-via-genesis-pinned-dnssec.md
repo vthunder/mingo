@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-02T20:47:48Z
-updated_at: 2026-07-02T21:48:03Z
+updated_at: 2026-07-02T22:05:17Z
 ---
 
 Make the on-chain domain root-of-trust (/sys/domains/<D>, currently a self-signed JWT iss:self with NO DNS-control proof) verifiable from on-chain state alone, so genesis self-certifies domain authority and a client can verify with zero trust in the _sbo publisher.
@@ -68,3 +68,21 @@ All builds green; sbo-core + sbo-daemon full suites pass.
 3. Flip the daemon check from warn-log to hard-reject (validate.rs) once verified live.
 4. Batched regenesis: run `mingo genesis --domain-key mingo-provider --dnssec-evidence <file> …`, submit, reseed entrypoint, deploy, update _sbo DNS. Optionally restore roles.admin:["sys"] (spec form; email/key already work).
 5. Decide: enforce self-cert REQUIRED for Mode B, or keep optional (default: optional in spec, always-emitted by Mingo).
+
+## Security review findings (2026-07-02) — MUST fix before activation
+
+**HIGH (design flaw) — evidence overwrite breaks snapshot verification + hard-reject brick.**
+The genesis proof lives at /sys/dnssec/<domain>, but the object store is NOT versioned (put_object overwrites per (path,creator,id); sbo-core state/db.rs:84) and get_first_object_at_path_id returns the lexicographically-FIRST creator (db.rs:145), not the genesis one. The self-authorizing /sys/dnssec/** grant lets ANY user refresh /sys/dnssec/<domain> under their own (attributed-email) creator. Consequences:
+- A user refresh with an email creator sorting before the genesis 'ed<hex>' creator SHADOWS the genesis proof in the lookup → self-cert reads a now-windowed proof → EvidenceWindowMismatch vs the genesis inclusion_time.
+- 'Verifiable from a snapshot alone' (spec edit #4) is FALSE once any refresh occurs — the snapshot holds only current state, not the genesis-window proof.
+- Under the deferred hard-reject plan this REJECTS the legit genesis domain and bricks sync.
+- NOTE: the daemon's CURRENT in-order-sync check (at the genesis block, before any refresh) is correct — this bites snapshot verification and enforcement, not the warn-log daemon today.
+- FIX: give the genesis proof an IMMUTABLE, non-overwritable home separate from the refreshable /sys/dnssec/<domain> user slot — a dedicated path (e.g. /sys/domains-dnssec/<domain>), OR have domain.v1 carry an explicit Auth-Evidence: ref:<path,creator,id> resolved as-of its block. Update spec edit #4 accordingly.
+
+**Others:**
+- B1 nit: daemon compares msg.signing_key, not the JWT's inner public_key (sync.rs). Genesis makes them equal, but the hard-reject impl should verify the JWT public_key field (clients trust that).
+- B5: before flipping warn→reject, guard inclusion_time==None as SKIP (not reject); only reject when a bound evidence ref is present-and-fails.
+- B6: add an end-to-end genesis test that verify_domain_self_cert actually PASSES against a real seeded chain at a genesis timestamp (current test checks ordering only, with fake bytes).
+- Forgery vectors (domain substitution, key-equality, later-key-compromise) reviewed and NOT exploitable.
+
+Do NOT enable hard-reject or claim snapshot-verifiability until the evidence-home fix lands.
