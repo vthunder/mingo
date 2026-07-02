@@ -22,7 +22,7 @@ endpoint = "https://staging.turbo-api.availproject.org"
 app_id = 506
 
 # State Commitment fast-sync (State Commitment spec v0.3). Generates a snapshot +
-# records a checkpoint at the current tip when either 100 writes or 1000 DA blocks
+# records a checkpoint at the current tip when either 5 writes or 20 DA blocks (fast TEST cadence; raise for prod, or override via SBO_CHECKPOINT_EVERY_*)
 # have elapsed, and serves them via /v1/snapshot + /v1/sync-points. On-chain
 # checkpoint publishing (publish=true) is OFF — it needs the sys/authority signing
 # key, a deliberate deploy decision, not auto-armed. snapshots_dir is on the
@@ -30,6 +30,6 @@ app_id = 506
 [checkpoint]
 enabled = true
 publish = false
-every_writes = 100
-every_blocks = 1000
+every_writes = 5
+every_blocks = 20
 snapshots_dir = "/data/snapshots"
