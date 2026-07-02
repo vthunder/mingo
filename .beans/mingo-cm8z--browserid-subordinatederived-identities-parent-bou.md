@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-01T20:38:32Z
-updated_at: 2026-07-02T13:42:44Z
+updated_at: 2026-07-02T14:43:29Z
 blocked_by:
     - mingo-z8im
 ---
@@ -82,3 +82,14 @@ browserid-ng (aac90e2, app id) + mingo (39fbf0a, app mingo.place). All builds/te
 - Signal stays private: parent email only in mingo DB, /cert_key response to own provision page, same-broker postMessage, browserid account row. NEVER in cert/assertion/RP.
 
 REMAINING: live validation + UX refinement (the substitution flow, chooser copy for derived identities, expired-parent greying — scenario 3 UX). Core recording + substitution paths are live to test.
+
+### WORKING end-to-end 2026-07-02 (verified live)
+Record + substitute + provision all confirmed. Two bugs found & fixed during live test:
+1. mingo served a STALE copy of provisioning_api.js that dropped the metadata arg → parent never recorded (parent_email NULL). Synced (mingo abe09cd). [maintenance: mingo duplicates provisioning_api.js from the broker — keep in sync, or serve the broker's.]
+2. Substitution fired during mingo's explicit provisionEmail step, swapping dan→danmills so the session showed the external email. Guarded: skip substitution when state.provisionEmail is set (browserid 258779a).
+Core cm8z (private parent metadata + parent substitution on chooser-selection) is functional. Substitution correctly does NOT leak (session-gated) and does NOT fire during explicit provisioning.
+
+### REMAINING (UX polish, deferred)
+- Chooser copy for derived identities; grey-out subordinate when parent proof expired.
+- Typed-email entry path doesn't substitute (only the chooser does) — see test-1 hardening.
+- Consider serving the broker's provisioning_api.js instead of mingo's copy (avoid drift).

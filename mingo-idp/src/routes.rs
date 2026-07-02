@@ -291,7 +291,14 @@ pub async fn logout(
     cookies: Cookies,
 ) -> Result<Json<serde_json::Value>, AppError> {
     if let Some(c) = cookies.get(SESSION_COOKIE) {
-        st.store.delete_session(c.value())?;
+        // Full sign-out: end ALL of the account's sessions, not just this cookie's,
+        // so stale sessions can't linger and keep authorizing /cert_key
+        // (mingo session hygiene). Falls back to deleting just this session if the
+        // cookie doesn't resolve to an account.
+        match st.store.account_for_session(c.value())? {
+            Some(account_id) => st.store.delete_account_sessions(account_id)?,
+            None => st.store.delete_session(c.value())?,
+        }
     }
     clear_session_cookie(&cookies, st.config.allow_http_verify);
     Ok(Json(serde_json::json!({ "success": true })))

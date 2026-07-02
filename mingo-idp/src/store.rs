@@ -9,6 +9,10 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+/// How long a mingo session stays valid. Matches the cookie's max-age so cookie
+/// and server session expire together; expired sessions are pruned on read.
+const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -140,21 +144,44 @@ impl Store {
         conn.execute("DELETE FROM accounts WHERE external_email = ?1", params![email])
     }
 
-    /// Resolve a session id to its account id.
     /// Invalidate a single session (logout). Idempotent.
     pub fn delete_session(&self, session_id: &str) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
         Ok(())
     }
+
+    /// Invalidate ALL of an account's sessions — thorough "sign out" so stale
+    /// sessions can't linger and keep authorizing /cert_key.
+    pub fn delete_account_sessions(&self, account_id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM sessions WHERE account_id = ?1", params![account_id])?;
+        Ok(())
+    }
+
+    /// Resolve a session id to its account id, enforcing a TTL. An expired session
+    /// is deleted and treated as absent, so old sessions can't authorize writes
+    /// (mingo session hygiene) and don't accumulate unbounded.
     pub fn account_for_session(&self, session_id: &str) -> rusqlite::Result<Option<i64>> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT account_id FROM sessions WHERE id = ?1",
-            params![session_id],
-            |r| r.get(0),
-        )
-        .optional()
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT account_id, created_at FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((account_id, created_at)) if Self::now() - created_at <= SESSION_TTL_SECS => {
+                Ok(Some(account_id))
+            }
+            Some(_) => {
+                // Expired — clean it up and report no session.
+                conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
+                Ok(None)
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -210,6 +237,37 @@ mod tests {
         let (sid, _csrf) = s.create_session(a.id).unwrap();
         assert_eq!(s.account_for_session(&sid).unwrap(), Some(a.id));
         assert_eq!(s.account_for_session("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn session_ttl_expires_and_prunes() {
+        let s = store();
+        let a = s.find_or_create_account("a@x.com").unwrap();
+        let (sid, _) = s.create_session(a.id).unwrap();
+        assert_eq!(s.account_for_session(&sid).unwrap(), Some(a.id));
+        // Age it beyond the TTL (child module can reach the private conn).
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET created_at = created_at - ?1 WHERE id = ?2",
+                params![SESSION_TTL_SECS + 10, sid],
+            )
+            .unwrap();
+        // Expired → treated as absent and pruned on read.
+        assert_eq!(s.account_for_session(&sid).unwrap(), None);
+        assert_eq!(s.account_for_session(&sid).unwrap(), None);
+    }
+
+    #[test]
+    fn delete_account_sessions_clears_all() {
+        let s = store();
+        let a = s.find_or_create_account("a@x.com").unwrap();
+        let (s1, _) = s.create_session(a.id).unwrap();
+        let (s2, _) = s.create_session(a.id).unwrap();
+        s.delete_account_sessions(a.id).unwrap();
+        assert_eq!(s.account_for_session(&s1).unwrap(), None);
+        assert_eq!(s.account_for_session(&s2).unwrap(), None);
     }
 
     #[test]
