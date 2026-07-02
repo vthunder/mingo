@@ -336,6 +336,18 @@ fn set_session_cookie(cookies: &Cookies, sid: &str, dev_insecure: bool) {
 }
 
 /// Validate + normalize a handle: lowercase, `[a-z0-9._-]`, 1..=31, alnum start.
+/// Handles that must never be issued as `<handle>@<domain>` identities: they map
+/// to privileged on-chain principals (referenced by SBO genesis policy roles/grants
+/// as bare names) or are conventionally-sensitive system addresses. Issuing a cert
+/// for e.g. `sys@<domain>` would let the holder be attributed as the on-chain `sys`
+/// identity — the root policy's `admin` role — a privilege escalation. The on-chain
+/// principals are key-rooted; nobody should reach them via the email onramp.
+const RESERVED_HANDLES: &[&str] = &[
+    "sys", "checkpointer", "admin", "administrator", "root", "superuser",
+    "postmaster", "hostmaster", "webmaster", "abuse", "security",
+    "noreply", "no-reply", "mailer-daemon", "daemon",
+];
+
 fn normalize_handle(raw: &str) -> Result<String, AppError> {
     let h = raw.trim().to_lowercase();
     if h.is_empty() || h.len() > 31 {
@@ -348,6 +360,9 @@ fn normalize_handle(raw: &str) -> Result<String, AppError> {
     }
     if !h.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
         return Err(AppError::InvalidHandle("only a-z 0-9 . _ - allowed".into()));
+    }
+    if RESERVED_HANDLES.contains(&h.as_str()) {
+        return Err(AppError::InvalidHandle("this handle is reserved".into()));
     }
     Ok(h)
 }
@@ -396,5 +411,20 @@ mod tests {
         assert!(parsed.verify(&idp.public_key()).is_ok());
         // A different key must NOT validate it.
         assert!(parsed.verify(&KeyPair::generate().public_key()).is_err());
+    }
+
+    #[test]
+    fn reserved_handles_are_rejected() {
+        // Privileged on-chain principals must not be claimable via the email onramp
+        // (issuing sys@<domain> → attributed as the on-chain `sys` admin identity).
+        for h in ["sys", "Sys", " SYS ", "checkpointer", "admin", "root"] {
+            assert!(
+                matches!(normalize_handle(h), Err(AppError::InvalidHandle(_))),
+                "reserved handle {h:?} must be rejected"
+            );
+        }
+        // Ordinary handles still pass.
+        assert_eq!(normalize_handle(" Dan ").unwrap(), "dan");
+        assert!(normalize_handle("system").is_ok(), "substring of a reserved name is fine");
     }
 }
