@@ -62,8 +62,16 @@
     });
   };
 
-  navigator.id.registerCertificate = function(certificate) {
-    channel.notify('registerCertificate', { certificate: certificate });
+  // `metadata` (optional): private IdP-supplied provisioning metadata forwarded
+  // to the dialog over this same-broker channel (NEVER placed in the cert, which
+  // is public in assertions). Extensible object; e.g. { subordinate_to } marks a
+  // derived identity's controlling parent (mingo-cm8z). Keep in sync with the
+  // broker's provisioning_api.js.
+  navigator.id.registerCertificate = function(certificate, metadata) {
+    channel.notify('registerCertificate', {
+      certificate: certificate,
+      metadata: metadata || null
+    });
   };
 
   navigator.id.raiseProvisioningFailure = function(reason) {

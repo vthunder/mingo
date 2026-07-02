@@ -1,11 +1,11 @@
 ---
 # mingo-cm8z
 title: 'browserid: subordinate/derived identities (parent-bound, minted-after-parent-proof)'
-status: todo
+status: in-progress
 type: feature
 priority: high
 created_at: 2026-07-01T20:38:32Z
-updated_at: 2026-07-02T13:03:46Z
+updated_at: 2026-07-02T13:42:44Z
 blocked_by:
     - mingo-z8im
 ---
@@ -74,3 +74,11 @@ Parent email lives only in: mingo DB, mingo /cert_key response, a same-broker po
 Iframe->dialog hop options: (a) extend provisioning API registerCertificate(cert, {subordinate_to}) to forward metadata (cleanest); (b) provision.js postMessages {subordinate_to} to the dialog, which validates origin==IdP.
 
 Cert-claim approach ABANDONED. browserid-core reverted (no cert change).
+
+### IMPLEMENTED + DEPLOYED 2026-07-02
+browserid-ng (aac90e2, app id) + mingo (39fbf0a, app mingo.place). All builds/tests green.
+- browserid: schema v3 (emails.parent_email; migrated live current=2->3, DB NOT wiped — persistence holding), store set_parent_email, POST /wsapi/set_parent + GET /wsapi/parent_of (both session-gated, own-account only, 401 verified), provisioning_api.js registerCertificate(cert, metadata), provisioning.js forwards metadata, dialog handlePrimaryIdP calls set_parent, dialog handleEmailChosen substitutes parent when RP==issuer (recursion-guarded).
+- mingo-idp: /cert_key returns subordinate_to = account.external_email (private, not in cert); provision.js forwards as provisioning metadata.
+- Signal stays private: parent email only in mingo DB, /cert_key response to own provision page, same-broker postMessage, browserid account row. NEVER in cert/assertion/RP.
+
+REMAINING: live validation + UX refinement (the substitution flow, chooser copy for derived identities, expired-parent greying — scenario 3 UX). Core recording + substitution paths are live to test.
