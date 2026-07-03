@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: critical
 created_at: 2026-07-02T22:04:58Z
-updated_at: 2026-07-03T20:32:21Z
+updated_at: 2026-07-03T20:37:11Z
 ---
 
 ## Live privilege escalation (opened 2026-07-02 by the engine-fix deploy)
@@ -36,6 +36,6 @@ Reserved-handle blocklist at normalize_handle (sys, checkpointer, admin, root, â
 
 ## Status 2026-07-03
 - Regenesis B=3567244 deployed + verified: key-form roles.admin, sys-checkpointer identity publishing checkpoints (trust=OnChainCheckpoint). The critical privesc is CLOSED by the key-form admin.
-- IdP reserved-handle fix (f8ae9d1, sys-* namespace) deploying via make deploy-mingo â€” now defense-in-depth (blocks confusing sys@ handles + any future name-form grant). Slow cold Rust build; confirm it swaps in.
+- [x] IdP reserved-handle fix DEPLOYED (mingo app CID c755bf337b8, commit 375ba41 w/ f8ae9d1). Defense-in-depth: blocks sys + sys-* handles at normalize_handle.
 - [ ] Update _sbo.mingo.place DNS (below).
 - [ ] Check id-app DB for pre-claimed reserved handles (now low-risk since admin is key-form).
