@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-02T20:47:48Z
-updated_at: 2026-07-03T20:15:57Z
+updated_at: 2026-07-03T20:55:48Z
 ---
 
 Make the on-chain domain root-of-trust (/sys/domains/<D>, currently a self-signed JWT iss:self with NO DNS-control proof) verifiable from on-chain state alone, so genesis self-certifies domain authority and a client can verify with zero trust in the _sbo publisher.
@@ -101,3 +101,11 @@ Consequences:
 - Corrected the bad spec claims ('verifiable from a snapshot alone') on branch feat/domain-self-certification (sbo ca58bc5): Identity + State Commitment now say domain authority is bound into genesis validity.
 - Design refinement (open): make the binding self-contained for the ZK guest — domain.v1 carries its evidence INLINE, or an Auth-Evidence: ref to the genesis-block /sys/dnssec/<domain> object (resolved as-of genesis). Current daemon warn-log reads /sys/dnssec at in-order apply time (correct during genesis sync) but should ideally verify domain.v1's OWN referenced evidence so replay + zk enforce the same rule.
 - For T1: genesis-validity rules in the prover guest must include the domain self-cert check (so the recursive proof attests it).
+
+## Ceremony decisions settled (2026-07-03)
+- Binding: Auth-Evidence ref to a distinct /sys/dnssec/<domain> leaf (by exact (path,creator,id), not get_first). Fixes the shadowing finding. Impl delta from branch: genesis sets domain.v1.auth_evidence = ref, daemon resolves the explicit ref.
+- Key handling: use the _browserid provider key (e021fda4) directly & transiently — retrieve via dokku config:get mingo <var>, feed via a --domain-key-file flag (to add), no keyring-at-rest, no delegated-signing oracle. Blast radius bounded by key-form roles.admin.
+- Production-launch note (NOT for testing): rotate _browserid to a fresh provider key as the final ceremony step; point-in-time cert means the genesis-time proof for the old key stands forever. Documented in the proposal (sbo feat branch c252139).
+- DNSSEC capture: 'sbo domain evidence <domain> --out dnssec.wire' already exists (sbo-cli domain.rs).
+
+Remaining to activate: (1) add --domain-key-file transient key input to mingo genesis CLI; (2) switch genesis to set domain.v1 Auth-Evidence ref + seed /sys/dnssec/<domain> (already seeds; add the ref); (3) daemon: resolve the explicit ref instead of get_first; (4) run the ceremony regenesis with the provider key + captured evidence.
