@@ -16,13 +16,13 @@ fi
 
 # One-shot fresh-genesis reset. On the first boot of an image with a new genesis we
 # wipe /data state unconditionally so the seed below rebuilds from the NEW genesis
-# (B=3567244 — the regenesis carrying the /sys/checkpoints/** `checkpointer` grant).
+# (B=3567386 — the regenesis carrying the /sys/checkpoints/** `checkpointer` grant).
 # The marker makes this idempotent across later restarts; it also wins any race with
 # the retiring old container (which may rewrite /data during the deploy overlap). To
 # re-run a reset for a future regenesis, bump the marker name to the new block.
-RESET_MARKER=/data/.reset-genesis-3567244
+RESET_MARKER=/data/.reset-genesis-3567386
 if [ ! -f "$RESET_MARKER" ]; then
-  echo "fresh-genesis reset: wiping /data state to rebuild from B=3567244"
+  echo "fresh-genesis reset: wiping /data state to rebuild from B=3567386"
   rm -rf /data/.sbo /data/repos /data/repos.json
   mkdir -p /data/repos
   touch "$RESET_MARKER"
@@ -32,7 +32,7 @@ fi
 # $HOME/.sbo (now /data/.sbo, persistent). If it's missing but a repo head was
 # carried over in repos.json, the head sits past genesis while state is empty —
 # reads return nothing forever. Drop repos.json so the seed below re-registers
-# at head=3567243 and sync rebuilds state from Avail.
+# at head=3567385 and sync rebuilds state from Avail.
 STATE_DIR=/data/.sbo/repos/avail_turing_506/state
 if [ -f /data/repos.json ] && [ ! -d "$STATE_DIR" ]; then
   echo "state index missing at $STATE_DIR — resetting repo head to backfill from genesis"
@@ -40,11 +40,11 @@ if [ -f /data/repos.json ] && [ ! -d "$STATE_DIR" ]; then
 fi
 
 # Seed the repo registration on first boot. head is set to one below the genesis
-# block (3567243), so RPC-only sync (starting at head+1=3567244=B) replays the new
+# block (3567385), so RPC-only sync (starting at head+1=3567386=B) replays the new
 # genesis + all later app-506 writes and rebuilds state from Avail. The old
-# (pre-3567244) chain stays below this head and is invisible.
-# The new genesis landed at B=3567244 (sys=ed25519:564aafe4…, domain=ed25519:8ef0381e…,
-# sys-checkpointer=ed25519:a1a89375…, broker browserid.me).
+# (pre-3567386) chain stays below this head and is invisible.
+# The new genesis landed at B=3567386 (sys=ed25519:564aafe4…, domain=ed25519:8ef0381e…,
+# sys-checkpointer=ed25519:937fc1e8…, broker browserid.me).
 # uri.first_block + expected_genesis make the daemon verify the reconstructed genesis
 # hash at block B (non-fatal; logs "Genesis verified" / "GENESIS VERIFICATION FAILED").
 # NOTE: the uri object is the canonical SboRawUri serialization (chain/app_id/
@@ -52,9 +52,9 @@ fi
 # (anchor-independent, so it stays f86a7b415defc6cf across regenesis).
 if [ ! -f /data/repos.json ]; then
   cat > /data/repos.json <<'JSON'
-[{"id":"f86a7b415defc6cf","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":506,"first_block":3567244,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:506/","path":"/data/repos/mingo","head":3567243,"created_at":1782336171,"expected_genesis":"sha256:652ba895771f1fd069e3b38f03e92ef2bc425751fccda2a42c9e4df18eae2446"}]
+[{"id":"f86a7b415defc6cf","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":506,"first_block":3567386,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:506/","path":"/data/repos/mingo","head":3567385,"created_at":1782336171,"expected_genesis":"sha256:7c429116819b67b7be4cb5c698a8ede1886e93a63f614abbf9fbb16e5375c291"}]
 JSON
-  echo "seeded /data/repos.json (head=3567243, will backfill from new genesis B=3567244)"
+  echo "seeded /data/repos.json (head=3567385, will backfill from new genesis B=3567386)"
 fi
 
 exec sbo-daemon --config /app/config.toml start --foreground
