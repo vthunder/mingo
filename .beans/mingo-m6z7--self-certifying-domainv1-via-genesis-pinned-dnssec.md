@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-02T20:47:48Z
-updated_at: 2026-07-03T19:10:23Z
+updated_at: 2026-07-03T20:15:57Z
 ---
 
 Make the on-chain domain root-of-trust (/sys/domains/<D>, currently a self-signed JWT iss:self with NO DNS-control proof) verifiable from on-chain state alone, so genesis self-certifies domain authority and a client can verify with zero trust in the _sbo publisher.
@@ -90,3 +90,14 @@ Do NOT enable hard-reject or claim snapshot-verifiability until the evidence-hom
 ## Correction to the evidence-overwrite finding (2026-07-02): it's a SCOPE decision, not a live brick
 The overwrite ONLY affects verify-from-SNAPSHOT (fast-sync clients loading current state). Replay-from-genesis (full nodes, the path the daemon uses today) validates domain.v1 at the genesis block against the proof as-of that block — only the genesis proof exists then, so it's correct forever. Nothing is broken in current code; the 'brick' only arises if a FUTURE enforcement re-checks against current state.
 So: (a) if scope = full-replay verification only → current design fine, just drop the 'verifiable from snapshot alone' spec claim; (b) if scope = fast-sync clients verify domain authority (original motivation) → pin the genesis proof so it survives in the snapshot: embed it in domain.v1, OR domain.v1 carries Auth-Evidence: ref:(path,creator,id) to the exact genesis leaf (full-key lookup, not get_first). Decision pending from Dan.
+
+## Reframe (2026-07-03): domain self-cert is GENESIS-VALIDITY, not a snapshot/state feature
+Dan's pushback was right: 'verify from state alone' isn't a real thing — a snapshot is trusted-until-anchored (checkpoint or zk root). Domain authority is a genesis fact, verified wherever genesis is verified:
+- Full replay: validates domain.v1 against its DNSSEC proof at the genesis block (DA-block time). Reads the proof from the GENESIS BLOCK, not mutable state.
+- T1/ZK future: the recursive proof's base case verifies genesis incl. the domain self-cert (DNSSEC chain + RRSIG window ∋ DA block timestamp), carrying domain authority up trustlessly.
+
+Consequences:
+- The earlier 'evidence-overwrite' finding is DISSOLVED — the genesis proof lives in the genesis block; a later /sys/dnssec/<domain> user-attribution refresh is irrelevant to domain cert. No 'immutable home in state' needed.
+- Corrected the bad spec claims ('verifiable from a snapshot alone') on branch feat/domain-self-certification (sbo ca58bc5): Identity + State Commitment now say domain authority is bound into genesis validity.
+- Design refinement (open): make the binding self-contained for the ZK guest — domain.v1 carries its evidence INLINE, or an Auth-Evidence: ref to the genesis-block /sys/dnssec/<domain> object (resolved as-of genesis). Current daemon warn-log reads /sys/dnssec at in-order apply time (correct during genesis sync) but should ideally verify domain.v1's OWN referenced evidence so replay + zk enforce the same rule.
+- For T1: genesis-validity rules in the prover guest must include the domain self-cert check (so the recursive proof attests it).
