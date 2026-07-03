@@ -336,17 +336,26 @@ fn set_session_cookie(cookies: &Cookies, sid: &str, dev_insecure: bool) {
 }
 
 /// Validate + normalize a handle: lowercase, `[a-z0-9._-]`, 1..=31, alnum start.
-/// Handles that must never be issued as `<handle>@<domain>` identities: they map
-/// to privileged on-chain principals (referenced by SBO genesis policy roles/grants
-/// as bare names) or are conventionally-sensitive system addresses. Issuing a cert
-/// for e.g. `sys@<domain>` would let the holder be attributed as the on-chain `sys`
-/// identity — the root policy's `admin` role — a privilege escalation. The on-chain
-/// principals are key-rooted; nobody should reach them via the email onramp.
+/// Handles that must never be issued as `<handle>@<domain>` identities. Issuing a
+/// cert for e.g. `sys@<domain>` would let the holder be attributed as the on-chain
+/// `sys` identity (the root policy's `admin` role) — a privilege escalation. On-chain
+/// system principals are key-rooted; nobody should reach them via the email onramp.
+///
+/// The reservation is STRUCTURAL: `sys` and the entire `sys-*` namespace are
+/// reserved, so every current and FUTURE system authority under the `sys-<role>`
+/// convention (e.g. `sys-checkpointer`) is auto-reserved without editing this list.
+/// The remaining entries are conventionally-sensitive email local-parts.
 const RESERVED_HANDLES: &[&str] = &[
-    "sys", "checkpointer", "admin", "administrator", "root", "superuser",
+    "admin", "administrator", "root", "superuser",
     "postmaster", "hostmaster", "webmaster", "abuse", "security",
     "noreply", "no-reply", "mailer-daemon", "daemon",
 ];
+
+/// A handle is reserved if it is `sys`, lives in the `sys-*` system namespace, or
+/// is a conventionally-sensitive address. Input is already lowercased/trimmed.
+fn handle_is_reserved(h: &str) -> bool {
+    h == "sys" || h.starts_with("sys-") || RESERVED_HANDLES.contains(&h)
+}
 
 fn normalize_handle(raw: &str) -> Result<String, AppError> {
     let h = raw.trim().to_lowercase();
@@ -361,7 +370,7 @@ fn normalize_handle(raw: &str) -> Result<String, AppError> {
     if !h.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
         return Err(AppError::InvalidHandle("only a-z 0-9 . _ - allowed".into()));
     }
-    if RESERVED_HANDLES.contains(&h.as_str()) {
+    if handle_is_reserved(&h) {
         return Err(AppError::InvalidHandle("this handle is reserved".into()));
     }
     Ok(h)
@@ -417,14 +426,17 @@ mod tests {
     fn reserved_handles_are_rejected() {
         // Privileged on-chain principals must not be claimable via the email onramp
         // (issuing sys@<domain> → attributed as the on-chain `sys` admin identity).
-        for h in ["sys", "Sys", " SYS ", "checkpointer", "admin", "root"] {
+        for h in ["sys", "Sys", " SYS ", "admin", "root",
+                  "sys-checkpointer", "sys-moderator", "SYS-anything"] {
             assert!(
                 matches!(normalize_handle(h), Err(AppError::InvalidHandle(_))),
                 "reserved handle {h:?} must be rejected"
             );
         }
-        // Ordinary handles still pass.
+        // Ordinary handles still pass — including a "sys"-substring that isn't the
+        // reserved `sys` / `sys-*` namespace.
         assert_eq!(normalize_handle(" Dan ").unwrap(), "dan");
-        assert!(normalize_handle("system").is_ok(), "substring of a reserved name is fine");
+        assert!(normalize_handle("system").is_ok(), "not in the sys- namespace");
+        assert!(normalize_handle("sysadmin").is_ok(), "sysadmin != sys / sys-*");
     }
 }
