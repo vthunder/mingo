@@ -34,6 +34,12 @@ enum Commands {
         /// Key alias for the domain identity (default: same as --key).
         #[arg(long)]
         domain_key: Option<String>,
+        /// Transient domain key from a file (`{"secret_key":"<hex 32-byte seed>"}`,
+        /// same shape as checkpoint-key.json) instead of a keyring alias — e.g. the
+        /// `_browserid` provider key for self-certifying Mode B. Read once, never
+        /// persisted to the keyring. Takes precedence over --domain-key.
+        #[arg(long)]
+        domain_key_file: Option<String>,
         /// Key alias for the checkpoint authority (default: freshly generated).
         /// This dedicated key is granted `create` on /sys/checkpoints/**; the
         /// daemon signs `checkpoint.v1` roots with it. Its secret is written to
@@ -44,6 +50,12 @@ enum Commands {
         /// daemon's [checkpoint] key_file.
         #[arg(long, default_value = "checkpoint-key.json")]
         checkpoint_key_out: String,
+        /// Self-certifying Mode B: path to the domain's `_browserid.<domain>` DNSSEC
+        /// chain (RFC 4034 wire). Seeded at /sys/dnssec/<domain> and referenced by
+        /// domain.v1 (`Auth-Evidence: ref:`). Use with --domain-key-file set to the
+        /// `_browserid` provider key. Omit for plain Mode B.
+        #[arg(long)]
+        dnssec_evidence: Option<String>,
         /// File to write the signed wire batch to.
         #[arg(long, default_value = "genesis.wire")]
         out: String,
@@ -66,19 +78,44 @@ enum Commands {
     },
 }
 
+/// Load a transient domain signing key from `{"secret_key":"<hex 32-byte seed>"}`
+/// (the checkpoint-key.json shape). Used to sign genesis with the `_browserid`
+/// provider key without importing it into the keyring.
+fn load_domain_key_file(path: &str) -> Result<sbo_core::crypto::SigningKey> {
+    let contents = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    let v: serde_json::Value = serde_json::from_str(&contents).context("parsing domain key file")?;
+    let secret = v
+        .get("secret_key")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| anyhow::anyhow!("domain key file missing string field `secret_key`"))?;
+    let raw = hex::decode(secret.trim()).context("decoding hex secret_key")?;
+    let arr: [u8; 32] = raw
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("secret_key must be a 32-byte seed"))?;
+    Ok(sbo_core::crypto::SigningKey::from_bytes(&arr))
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let keyring = Keyring::open().context("opening keyring")?;
 
     match cli.command {
-        Commands::Genesis { domain, broker, key, domain_key, checkpoint_key, checkpoint_key_out, out } => {
+        Commands::Genesis { domain, broker, key, domain_key, domain_key_file, checkpoint_key, checkpoint_key_out, dnssec_evidence, out } => {
             let sys_alias = keyring.resolve_alias(key.as_deref())?;
             let sys_key = keyring.get_signing_key(&sys_alias)?;
-            let domain_alias = match domain_key.as_deref() {
-                Some(dk) => keyring.resolve_alias(Some(dk))?,
-                None => sys_alias.clone(),
+            // Domain key: a transient file (browserid StoredKeypair seed — e.g. the
+            // _browserid provider key) takes precedence, else a keyring alias.
+            let (domain_signing_key, domain_key_desc) = match domain_key_file.as_deref() {
+                Some(path) => (load_domain_key_file(path)?, format!("file `{path}`")),
+                None => {
+                    let alias = match domain_key.as_deref() {
+                        Some(dk) => keyring.resolve_alias(Some(dk))?,
+                        None => sys_alias.clone(),
+                    };
+                    (keyring.get_signing_key(&alias)?, format!("keyring `{alias}`"))
+                }
             };
-            let domain_signing_key = keyring.get_signing_key(&domain_alias)?;
             // Dedicated checkpoint authority key — from a keyring alias, or freshly
             // generated for a brand-new chain. Its secret is written for the daemon.
             let (checkpoint_signing_key, checkpoint_source) = match checkpoint_key.as_deref() {
@@ -112,6 +149,11 @@ fn main() -> Result<()> {
                 .map(|d| d.as_secs() as i64)
                 .ok();
 
+            let dnssec_bytes = match dnssec_evidence.as_deref() {
+                Some(p) => Some(std::fs::read(p).with_context(|| format!("reading dnssec evidence {p}"))?),
+                None => None,
+            };
+
             let wire = mingo_genesis(
                 &domain_signing_key,
                 &sys_key,
@@ -120,6 +162,7 @@ fn main() -> Result<()> {
                 &broker,
                 &communities,
                 created_at,
+                dnssec_bytes.as_deref(),
             );
             std::fs::write(&out, &wire).with_context(|| format!("writing {out}"))?;
 
@@ -139,7 +182,7 @@ fn main() -> Result<()> {
                 out,
                 wire.len(),
                 sys_alias,
-                domain_alias,
+                domain_key_desc,
             );
             println!(
                 "✓ wrote checkpoint authority key ({}) to {} — deploy it to the daemon's [checkpoint] key_file and set publish=true (KEEP SECRET; pubkey {})",
