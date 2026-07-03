@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-02T20:47:48Z
-updated_at: 2026-07-02T22:05:17Z
+updated_at: 2026-07-03T19:10:23Z
 ---
 
 Make the on-chain domain root-of-trust (/sys/domains/<D>, currently a self-signed JWT iss:self with NO DNS-control proof) verifiable from on-chain state alone, so genesis self-certifies domain authority and a client can verify with zero trust in the _sbo publisher.
@@ -86,3 +86,7 @@ The genesis proof lives at /sys/dnssec/<domain>, but the object store is NOT ver
 - Forgery vectors (domain substitution, key-equality, later-key-compromise) reviewed and NOT exploitable.
 
 Do NOT enable hard-reject or claim snapshot-verifiability until the evidence-home fix lands.
+
+## Correction to the evidence-overwrite finding (2026-07-02): it's a SCOPE decision, not a live brick
+The overwrite ONLY affects verify-from-SNAPSHOT (fast-sync clients loading current state). Replay-from-genesis (full nodes, the path the daemon uses today) validates domain.v1 at the genesis block against the proof as-of that block — only the genesis proof exists then, so it's correct forever. Nothing is broken in current code; the 'brick' only arises if a FUTURE enforcement re-checks against current state.
+So: (a) if scope = full-replay verification only → current design fine, just drop the 'verifiable from snapshot alone' spec claim; (b) if scope = fast-sync clients verify domain authority (original motivation) → pin the genesis proof so it survives in the snapshot: embed it in domain.v1, OR domain.v1 carries Auth-Evidence: ref:(path,creator,id) to the exact genesis leaf (full-key lookup, not get_first). Decision pending from Dan.
