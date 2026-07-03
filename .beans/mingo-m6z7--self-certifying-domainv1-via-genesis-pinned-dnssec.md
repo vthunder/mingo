@@ -1,11 +1,11 @@
 ---
 # mingo-m6z7
 title: Self-certifying domain.v1 via genesis-pinned DNSSEC proof
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-02T20:47:48Z
-updated_at: 2026-07-03T20:55:48Z
+updated_at: 2026-07-03T22:00:42Z
 ---
 
 Make the on-chain domain root-of-trust (/sys/domains/<D>, currently a self-signed JWT iss:self with NO DNS-control proof) verifiable from on-chain state alone, so genesis self-certifies domain authority and a client can verify with zero trust in the _sbo publisher.
@@ -109,3 +109,11 @@ Consequences:
 - DNSSEC capture: 'sbo domain evidence <domain> --out dnssec.wire' already exists (sbo-cli domain.rs).
 
 Remaining to activate: (1) add --domain-key-file transient key input to mingo genesis CLI; (2) switch genesis to set domain.v1 Auth-Evidence ref + seed /sys/dnssec/<domain> (already seeds; add the ref); (3) daemon: resolve the explicit ref instead of get_first; (4) run the ceremony regenesis with the provider key + captured evidence.
+
+## ACTIVATED (2026-07-04)
+Self-certifying domain.v1 is LIVE on the mingo chain.
+- Regenesis B=3567386 (hash 7c429116…): domain.v1 signed by the _browserid provider key e021fda4 (retrieved transiently via MINGO_IDP_SECRET, wiped after), Auth-Evidence: ref:/sys/dnssec/mingo.place; /sys/dnssec/mingo.place seeded from a live-captured RFC-9102 proof (sbo domain evidence).
+- Daemon SBO_REV 4ca2c66 logs: **Domain mingo.place self-certified (DNSSEC) at block 3567386**. Genesis verified; sys-checkpointer publishing checkpoints (block-3567524 applied); trust=OnChainCheckpoint.
+- Code merged to sbo main (4ca2c66) + mingo main; specs updated (genesis-validity framing); Auth-Evidence ref resolution in daemon; --domain-key-file / --dnssec-evidence CLI.
+- _sbo DNS updated to @3567386.
+- Check remains warn-log (per plan). Follow-up mingo-hqp? : flip to hard-reject once confident; add end-to-end daemon self-cert test; production-launch = rotate _browserid provider key (documented in proposal).
