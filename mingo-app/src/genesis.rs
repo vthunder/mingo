@@ -238,20 +238,22 @@ pub fn mingo_genesis(
     sys_msg.sign(sys_signing_key);
     batch.extend(wire::serialize(&sys_msg));
 
-    // 2b. Key-rooted checkpoint authority identity (`/sys/names/checkpointer`),
-    // self-signed by the checkpoint key. The root policy grants it `create` (only,
-    // never `update` — checkpoints are write-once) on `/sys/checkpoints/**`, so the
-    // daemon can publish `checkpoint.v1` roots signed by this dedicated key without
-    // ever holding the `sys` key (State Commitment §Checkpoint authority).
+    // 2b. Key-rooted checkpoint authority identity (`/sys/names/sys-checkpointer`),
+    // self-signed by the checkpoint key. Named under the reserved `sys-` namespace
+    // (the IdP refuses to issue `sys-*` handles) so it can never be impersonated via
+    // the email onramp. The root policy grants it `create` (only, never `update` —
+    // checkpoints are write-once) on `/sys/checkpoints/**`, so the daemon can publish
+    // `checkpoint.v1` roots signed by this dedicated key without ever holding the
+    // `sys` key (State Commitment §Checkpoint authority).
     let checkpoint_public_key = checkpoint_signing_key.public_key();
-    let ckpt_jwt = sbo_core::jwt::create_self_signed_identity(checkpoint_signing_key, "checkpointer", None)
-        .expect("checkpointer JWT creation should not fail");
+    let ckpt_jwt = sbo_core::jwt::create_self_signed_identity(checkpoint_signing_key, "sys-checkpointer", None)
+        .expect("sys-checkpointer JWT creation should not fail");
     let ckpt_bytes = ckpt_jwt.as_bytes().to_vec();
     let ckpt_hash = ContentHash::sha256(&ckpt_bytes);
     let mut ckpt_msg = Message {
         action: Action::Post,
         path: Path::parse("/sys/names/").unwrap(),
-        id: Id::new("checkpointer").unwrap(),
+        id: Id::new("sys-checkpointer").unwrap(),
         object_type: ObjectType::Object,
         signing_key: checkpoint_public_key,
         signature: Signature([0u8; 64]),
@@ -316,12 +318,19 @@ pub fn mingo_genesis(
         "ed25519:{}",
         hex::encode(checkpoint_signing_key.public_key().bytes)
     );
+    // Match `admin` by the sys PUBLIC KEY, not the bare name "sys". A bare-name
+    // member canonicalizes to `sys@mingo.place`, which the IdP could also attribute
+    // to a browserid cert — so a name-form admin role is reachable by anyone the IdP
+    // issues `sys@mingo.place` to (privilege escalation, mingo-d7bi). Keying by the
+    // genesis sys key (evaluate.rs Identity::Key, a direct-signature pubkey compare)
+    // makes admin authority depend ONLY on holding the sys key, never on IdP issuance.
+    let sys_pubkey = format!("ed25519:{}", hex::encode(sys_public_key.bytes));
     let policy_payload = serde_json::json!({
-        // `admin` is the sys identity. SBO has no superuser; sys-level authority
-        // to relocate/remove any object (e.g. moderation, layout migrations) is
-        // this explicit, auditable grant — every admin action is a signed,
-        // replayable on-chain message. Deny rules still override it.
-        "roles": { "admin": ["sys"] },
+        // `admin` is the sys identity (matched by key). SBO has no superuser; sys-level
+        // authority to relocate/remove any object (e.g. moderation, layout migrations)
+        // is this explicit, auditable grant — every admin action is a signed, replayable
+        // on-chain message. Deny rules still override it.
+        "roles": { "admin": [{ "key": sys_pubkey }] },
         "grants": [
             { "to": "*", "can": ["create"], "on": "/sys/names/*" },
             { "to": "owner", "can": ["update", "delete"], "on": "/sys/names/*" },
@@ -436,7 +445,12 @@ mod tests {
         // The admin role is the sys identity, granted transfer+delete over /**.
         let v: serde_json::Value =
             serde_json::from_slice(policy_msg.payload.as_ref().unwrap()).unwrap();
-        assert_eq!(v["roles"]["admin"][0], serde_json::json!("sys"));
+        // admin is matched by the sys public KEY (not the bare name), so IdP-issued
+        // sys@<domain> emails can't reach admin (mingo-d7bi).
+        assert!(
+            v["roles"]["admin"][0]["key"].as_str().unwrap().starts_with("ed25519:"),
+            "admin role member must be key-form"
+        );
         let admin_grant = v["grants"].as_array().unwrap().iter().find(|g| {
             g["to"]["role"] == serde_json::json!("admin") && g["on"] == serde_json::json!("/**")
         }).expect("admin grant on /** present");
@@ -466,8 +480,8 @@ mod tests {
         assert_eq!(ckpt_can, vec!["create"], "checkpointer must have create only (write-once), not update");
         // And a key-rooted checkpointer identity exists.
         assert!(
-            msgs.iter().any(|m| m.path.to_string() == "/sys/names/" && m.id.as_str() == "checkpointer"),
-            "checkpointer identity must be registered at genesis"
+            msgs.iter().any(|m| m.path.to_string() == "/sys/names/" && m.id.as_str() == "sys-checkpointer"),
+            "sys-checkpointer identity must be registered at genesis"
         );
         assert!(
             !v["grants"].as_array().unwrap().iter().any(|g| g["on"] == serde_json::json!("/$owner/**")),
