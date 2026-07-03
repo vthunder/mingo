@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: critical
 created_at: 2026-07-02T22:04:58Z
-updated_at: 2026-07-03T19:10:23Z
+updated_at: 2026-07-03T20:32:21Z
 ---
 
 ## Live privilege escalation (opened 2026-07-02 by the engine-fix deploy)
@@ -25,9 +25,17 @@ Reserved-handle blocklist at normalize_handle (sys, checkpointer, admin, root, �
 ## Follow-ups
 - [ ] Deploy bd6ac1e (make deploy-mingo).
 - [ ] Verify `sys` (and checkpointer/admin/root) are NOT already claimed in the id-app DB (query handle column); if claimed, unbind.
-- [ ] DEFENSE-IN-DEPTH: at the next regenesis, change roles.admin to KEY form {key: ed25519:564aafe4…} (like checkpointer) so admin authority never depends on IdP issuance. Batch with mingo-m6z7.
+- [x] Key-form roles.admin LIVE (regenesis B=3567244, genesis 652ba895 verified). Admin now matches only the sys key, not IdP-attributed sys@mingo.place → **privesc closed on-chain** independent of the IdP fix. checkpointer renamed -> sys-checkpointer (reserved namespace).
 - [ ] Consider: does resolve_creator preferring attributed_email over the key-rooted name claim deserve a reserved-principal guard on-chain too? (belt-and-suspenders)
 
 ## sys-* structural reservation (done) + rename (regenesis)
 - normalize_handle now reserves 'sys' + the whole 'sys-*' namespace (commit after bd6ac1e), so future sys-<role> authorities are auto-reserved without blocklist edits. 10 tests pass.
 - [ ] Regenesis: rename the checkpointer identity/grant -> sys-checkpointer (fits the sys- convention; still key-matched in policy). Batch with mingo-m6z7.
+
+
+
+## Status 2026-07-03
+- Regenesis B=3567244 deployed + verified: key-form roles.admin, sys-checkpointer identity publishing checkpoints (trust=OnChainCheckpoint). The critical privesc is CLOSED by the key-form admin.
+- IdP reserved-handle fix (f8ae9d1, sys-* namespace) deploying via make deploy-mingo — now defense-in-depth (blocks confusing sys@ handles + any future name-form grant). Slow cold Rust build; confirm it swaps in.
+- [ ] Update _sbo.mingo.place DNS (below).
+- [ ] Check id-app DB for pre-claimed reserved handles (now low-risk since admin is key-form).
