@@ -1,13 +1,11 @@
 ---
 # mingo-cm8z
 title: 'browserid: subordinate/derived identities (parent-bound, minted-after-parent-proof)'
-status: in-progress
+status: completed
 type: feature
 priority: high
 created_at: 2026-07-01T20:38:32Z
-updated_at: 2026-07-02T14:52:32Z
-blocked_by:
-    - mingo-z8im
+updated_at: 2026-07-04T17:24:38Z
 ---
 
 Model derived identities natively in browserid instead of leaking the mapping from mingo. A <handle>@mingo.place identity is SUBORDINATE to its parent (the external email that controls it): browserid records parent↔subordinate in the user's own account (private; no public oracle like the scrapped /owner_for), and only lets the subordinate be used after a fresh proof of the parent.
@@ -24,12 +22,12 @@ Depends on [[mingo-1c6v]]+[[mingo-z8im]] (account linking/merge) so parent+subor
 - Enforcement stays defense-in-depth: browserid gates on fresh parent proof; mingo cert_key still checks the session owns the handle.
 
 ## Tasks
-- [ ] Revert [[mingo-jn21]]: remove GET /owner_for (routes.rs + main.rs) and the hinted auth.js; restore auth.js to the simple session-check.
-- [ ] Broker: schema migration for emails.parent_email + derived flag; store methods.
-- [ ] Provisioning protocol: accept + validate subordinate_to at cert issuance; record it.
-- [ ] mingo-idp: declare subordinate_to (=account.external_email) when minting <handle>@mingo.place.
-- [ ] Dialog: derived-identity copy, select→parent-auth, expired-parent greying.
-- [ ] Tests: subordinate can't be used without fresh parent proof; parent validated ∈ account; mapping never exposed unauthenticated.
+- [x] Revert [[mingo-jn21]]: /owner_for removed; auth.js restored to simple session-check.
+- [x] Broker: schema v3 (emails.parent_email) + store set_parent_email/get; DEPLOYED.
+- [x] Provisioning protocol: subordinate_to forwarded over private provisioning channel; recorded via /wsapi/set_parent (validated in account).
+- [x] mingo-idp: /cert_key returns subordinate_to = account.external_email (private, not in cert).
+- [x] Dialog: select→parent-auth (substitution) live; derived-identity copy DONE (2026-07-04); expired-parent greying WONT-DO (no cheap freshness signal; parent auth already runs on selection).
+- [x] Tests: parent validated in account; mapping session-gated own-account only (401 verified); derived pairing surfaced in list_emails; substitution session-gated.
 
 
 ## Refinement: subordination is CONTEXTUAL (2026-07-01)
@@ -96,3 +94,18 @@ Core cm8z (private parent metadata + parent substitution on chooser-selection) i
 
 ### Typed-path substitution DONE + DEPLOYED 2026-07-02 (browserid d403701)
 Extracted maybeSubstituteParent() (RP==issuer, session-gated parent_of, skipped during provisionEmail); used by BOTH the chooser and the typed email-entry path. So typing a subordinate to log into its issuer also substitutes the parent.
+
+## Chooser copy for derived identities — DONE (2026-07-04, browserid-ng, not yet deployed)
+Item 1 of the deferred UX polish. Implemented in `/Users/thunder/src/browserid-ng`:
+- Backend: `GET /wsapi/list_emails` now returns a `derived: [{email, parent_email}]` array (session-gated, own-account only — same privacy scope as `parent_of`; never in cert/assertion). New `DerivedIdentity` struct in routes/email.rs. Corrected the stale set_parent doc-comment ("never exposed by any read endpoint" → readable only by the owning session).
+- Dialog: `state.derived` map built from the response; `populateEmailList` renders a distinct `.derived` `<li>` with a `signs in via <parent>` sub-label (added `escapeHtml` helper — the list previously interpolated raw email strings into innerHTML). New `.email-sub` CSS.
+- Tests: `test_list_emails_reports_derived` (derived pairing surfaced) + existing list_emails tests assert `derived` empty for non-derived. Full browserid-broker suite green.
+
+## Item 2 (grey-out subordinate when parent proof expired) — needs design decision
+No cheap server-side parent-proof-freshness signal exists (Email has only verified_at, no per-parent proof timestamp). Deciding approach before implementing — see chat.
+
+## Summary of Changes
+
+Derived/subordinate identities are modeled natively in browserid with the parent-to-subordinate mapping kept private (mingo DB, /cert_key response to own provision page, same-broker postMessage, browserid account row; NEVER in a cert/assertion/RP). Core recording + RP==issuer parent substitution (chooser + typed paths) deployed to browserid.me 2026-07-02. Final UX polish landed 2026-07-04: the chooser now labels derived identities ('signs in via <parent>') via a new session-gated `derived` field on `list_emails`. Expired-parent greying was decided WONT-DO: there is no cheap server-side parent-proof-freshness signal, and selecting a subordinate already triggers the parent primary auth (interactive if stale), so greying would add an inaccurate signal for no benefit.
+
+DEPLOYED 2026-07-04: item-1 chooser-copy committed (browserid-ng 6965fa9) and deployed to browserid.me via Dokku (sha 6965fa9 live, app running, /wsapi/list_emails 401-unauth confirmed). Note: the initial push's git client hit a local timeout mid-build but the Dokku build completed server-side and advanced the ref.

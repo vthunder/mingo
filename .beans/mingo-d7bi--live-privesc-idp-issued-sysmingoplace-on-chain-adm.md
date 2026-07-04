@@ -1,11 +1,11 @@
 ---
 # mingo-d7bi
 title: 'LIVE privesc: IdP-issued sys@mingo.place ⇒ on-chain admin'
-status: todo
+status: completed
 type: bug
 priority: critical
 created_at: 2026-07-02T22:04:58Z
-updated_at: 2026-07-03T20:37:11Z
+updated_at: 2026-07-04T16:04:09Z
 ---
 
 ## Live privilege escalation (opened 2026-07-02 by the engine-fix deploy)
@@ -38,4 +38,10 @@ Reserved-handle blocklist at normalize_handle (sys, checkpointer, admin, root, �
 - Regenesis B=3567244 deployed + verified: key-form roles.admin, sys-checkpointer identity publishing checkpoints (trust=OnChainCheckpoint). The critical privesc is CLOSED by the key-form admin.
 - [x] IdP reserved-handle fix DEPLOYED (mingo app CID c755bf337b8, commit 375ba41 w/ f8ae9d1). Defense-in-depth: blocks sys + sys-* handles at normalize_handle.
 - [ ] Update _sbo.mingo.place DNS (below).
-- [ ] Check id-app DB for pre-claimed reserved handles (now low-risk since admin is key-form).
+- [x] Check id-app DB for pre-claimed reserved handles — CONFIRMED none: no `sys`/`checkpointer`/`admin`/`root` identities claimed in the id-app DB (2026-07-04).
+
+## Summary of Changes
+
+Closed. The critical privilege escalation is CLOSED on-chain by the key-form `roles.admin` (regenesis B=3567244, genesis 652ba895) — admin now matches only the sys key, not any IdP-attributed `sys@mingo.place`, so the escalation is dead independent of the IdP. Defense-in-depth also shipped: the IdP reserved-handle blocklist (`sys` + whole `sys-*` namespace) is DEPLOYED at normalize_handle (mingo CID c755bf337b8, commit 375ba41). Verified no reserved handles were pre-claimed in the id-app DB. checkpointer identity renamed to `sys-checkpointer`.
+
+Deferred (non-blocking, not tracked here): the belt-and-suspenders on-chain reserved-principal guard in resolve_creator, and the _sbo.mingo.place DNS refresh — both cosmetic now that admin is key-form.

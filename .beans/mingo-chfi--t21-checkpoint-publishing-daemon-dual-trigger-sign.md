@@ -1,11 +1,14 @@
 ---
 # mingo-chfi
 title: 'T2.1 checkpoint publishing (daemon): dual-trigger, sign+submit checkpoint.v1'
-status: todo
+status: scrapped
 type: task
 priority: high
 created_at: 2026-07-02T16:25:07Z
-updated_at: 2026-07-02T16:25:07Z
+updated_at: 2026-07-04T17:52:39Z
 ---
 
 [checkpoint] config (authority key, thresholds writes>=100 / blocks>=1000). On trigger at height h: read state_root(h), build+sign checkpoint.v1{block:h,state_root,prev_checkpoint}, submit via turbo.submit_raw. Genesis policy must grant /sys/checkpoints/**. Excludes checkpoint objects from the write trigger count.
+
+## Reasons for Scrapping
+Duplicate bean. The real, worked copy lives under epic mingo-o5t1: mingo-0hzq duplicates that epic (no children); mingo-chfi duplicates the completed T2.1 checkpoint-publishing task mingo-lsjh; mingo-b0y5 duplicates the completed spec-edits task mingo-eg7g. Scrapped 2026-07-04 during fast-sync thread review.

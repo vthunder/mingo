@@ -38,3 +38,17 @@ key_file = "/data/checkpoint-key.json"
 every_writes = 5
 every_blocks = 500
 snapshots_dir = "/data/snapshots"
+
+# Checkpoint attestations (State Commitment spec v0.4 §Checkpoint Attestations).
+# When enabled, this node posts a checkpoint-attestation.v1 for each on-chain
+# checkpoint it has INDEPENDENTLY reached and reproduced (comparing its own
+# recorded state root at that height), under /u/<attestor>/attestations/checkpoints/.
+# It signs with a DISTINCT attestor key (not the checkpointer key) so a
+# threshold-2 client {sys-checkpointer, <attestor>} sees two distinct backers.
+# Off by default: a meaningful attestation needs an independent operator/identity;
+# enabling it here (co-located with the checkpointer) only validates the pipeline.
+# entrypoint.sh would write the key file from SBO_ATTEST_KEY, like the checkpointer.
+# [attest]
+# enabled = true
+# key_file = "/data/attest-key.json"
+# attestor = "sys-checkpointer"   # MUST be the resolved controller of the key
