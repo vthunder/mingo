@@ -43,12 +43,16 @@ snapshots_dir = "/data/snapshots"
 # When enabled, this node posts a checkpoint-attestation.v1 for each on-chain
 # checkpoint it has INDEPENDENTLY reached and reproduced (comparing its own
 # recorded state root at that height), under /u/<attestor>/attestations/checkpoints/.
-# It signs with a DISTINCT attestor key (not the checkpointer key) so a
-# threshold-2 client {sys-checkpointer, <attestor>} sees two distinct backers.
+# The attestor MUST be a DISTINCT identity from sys-checkpointer, not the
+# checkpointer itself: a checkpoint.v1 ALREADY counts as sys-checkpointer's own
+# signed (block, state_root) claim, so a self-attestation would dedupe to the same
+# backer and add nothing. Use a separate key + identity so a threshold-2 client
+# {sys-checkpointer, <attestor>} sees two distinct backers.
 # Off by default: a meaningful attestation needs an independent operator/identity;
-# enabling it here (co-located with the checkpointer) only validates the pipeline.
-# entrypoint.sh would write the key file from SBO_ATTEST_KEY, like the checkpointer.
+# a co-located attestor (own key, same node) validates the produce→serve→consume
+# pipeline but is not operationally independent. entrypoint.sh would write the key
+# file from SBO_ATTEST_KEY, like the checkpointer.
 # [attest]
 # enabled = true
 # key_file = "/data/attest-key.json"
-# attestor = "sys-checkpointer"   # MUST be the resolved controller of the key
+# attestor = "attestor-1@mingo.place"   # a DISTINCT identity; MUST be the resolved controller of the key
