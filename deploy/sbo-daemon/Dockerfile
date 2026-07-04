@@ -14,21 +14,42 @@
 # source is cloned from git, so the context need not contain the sbo crates.
 # Base pinned to a specific toolchain (not the moving `rust:1` tag) so the
 # rocksdb dependency layer stays cached across deploys.
-FROM rust:1.93-bookworm AS build
-ARG SBO_REV=f4c6e69cae212f981dc6fbd1e7c628de927148cf
+#
+# Dependency caching (mingo-e1dd): the full third-party tree (rocksdb, risc0,
+# frame-metadata, rustls…) is compiled with cargo-chef in a stage keyed ONLY on
+# the dependency graph (recipe.json), so it becomes a durable Docker IMAGE LAYER.
+# Dokku persists image layers across deploys (unlike BuildKit `--mount=type=cache`
+# mounts, which it does NOT), so a code-only SBO_REV bump reuses the cooked deps
+# and recompiles only the changed sbo workspace crates. recipe.json is a
+# content-stable projection of the deps, so it changes (and re-cooks) only when
+# Cargo.lock/manifests change, not on every source edit.
+FROM rust:1.93-bookworm AS chef
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler git \
     && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-chef --locked --version "^0.1"
 WORKDIR /src
-# Clone + checkout in one layer so a SBO_REV bump re-fetches the pinned source.
+
+# Planner: clone the pinned source and distill the dependency graph to recipe.json.
+FROM chef AS planner
+ARG SBO_REV=f4c6e69cae212f981dc6fbd1e7c628de927148cf
 RUN git clone https://github.com/vthunder/sbo . \
     && git checkout "$SBO_REV"
-# BuildKit cache mounts persist the cargo registry + target across deploys, so
-# only changed codegen units recompile after the first (cold) build.
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Builder: cook deps (cached image layer, invalidated only by recipe.json), then
+# build the daemon against the real source (only changed workspace crates rebuild).
+FROM chef AS build
+ARG SBO_REV=f4c6e69cae212f981dc6fbd1e7c628de927148cf
+COPY --from=planner /src/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
+    cargo chef cook --release --package sbo-daemon --recipe-path recipe.json
+COPY --from=planner /src/ .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     cargo build --release -p sbo-daemon \
     && cp target/release/sbo-daemon /sbo-daemon
 
