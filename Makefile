@@ -18,8 +18,16 @@ GIT_SSH = GIT_SSH_COMMAND="ssh -i $(KEY)"
 build:
 	CARGO_NET_GIT_FETCH_WITH_CLI=true cargo build --release -p sbo-daemon -p mingo-idp
 
-## Deploy da.sandmill.org (sbo-daemon).
+## Deploy da.sandmill.org (sbo-daemon) via GitHub Actions: CI builds the image
+## (persistent cache, ample disk) and dokku pulls it — the 24G host never
+## compiles. Requires the DOKKU_SSH_KEY repo secret (see .github/workflows/
+## deploy-daemon.yml). A push to main touching deploy/sbo-daemon/** also triggers
+## it automatically. Legacy host build: `make deploy-daemon-onhost` (slow).
 deploy-daemon:
+	gh workflow run deploy-daemon.yml
+
+## Legacy: build sbo-daemon ON the dokku host (slow; cold-compiles on a 24G disk).
+deploy-daemon-onhost:
 	$(GIT_SSH) git push $(HOST):sbo-daemon $(BRANCH):master
 
 ## Deploy mingo.place (mingo-idp + SPA).

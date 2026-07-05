@@ -5,7 +5,7 @@ status: in-progress
 type: task
 priority: normal
 created_at: 2026-07-02T16:25:37Z
-updated_at: 2026-07-04T18:12:23Z
+updated_at: 2026-07-04T20:59:12Z
 parent: mingo-o5t1
 blocked_by:
     - mingo-lsjh
@@ -44,5 +44,5 @@ Default client strategy: pick the freshest checkpoint whose threshold is ALREADY
 ## Built + committed (2026-07-04)
 sbo f4c6e69 (pushed origin/main): unified attestation model — core schema validation, daemon [attest] producer, manifest attestations field, client TrustPolicy+evaluate_trust+bootstrap_with_policy, spec v0.4. Full sbo workspace green; new unit tests for evaluate_trust (threshold/agreement/untrusted) + schema. mingo sbo pin + SBO_REV bumped to f4c6e69; mingo-app builds + tests green.
 Deploying daemon (attest OFF — backward-compatible, no genesis change): manifest gains attestations:[]; client default {sys-checkpointer,1} == legacy OnChainCheckpoint.
-- [ ] Deploy sbo-daemon to da.sandmill.org; verify /v1/sync-points has attestations field.
-- [ ] FOLLOW-UP (needs decision): enable a live attestor. Default client needs none (threshold-1 sys-checkpointer). A real web-of-trust attestor needs an independent operator/identity (co-located distinct-key attestor validates the pipeline but not independence; a named attestor identity needs a regenesis). Deferred to a follow-up bean.
+- [x] Deployed to da.sandmill.org (402d501); /v1/sync-points now serves attestations:[] (head 3571304, 8 checkpoints). Unified client + manifest field LIVE, backward-compatible.
+- [x] FOLLOW-UP tracked as mingo-02ta: enable a live attestor (needs identity/regenesis decision).
