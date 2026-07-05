@@ -1,11 +1,11 @@
 ---
 # mingo-e1dd
 title: 'sbo-daemon Docker build: cache deps in an image layer (cargo-chef)'
-status: in-progress
+status: completed
 type: task
 priority: high
 created_at: 2026-07-04T18:21:34Z
-updated_at: 2026-07-05T10:14:04Z
+updated_at: 2026-07-05T10:50:04Z
 ---
 
 Every sbo-daemon deploy cold-rebuilds the ENTIRE dependency tree (rocksdb, frame-metadata, rustls, bindgen, zstd/lz4/bzip2-sys, risc0 deps…), even for a one-line code change. Observed live on the f4c6e69 deploy: 300s+ still compiling third-party deps.
@@ -55,3 +55,16 @@ Fix: GitHub Actions (free for these PUBLIC repos) builds deploy/sbo-daemon/Docke
 Added: .github/workflows/deploy-daemon.yml; Makefile deploy-daemon -> gh workflow run (old host build kept as deploy-daemon-onhost).
 - [ ] One-time setup: add DOKKU_SSH_KEY repo secret; make the GHCR package public (or give dokku registry creds); confirm dokku git:from-image works for this app version.
 - [ ] First workflow run + verify da.sandmill.org serves + subsequent src-only deploy is fast (cook cached).
+
+## DONE — CI image deploy live (2026-07-05)
+End-to-end green: push to main touching deploy/sbo-daemon/** -> GitHub Actions builds (type=gha cache: 19-30s warm) -> pushes ghcr.io/vthunder/sbo-daemon:<sha> -> dokku git:from-image pulls + releases. **Total deploy ~70s** (was 40+ min). Daemon verified live on the CI image (da.sandmill.org HTTP 200, head advancing).
+
+### One-time dokku config changes made (app sbo-daemon), needed for image deploys:
+- builder-dockerfile:set sbo-daemon dockerfile-path  → CLEARED (git:from-image generates a root FROM-image Dockerfile; the old custom path deploy/sbo-daemon/Dockerfile caused 'Invalid dockerfile-path').
+- builder:set sbo-daemon selected dockerfile  → PINNED (else it fell back to herokuish/'Unable to select a buildpack').
+- NOTE: the legacy on-host build (make deploy-daemon-onhost / git push dokku) now needs the dockerfile-path re-set to deploy/sbo-daemon/Dockerfile if ever used again.
+
+### Gotcha: git:from-image is a no-op on an unchanged image digest ('No changes detected, skipping git commit', exits 1). Real deploys have a new sha each time so it's fine; only bites when re-running the same commit. If needed, ps:rebuild (with dockerfile builder pinned) or push a fresh commit.
+
+## Summary of Changes
+Root cause was the dokku host's 24G disk (8.6G free) — too small to hold a warm Rust build cache, so BuildKit GC cold-rebuilt every deploy regardless of Dockerfile shape. Fixed by moving the build off-host to GitHub Actions (free for public repos) and deploying by image. Deploys are now ~70s and the DA node never compiles.
