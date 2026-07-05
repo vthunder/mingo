@@ -1,5 +1,6 @@
 # sbo-daemon container config — Mingo demo (Avail turing, app 506). Paths live
 # under the dokku persistent mount /data so state survives redeploys.
+# Deployed via CI: GitHub Actions builds the image; dokku pulls it (git:from-image).
 [daemon]
 socket_path = "/data/daemon.sock"
 pid_file = "/data/daemon.pid"
