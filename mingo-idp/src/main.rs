@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/claim_handle", post(routes::claim_handle))
         .route("/cert_key", post(routes::cert_key))
         .route("/admin/seed", post(routes::admin_seed))
+        .route("/admin/provision", post(routes::admin_provision))
         .route("/admin/delete-account", post(routes::admin_delete_account))
         .route_service("/provision", file("provision.html"))
         .route_service("/auth", file("auth.html"))

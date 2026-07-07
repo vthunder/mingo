@@ -210,16 +210,23 @@ pub struct SeedReq {
     pub handle: String,
 }
 
-pub async fn admin_seed(
-    State(st): State<Shared>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<SeedReq>,
-) -> Result<Json<ClaimResp>, AppError> {
+/// Verify the `X-Admin-Token` header against the configured admin token. Fails
+/// closed when no admin token is configured.
+fn require_admin(st: &Shared, headers: &axum::http::HeaderMap) -> Result<(), AppError> {
     let expected = st.config.admin_token.as_deref().ok_or(AppError::Forbidden)?;
     let provided = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
     if provided != expected {
         return Err(AppError::Forbidden);
     }
+    Ok(())
+}
+
+pub async fn admin_seed(
+    State(st): State<Shared>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<SeedReq>,
+) -> Result<Json<ClaimResp>, AppError> {
+    require_admin(&st, &headers)?;
     let handle = normalize_handle(&req.handle)?;
     reject_own_domain(&req.external_email, &st.config.domain)?;
     let account = st.store.find_or_create_account(&req.external_email)?;
@@ -227,6 +234,72 @@ pub async fn admin_seed(
         return Err(AppError::HandleTaken);
     }
     Ok(Json(ClaimResp { email: format!("{}@{}", handle, st.config.domain) }))
+}
+
+// --------------------------------------------------------------------------
+// POST /admin/provision  (X-Admin-Token)
+//   { external_email, handle, pubkey: { algorithm, publicKey } }
+//   -> { email, cert, subordinate_to }
+// Programmatic provisioning for automation and tests: bind `handle` to
+// `external_email` (like /admin/seed) AND issue a `<handle>@<domain>` cert for
+// `pubkey` (like /cert_key) — all under admin auth, bypassing the interactive
+// browserid session. The cert is identical to the one /cert_key mints, so a
+// caller can assemble the on-chain `identity.email.v1` without an email round
+// trip. Idempotent on the account/handle binding: re-provisioning the same
+// (external_email, handle) re-issues a fresh cert for the given pubkey.
+// --------------------------------------------------------------------------
+#[derive(Deserialize)]
+pub struct ProvisionReq {
+    pub external_email: String,
+    pub handle: String,
+    pub pubkey: PubKeyJson,
+}
+
+pub async fn admin_provision(
+    State(st): State<Shared>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<ProvisionReq>,
+) -> Result<Json<CertResp>, AppError> {
+    require_admin(&st, &headers)?;
+    let handle = normalize_handle(&req.handle)?;
+    reject_own_domain(&req.external_email, &st.config.domain)?;
+
+    // Seed (or reuse) the account and its handle binding.
+    let account = st.store.find_or_create_account(&req.external_email)?;
+    match st.store.account_id_for_handle(&handle)? {
+        // Already bound to this account: fine, re-issue.
+        Some(owner) if owner == account.id => {}
+        // Unbound: claim it for this account.
+        None => {
+            if !st.store.set_handle(account.id, &handle)? {
+                return Err(AppError::HandleTaken);
+            }
+        }
+        // Bound to a different account: refuse (don't hijack).
+        Some(_) => return Err(AppError::HandleTaken),
+    }
+
+    if req.pubkey.algorithm != "Ed25519" {
+        return Err(AppError::BadRequest(format!("unsupported algorithm: {}", req.pubkey.algorithm)));
+    }
+    let user_pk = PublicKey::from_base64(&req.pubkey.public_key)
+        .map_err(|e| AppError::BadRequest(format!("invalid public key: {}", e)))?;
+
+    let email = format!("{}@{}", handle, st.config.domain);
+    let cert = Certificate::create(
+        &st.config.domain,
+        &email,
+        &user_pk,
+        chrono::Duration::hours(24),
+        &st.keypair,
+    )
+    .map_err(|e| AppError::Internal(format!("cert create: {}", e)))?;
+
+    Ok(Json(CertResp {
+        success: true,
+        cert: cert.encoded().to_string(),
+        subordinate_to: Some(account.external_email),
+    }))
 }
 
 /// Reject the IdP's own domain as an *external* identity. A `<handle>@<domain>`
