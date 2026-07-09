@@ -14,6 +14,16 @@ if [ -n "${SBO_CHECKPOINT_KEY:-}" ]; then
   chmod 600 /data/checkpoint-key.json
 fi
 
+# Same pattern for the checkpoint ATTESTOR key ([attest] in config.toml, mingo-02ta).
+# The attestor's identity is provisioned ONCE, out of band, with
+#   SBO_AGENT_API_KEY=bidk_… sbo id provision-agent <name> <uri>
+# (agent-native browserid, mingo-ua8w) using this same key — after that key-rooted
+# claim, the daemon only needs the key to sign attestations; no browserid at runtime.
+if [ -n "${SBO_ATTEST_KEY:-}" ]; then
+  printf '{"secret_key":"%s"}' "$SBO_ATTEST_KEY" > /data/attest-key.json
+  chmod 600 /data/attest-key.json
+fi
+
 # One-shot fresh-genesis reset. On the first boot of an image with a new genesis we
 # wipe /data state unconditionally so the seed below rebuilds from the NEW genesis
 # (B=3567386 — the regenesis carrying the /sys/checkpoints/** `checkpointer` grant).

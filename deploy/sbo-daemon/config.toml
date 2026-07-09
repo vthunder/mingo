@@ -51,9 +51,15 @@ snapshots_dir = "/data/snapshots"
 # {sys-checkpointer, <attestor>} sees two distinct backers.
 # Off by default: a meaningful attestation needs an independent operator/identity;
 # a co-located attestor (own key, same node) validates the produce→serve→consume
-# pipeline but is not operationally independent. entrypoint.sh would write the key
+# pipeline but is not operationally independent. entrypoint.sh writes the key
 # file from SBO_ATTEST_KEY, like the checkpointer.
+#
+# Identity setup (one-time, agent-native — mingo-ua8w): mint an API key at
+# mingo.place (signed in, POST /agent_keys), then claim the key-rooted name:
+#   SBO_AGENT_API_KEY=bidk_… sbo id provision-agent <name> sbo+raw://avail:turing:506/
+# using the SAME key as SBO_ATTEST_KEY. After that claim, `attestor = "<name>"`
+# writes are authorized by signature alone (no browserid at runtime).
 # [attest]
 # enabled = true
 # key_file = "/data/attest-key.json"
-# attestor = "attestor-1@mingo.place"   # a DISTINCT identity; MUST be the resolved controller of the key
+# attestor = "attestor2"   # a /sys/names name DISTINCT from sys-checkpointer; MUST be the resolved controller of the key
