@@ -260,17 +260,16 @@ function promptIdentity(externalEmail) {
     const overlay = el(`<div class="modal-overlay">
       <div class="modal card">
         <div class="h2">How do you want to appear here?</div>
-        <label class="row" style="gap:8px;align-items:flex-start;margin-top:8px;cursor:pointer">
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
           <input type="radio" name="idmode" value="email" checked>
-          <span><strong>Use my email</strong> — <span class="muted">${esc(externalEmail)}</span>
-            <br><span class="muted tiny">This will be shown publicly on everything you post.</span></span>
+          <span><strong>Use my email</strong> — <span class="muted">${esc(externalEmail)}</span></span>
         </label>
-        <label class="row" style="gap:8px;align-items:flex-start;margin-top:10px;cursor:pointer">
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px;cursor:pointer">
           <input type="radio" name="idmode" value="handle">
-          <span><strong>Create a handle</strong> — <span class="muted"><span id="h-prev">handle</span>@${esc(CONFIG.domain)}</span>
-            <br><span class="muted tiny">A pseudonym; your email stays private.</span></span>
+          <span><strong>Create a handle</strong> — <span class="muted"><span id="h-prev">handle</span>@${esc(CONFIG.domain)}</span></span>
         </label>
         <input type="text" id="h-input" placeholder="handle" autocapitalize="none" autocomplete="off" spellcheck="false" style="margin-top:8px;display:none">
+        <div id="h-help" class="muted tiny" style="margin-top:8px"></div>
         <div id="h-error" class="error tiny"></div>
         <div class="row-between" style="margin-top:12px">
           <button id="h-cancel">Cancel</button>
@@ -281,13 +280,18 @@ function promptIdentity(externalEmail) {
     const input = overlay.querySelector("#h-input");
     const prev = overlay.querySelector("#h-prev");
     const err = overlay.querySelector("#h-error");
+    const help = overlay.querySelector("#h-help");
     const mode = () => overlay.querySelector('input[name="idmode"]:checked').value;
     const syncMode = () => {
       const handle = mode() === "handle";
       input.style.display = handle ? "" : "none";
+      help.textContent = handle
+        ? "A pseudonym; your email stays private."
+        : "This will be shown publicly on everything you post.";
       if (handle) input.focus();
       err.textContent = "";
     };
+    syncMode();
     overlay.querySelectorAll('input[name="idmode"]').forEach((r) => r.addEventListener("change", syncMode));
     input.addEventListener("input", () => {
       input.value = sanitize(input.value);
