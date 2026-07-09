@@ -64,7 +64,11 @@ snapshots_dir = "/data/snapshots"
 #      mints the <name>@mingo.place cert, then the name is claimed key-rooted.)
 # After that claim, `attestor = "<name>"` writes are authorized by signature
 # alone (no browserid at runtime); the credential is only needed to re-provision.
-# [attest]
-# enabled = true
-# key_file = "/data/attest-key.json"
-# attestor = "attestor2"   # a /sys/names name DISTINCT from sys-checkpointer; MUST be the resolved controller of the key
+#
+# LIVE (2026-07-09): attestor2 claimed key-rooted on-chain at block 3592043
+# (owner ed25519:a7cfa800…, attributed to attestor2@mingo.place). Key injected
+# via SBO_ATTEST_KEY (dokku config); entrypoint writes /data/attest-key.json.
+[attest]
+enabled = true
+key_file = "/data/attest-key.json"
+attestor = "attestor2"   # a /sys/names name DISTINCT from sys-checkpointer; MUST be the resolved controller of the key
