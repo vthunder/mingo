@@ -22,6 +22,11 @@ pub struct Account {
     pub id: i64,
     pub external_email: String,
     pub handle: Option<String>,
+    /// How the user chose to be identified: `"handle"` (a `<handle>@mingo.place`
+    /// pseudonym), `"email"` (their external address, used publicly), or `None`
+    /// (undecided — a new account that hasn't picked yet). Lets returning users
+    /// skip the chooser.
+    pub identity_mode: Option<String>,
 }
 
 /// An agent identity `<name>@<domain>` minted via the provisioning API. Shares
@@ -46,6 +51,7 @@ const SCHEMA: &str = r#"
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         external_email  TEXT NOT NULL UNIQUE,
         handle          TEXT UNIQUE,
+        identity_mode   TEXT,
         created_at      INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
@@ -70,6 +76,9 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        // Migration for pre-existing DBs: add identity_mode if absent. SQLite
+        // has no ADD COLUMN IF NOT EXISTS, so add-and-ignore the dup error.
+        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN identity_mode TEXT", []);
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -93,20 +102,30 @@ impl Store {
             params![email, Self::now()],
         )?;
         conn.query_row(
-            "SELECT id, external_email, handle FROM accounts WHERE external_email = ?1",
+            "SELECT id, external_email, handle, identity_mode FROM accounts WHERE external_email = ?1",
             params![email],
-            |r| Ok(Account { id: r.get(0)?, external_email: r.get(1)?, handle: r.get(2)? }),
+            account_from_row,
         )
     }
 
     pub fn get_account(&self, id: i64) -> rusqlite::Result<Option<Account>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, external_email, handle FROM accounts WHERE id = ?1",
+            "SELECT id, external_email, handle, identity_mode FROM accounts WHERE id = ?1",
             params![id],
-            |r| Ok(Account { id: r.get(0)?, external_email: r.get(1)?, handle: r.get(2)? }),
+            account_from_row,
         )
         .optional()
+    }
+
+    /// Record the user's identity choice (`"handle"` or `"email"`). Idempotent.
+    pub fn set_identity_mode(&self, account_id: i64, mode: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE accounts SET identity_mode = ?1 WHERE id = ?2",
+            params![mode, account_id],
+        )?;
+        Ok(())
     }
 
     /// Which account (if any) owns a handle.
@@ -315,6 +334,15 @@ fn agent_identity_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentIdent
     })
 }
 
+fn account_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
+    Ok(Account {
+        id: r.get(0)?,
+        external_email: r.get(1)?,
+        handle: r.get(2)?,
+        identity_mode: r.get(3)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +360,29 @@ mod tests {
         assert_eq!(a.id, b.id);
         assert_eq!(a.external_email, "dan@sandmill.org");
         assert!(a.handle.is_none());
+        assert!(a.identity_mode.is_none(), "new account is undecided");
+    }
+
+    #[test]
+    fn identity_mode_records_the_choice() {
+        let s = store();
+        let a = s.find_or_create_account("dan@sandmill.org").unwrap();
+        assert!(a.identity_mode.is_none());
+
+        // Choosing the external email records "email" without a handle.
+        s.set_identity_mode(a.id, "email").unwrap();
+        let a = s.get_account(a.id).unwrap().unwrap();
+        assert_eq!(a.identity_mode.as_deref(), Some("email"));
+        assert!(a.handle.is_none());
+
+        // A different account claims a handle → mode not set by the store layer
+        // directly, but set_identity_mode("handle") records it.
+        let b = s.find_or_create_account("bob@x.com").unwrap();
+        assert!(s.set_handle(b.id, "bob").unwrap());
+        s.set_identity_mode(b.id, "handle").unwrap();
+        let b = s.get_account(b.id).unwrap().unwrap();
+        assert_eq!(b.identity_mode.as_deref(), Some("handle"));
+        assert_eq!(b.handle.as_deref(), Some("bob"));
     }
 
     #[test]

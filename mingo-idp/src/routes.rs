@@ -57,6 +57,12 @@ pub struct SessionReq {
 #[derive(Serialize)]
 pub struct SessionResp {
     pub handle: Option<String>,
+    /// The user's external (sign-in) email — so the client can offer using it
+    /// directly as a public identity.
+    pub email: String,
+    /// `"handle"`, `"email"`, or `null` (undecided) — lets a returning user
+    /// skip the identity chooser.
+    pub identity_mode: Option<String>,
     pub csrf: String,
 }
 
@@ -83,7 +89,32 @@ pub async fn session_from_assertion(
     let (sid, csrf) = st.store.create_session(account.id)?;
     set_session_cookie(&cookies, &sid, st.config.allow_http_verify);
 
-    Ok(Json(SessionResp { handle: account.handle, csrf }))
+    Ok(Json(SessionResp {
+        handle: account.handle,
+        email: account.external_email,
+        identity_mode: account.identity_mode,
+        csrf,
+    }))
+}
+
+// --------------------------------------------------------------------------
+// POST /use_external  ->  { email }
+// Record that the user chose to use their external email as their public
+// identity instead of a local @mingo.place handle. Session-gated; no cert is
+// issued (the external identity is certified by its own IdP/the broker).
+// --------------------------------------------------------------------------
+pub async fn use_external(
+    State(st): State<Shared>,
+    cookies: Cookies,
+) -> Result<Json<ClaimResp>, AppError> {
+    let account_id = require_session(&st, &cookies)?;
+    st.store.set_identity_mode(account_id, "email")?;
+    let email = st
+        .store
+        .get_account(account_id)?
+        .map(|a| a.external_email)
+        .ok_or(AppError::NotAuthenticated)?;
+    Ok(Json(ClaimResp { email }))
 }
 
 // --------------------------------------------------------------------------
@@ -130,6 +161,7 @@ pub async fn claim_handle(
     if !st.store.set_handle(account_id, &handle)? {
         return Err(AppError::HandleTaken);
     }
+    st.store.set_identity_mode(account_id, "handle")?;
     Ok(Json(ClaimResp { email: format!("{}@{}", handle, st.config.domain) }))
 }
 

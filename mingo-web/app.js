@@ -202,17 +202,30 @@ async function signIn() {
     if (!ext || !ext.assertion) return; // cancelled
     const sess = await idpPost("/session/from-assertion", { assertion: ext.assertion });
 
-    let handle = sess.handle;
-    if (!handle) {
-      handle = await promptHandle();
-      if (!handle) return; // cancelled registration
-      const claim = await idpPost("/claim_handle", { handle });
-      handle = claim.email.split("@")[0];
+    // Decide the identity to sign as: a returning handle user, a returning
+    // external-email user, or a new user who picks in the chooser.
+    let email;
+    if (sess.handle) {
+      email = `${sess.handle}@${CONFIG.domain}`;
+    } else if (sess.identity_mode === "email") {
+      email = sess.email;
+    } else {
+      const choice = await promptIdentity(sess.email);
+      if (!choice) return; // cancelled registration
+      if (choice.mode === "email") {
+        await idpPost("/use_external", {});
+        email = sess.email;
+      } else {
+        const claim = await idpPost("/claim_handle", { handle: choice.handle });
+        email = claim.email;
+      }
     }
-    const email = `${handle}@${CONFIG.domain}`;
 
+    // Grant SBO signing for the chosen identity. For a @mingo.place handle the
+    // broker mints via mingo.place; for the external email it uses the cert the
+    // user's own IdP already put in broker custody at login.
     const prov = await brokerDialog({ sboSign: true, provisionEmail: email });
-    if (!prov || !prov.assertion) { toast("Could not provision your @mingo.place identity"); return; }
+    if (!prov || !prov.assertion) { toast(`Could not provision ${email}`); return; }
     if (prov.sbo_sign_granted === false) toast("Signed in, but signing was not granted");
 
     session.email = prov.email || email;
@@ -237,25 +250,45 @@ async function signOut() {
   toast("Signed out");
 }
 
-// In-page handle picker (a Mingo product decision — never inside the broker dialog).
-function promptHandle() {
+// In-page identity chooser (a Mingo product decision — never inside the broker
+// dialog). A new user either uses their external email as their public identity
+// or creates a pseudonymous `<handle>@mingo.place`. Resolves to
+// { mode: "email" } | { mode: "handle", handle } | null (cancelled).
+function promptIdentity(externalEmail) {
   return new Promise((resolve) => {
     const sanitize = (v) => v.toLowerCase().replace(/[^a-z0-9._-]/g, "");
     const overlay = el(`<div class="modal-overlay">
       <div class="modal card">
-        <div class="h2">Choose your Mingo handle</div>
-        <p class="muted tiny">This is your public identity here: <strong><span id="h-prev">handle</span>@${esc(CONFIG.domain)}</strong>. Your email stays private.</p>
-        <input type="text" id="h-input" placeholder="handle" autocapitalize="none" autocomplete="off" spellcheck="false">
+        <div class="h2">How do you want to appear here?</div>
+        <label class="row" style="gap:8px;align-items:flex-start;margin-top:8px;cursor:pointer">
+          <input type="radio" name="idmode" value="email" checked>
+          <span><strong>Use my email</strong> — <span class="muted">${esc(externalEmail)}</span>
+            <br><span class="muted tiny">This will be shown publicly on everything you post.</span></span>
+        </label>
+        <label class="row" style="gap:8px;align-items:flex-start;margin-top:10px;cursor:pointer">
+          <input type="radio" name="idmode" value="handle">
+          <span><strong>Create a handle</strong> — <span class="muted"><span id="h-prev">handle</span>@${esc(CONFIG.domain)}</span>
+            <br><span class="muted tiny">A pseudonym; your email stays private.</span></span>
+        </label>
+        <input type="text" id="h-input" placeholder="handle" autocapitalize="none" autocomplete="off" spellcheck="false" style="margin-top:8px;display:none">
         <div id="h-error" class="error tiny"></div>
-        <div class="row-between" style="margin-top:10px">
+        <div class="row-between" style="margin-top:12px">
           <button id="h-cancel">Cancel</button>
-          <button class="primary" id="h-ok">Create my identity</button>
+          <button class="primary" id="h-ok">Continue</button>
         </div>
       </div></div>`);
     document.body.appendChild(overlay);
     const input = overlay.querySelector("#h-input");
     const prev = overlay.querySelector("#h-prev");
-    input.focus();
+    const err = overlay.querySelector("#h-error");
+    const mode = () => overlay.querySelector('input[name="idmode"]:checked').value;
+    const syncMode = () => {
+      const handle = mode() === "handle";
+      input.style.display = handle ? "" : "none";
+      if (handle) input.focus();
+      err.textContent = "";
+    };
+    overlay.querySelectorAll('input[name="idmode"]').forEach((r) => r.addEventListener("change", syncMode));
     input.addEventListener("input", () => {
       input.value = sanitize(input.value);
       prev.textContent = input.value || "handle";
@@ -263,9 +296,10 @@ function promptHandle() {
     const close = (val) => { overlay.remove(); resolve(val); };
     overlay.querySelector("#h-cancel").onclick = () => close(null);
     overlay.querySelector("#h-ok").onclick = () => {
+      if (mode() === "email") return close({ mode: "email" });
       const v = sanitize(input.value.trim());
-      if (!v) { overlay.querySelector("#h-error").textContent = "Pick a handle"; return; }
-      close(v);
+      if (!v) { err.textContent = "Pick a handle"; return; }
+      close({ mode: "handle", handle: v });
     };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") overlay.querySelector("#h-ok").click(); });
   });

@@ -47,6 +47,7 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         .route("/whoami", get(routes::whoami))
         .route("/logout", post(routes::logout))
         .route("/claim_handle", post(routes::claim_handle))
+        .route("/use_external", post(routes::use_external))
         .route("/cert_key", post(routes::cert_key))
         .route("/admin/seed", post(routes::admin_seed))
         .route("/admin/provision", post(routes::admin_provision))
