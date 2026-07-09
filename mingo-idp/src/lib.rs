@@ -13,9 +13,11 @@ pub mod verify;
 
 use std::path::Path;
 
+use axum::http::{header, Method};
 use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 pub use routes::{AppState, Shared};
@@ -24,6 +26,21 @@ pub use routes::{AppState, Shared};
 /// assets (provision/auth pages + shims); `spa_dir` the mingo-web SPA.
 pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router {
     let file = |name: &str| ServeFile::new(static_dir.join(name));
+    // Agent provisioning (mingo-ua8w; tdxf spec §4.3-4.5) — target-IdP
+    // mint/list/revoke/reserve of dual-signed requests. `/provision/reserve`
+    // is called cross-origin by the browser at browserid.me/agents, so this
+    // group gets permissive CORS (no cookies — the credential is the bundle).
+    let provision = Router::new()
+        .route("/provision/reserve", post(agent::reserve))
+        .route("/provision/mint", post(agent::mint))
+        .route("/provision/list", post(agent::list))
+        .route("/provision/revoke", post(agent::revoke))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE]),
+        );
     Router::new()
         .route("/.well-known/browserid", get(routes::well_known))
         .route("/session/from-assertion", post(routes::session_from_assertion))
@@ -34,13 +51,7 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         .route("/admin/seed", post(routes::admin_seed))
         .route("/admin/provision", post(routes::admin_provision))
         .route("/admin/delete-account", post(routes::admin_delete_account))
-        // Agent provisioning (mingo-ua8w; tdxf spec v0.2 §4.3-4.5) — target-IdP
-        // mint/list/revoke of dual-signed requests. Key management is at the
-        // broker; 404s until config.agent_provisioning is enabled.
-        .route("/provision/reserve", post(agent::reserve))
-        .route("/provision/mint", post(agent::mint))
-        .route("/provision/list", post(agent::list))
-        .route("/provision/revoke", post(agent::revoke))
+        .merge(provision)
         .route_service("/provision", file("provision.html"))
         .route_service("/auth", file("auth.html"))
         .route_service("/provision.js", file("provision.js"))
