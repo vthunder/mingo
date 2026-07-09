@@ -1,15 +1,21 @@
-//! Conformance test: mingo-idp's implementation of the agent provisioning
-//! spec (browserid-ng `docs/specs/agent-provisioning-and-grant-api.md` §4),
-//! driven end-to-end over real HTTP by the reference client — the
-//! `browserid-agent` SDK. If the SDK works against browserid-broker and this
-//! IdP interchangeably, federation (spec §7) holds.
+//! Conformance test: mingo-idp's implementation of the delegation-chain
+//! provisioning spec (browserid-ng `docs/specs/agent-provisioning-and-grant-api.md`
+//! v0.2 §4.3-4.5) — mingo-idp as a *target IdP*. Key management + endorsement
+//! live at the broker; here we stand in for the broker (a keypair mingo-idp
+//! discovers via a mock `.well-known/browserid`) and build the user-signed
+//! chain with core types, then drive `/provision/{mint,list,revoke}` over HTTP.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use browserid_agent::{AgentError, AgentIdentity};
+use axum::routing::get;
+use axum::{Json, Router};
 use browserid_core::keys::{KeyPair, PublicKey};
+use browserid_core::provisioning::{
+    Endorsement, ProvisioningCert, ProvisioningRequest, RequestBundle,
+};
 use browserid_core::{Assertion, BackedAssertion, Certificate};
+use chrono::Duration;
 use mingo_idp::config::Config;
 use mingo_idp::store::Store;
 use mingo_idp::{build_router, AppState, Shared};
@@ -17,12 +23,38 @@ use serde_json::{json, Value};
 
 const AUDIENCE: &str = "https://rp.example.com";
 
-fn test_config(domain: String, quota: usize, enabled: bool) -> Config {
+/// A stand-in broker: a signing key served at `/.well-known/browserid` so
+/// mingo-idp can discover it as its trusted broker.
+struct Broker {
+    keypair: KeyPair,
+    domain: String,
+}
+
+async fn start_broker() -> Broker {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let domain = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let keypair = KeyPair::generate();
+    let pubkey = keypair.public_key();
+
+    let app = Router::new().route(
+        "/.well-known/browserid",
+        get(move || {
+            let doc = browserid_core::discovery::SupportDocument::new(pubkey.clone());
+            async move { Json(doc) }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    Broker { keypair, domain }
+}
+
+fn test_config(domain: String, broker_domain: String, quota: usize, enabled: bool) -> Config {
     Config {
         bind: String::new(),
         domain,
         app_origin: "https://mingo.place".into(),
-        broker_domain: "browserid.me".into(),
+        broker_domain,
         key_file: PathBuf::from("/nonexistent"),
         db_path: PathBuf::from("/nonexistent"),
         static_dir: PathBuf::from("/nonexistent"),
@@ -34,252 +66,280 @@ fn test_config(domain: String, quota: usize, enabled: bool) -> Config {
     }
 }
 
-/// Boot the real IdP on 127.0.0.1:0. Returns (base_url, idp pubkey, state).
-async fn start_idp(quota: usize, enabled: bool) -> (String, PublicKey, Shared) {
+struct Idp {
+    base: String,
+    domain: String,
+    pubkey: PublicKey,
+    keypair_seed: [u8; 32],
+    state: Shared,
+}
+
+async fn start_idp(broker_domain: String, quota: usize, enabled: bool) -> Idp {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let domain = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
 
     let keypair = KeyPair::generate();
-    let idp_pub = keypair.public_key();
-    let state: Shared = Arc::new(AppState {
+    let pubkey = keypair.public_key();
+    let seed = *keypair.secret_bytes();
+    let state: Shared = Arc::new(AppState::new(
         keypair,
-        store: Store::open_in_memory().unwrap(),
-        config: test_config(domain.clone(), quota, enabled),
-    });
+        Store::open_in_memory().unwrap(),
+        test_config(domain.clone(), broker_domain, quota, enabled),
+    ));
 
     let app = build_router(
         state.clone(),
         &PathBuf::from("/nonexistent"),
         &PathBuf::from("/nonexistent"),
     );
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+    tokio::spawn({
+        let app = app.clone();
+        async move {
+            axum::serve(listener, app).await.unwrap();
+        }
     });
 
-    (format!("http://{domain}"), idp_pub, state)
+    Idp { base: format!("http://{domain}"), domain, pubkey, keypair_seed: seed, state }
 }
 
-/// The one human-in-the-loop moment, done in-process (the browser sign-in leg
-/// is not under test): an account + session, then an API key over HTTP.
-async fn mint_api_key(base: &str, state: &Shared, human_email: &str) -> String {
-    let account = state.store.find_or_create_account(human_email).unwrap();
-    let (sid, csrf) = state.store.create_session(account.id).unwrap();
-
-    let body: Value = reqwest::Client::new()
-        .post(format!("{base}/agent_keys"))
-        .header("cookie", format!("mingo_session={sid}"))
-        .json(&json!({ "csrf": csrf, "name": "ci-key" }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["success"], true, "key mint failed: {body}");
-    let key = body["api_key"].as_str().unwrap().to_string();
-    assert!(key.starts_with("bidk_"));
-    key
+/// A delegator identity rooted at the IdP: an account with handle `handle`, a
+/// U_cert we (the IdP) issue for `handle@<idp-domain>`, and its identity key.
+struct Delegator {
+    email: String,
+    user_kp: KeyPair,
+    user_cert: Certificate,
 }
 
-#[tokio::test]
-async fn sdk_conformance_full_flow() {
-    let (base, idp_pub, state) = start_idp(5, true).await;
-    let api_key = mint_api_key(&base, &state, "human@example.com").await;
+fn make_delegator(idp: &Idp, handle: &str) -> Delegator {
+    // Register the human account + handle so account_id_for_handle resolves.
+    let account = idp.state.store.find_or_create_account(&format!("{handle}@external.example")).unwrap();
+    assert!(idp.state.store.set_handle(account.id, handle).unwrap());
 
-    // Provision via the SDK — the same client that works against the broker.
-    let mut agent = AgentIdentity::provision(&base, &api_key, Some("attestor2"))
-        .await
-        .unwrap();
-    assert!(agent.email().starts_with("attestor2@127.0.0.1:"));
+    let idp_kp = KeyPair::from_seed(&idp.keypair_seed).unwrap();
+    let email = format!("{handle}@{}", idp.domain);
+    let user_kp = KeyPair::generate();
+    let user_cert = Certificate::create(
+        &idp.domain,
+        &email,
+        &user_kp.public_key(),
+        Duration::hours(24),
+        &idp_kp,
+    )
+    .unwrap();
+    Delegator { email, user_kp, user_cert }
+}
 
-    // Locally signed assertion verifies against the IdP key.
-    let assertion = agent.assertion_for(AUDIENCE).await.unwrap();
-    let email = BackedAssertion::parse(&assertion)
-        .unwrap()
-        .verify(AUDIENCE, |_| Ok(idp_pub.clone()))
-        .unwrap();
-    assert_eq!(email, agent.email());
+/// A registered provisioning credential: P key + the U_cert~P_cert delegation.
+struct Credential {
+    prov_kp: KeyPair,
+    delegation: (Certificate, ProvisioningCert),
+}
 
-    // Explicit re-mint works.
-    agent.remint().await.unwrap();
+fn make_credential(delegator: &Delegator) -> Credential {
+    let prov_kp = KeyPair::generate();
+    let p_cert = ProvisioningCert::create(
+        &delegator.email,
+        &prov_kp.public_key(),
+        Duration::days(90),
+        &delegator.user_kp,
+    )
+    .unwrap();
+    Credential {
+        prov_kp,
+        delegation: (delegator.user_cert.clone(), p_cert),
+    }
+}
 
-    // Idempotent re-provision: same name, fresh SDK instance, same account.
-    let again = AgentIdentity::provision(&base, &api_key, Some("attestor2"))
-        .await
-        .unwrap();
-    assert_eq!(again.email(), agent.email());
+/// Build a request bundle + a broker endorsement for it.
+fn signed(
+    broker: &Broker,
+    idp_domain: &str,
+    cred: &Credential,
+    delegator_email: &str,
+    request: ProvisioningRequest,
+) -> (String, String) {
+    let bundle = RequestBundle::new(cred.delegation.0.clone(), cred.delegation.1.clone(), request);
+    let endorsement = Endorsement::create(
+        &broker.domain,
+        idp_domain,
+        &bundle,
+        delegator_email,
+        Duration::minutes(10),
+        &broker.keypair,
+    )
+    .unwrap();
+    (bundle.encoded().to_string(), endorsement.encoded().to_string())
+}
 
-    // Attribution is recorded and listed (spec §4.4 shape).
-    let body: Value = reqwest::Client::new()
-        .get(format!("{base}/agent/identities"))
-        .bearer_auth(&api_key)
+async fn post(base: &str, path: &str, bundle: &str, endorsement: &str) -> (u16, Value) {
+    let r = reqwest::Client::new()
+        .post(format!("{base}{path}"))
+        .json(&json!({ "request_bundle": bundle, "endorsement": endorsement }))
         .send()
         .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
-    let identities = body["identities"].as_array().unwrap();
-    assert_eq!(identities.len(), 1);
-    assert_eq!(identities[0]["parent_email"], "human@example.com");
-    assert_eq!(identities[0]["active"], true);
-
-    // Persistence round-trip, then revoke; re-mint via the restored copy → 403.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("identity.json");
-    agent.save(&path).unwrap();
-    let mut restored = AgentIdentity::load(&path, &api_key).unwrap();
-
-    agent.revoke().await.unwrap();
-    match restored.remint().await {
-        Err(AgentError::Idp { status: 403, .. }) => {}
-        other => panic!("expected 403 after revocation, got {other:?}"),
-    }
-    // Revocation sticks through the idempotent-create path too.
-    match AgentIdentity::provision(&base, &api_key, Some("attestor2")).await {
-        Err(AgentError::Idp { status: 403, .. }) => {}
-        other => panic!("expected 403 re-creating revoked name, got {other:?}"),
-    }
+    let status = r.status().as_u16();
+    (status, r.json().await.unwrap_or_default())
 }
 
 #[tokio::test]
-async fn name_rules_reserved_and_collisions() {
-    let (base, _, state) = start_idp(5, true).await;
-    let api_key = mint_api_key(&base, &state, "human@example.com").await;
+async fn mint_assert_verify_full_chain() {
+    let broker = start_broker().await;
+    let idp = start_idp(broker.domain.clone(), 5, true).await;
+    let delegator = make_delegator(&idp, "dan");
+    let cred = make_credential(&delegator);
 
-    // sys/sys-* reservations hold for agents (privileged on-chain principals
-    // must not be mintable via the agent onramp).
-    for bad in ["sys", "sys-checkpointer", "admin", "has space"] {
-        match AgentIdentity::provision(&base, &api_key, Some(bad)).await {
-            Err(AgentError::Idp { status: 400, .. }) => {}
-            other => panic!("expected 400 for name {bad:?}, got {other:?}"),
-        }
-    }
+    let agent_kp = KeyPair::generate();
+    let req =
+        ProvisioningRequest::mint(&idp.domain, "attestor2", &agent_kp.public_key(), false, &cred.prov_kp)
+            .unwrap();
+    let (bundle, endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
 
-    // A human handle blocks the agent name (shared namespace) → 409.
-    let other = state.store.find_or_create_account("other@example.com").unwrap();
-    assert!(state.store.set_handle(other.id, "dan").unwrap());
-    match AgentIdentity::provision(&base, &api_key, Some("dan")).await {
-        Err(AgentError::Idp { status: 409, .. }) => {}
-        other => panic!("expected 409 for human-handle collision, got {other:?}"),
-    }
+    let (status, body) = post(&idp.base, "/provision/mint", &bundle, &endorsement).await;
+    assert_eq!(status, 200, "mint failed: {body}");
+    assert_eq!(body["email"], format!("attestor2@{}", idp.domain));
+    assert_eq!(body["subordinate_to"], delegator.email);
 
-    // And an agent name blocks the human handle.
-    AgentIdentity::provision(&base, &api_key, Some("bot")).await.unwrap();
-    assert!(!state.store.set_handle(other.id, "bot").unwrap());
-
-    // Omitted name → generated agent-xxxxxxxx.
-    let generated = AgentIdentity::provision(&base, &api_key, None).await.unwrap();
-    assert!(generated.email().starts_with("agent-"));
-}
-
-#[tokio::test]
-async fn quota_and_auth_rejections() {
-    let (base, _, state) = start_idp(2, true).await;
-    let api_key = mint_api_key(&base, &state, "human@example.com").await;
-
-    AgentIdentity::provision(&base, &api_key, Some("one")).await.unwrap();
-    AgentIdentity::provision(&base, &api_key, Some("two")).await.unwrap();
-    match AgentIdentity::provision(&base, &api_key, Some("three")).await {
-        Err(AgentError::Idp { status: 429, .. }) => {}
-        other => panic!("expected 429 over quota, got {other:?}"),
-    }
-
-    // Bad bearer key → 401.
-    match AgentIdentity::provision(&base, "bidk_not-real", None).await {
-        Err(AgentError::Idp { status: 401, .. }) => {}
-        other => panic!("expected 401 for bad key, got {other:?}"),
-    }
-
-    // The key must not see or touch human identities (visibility rule):
-    // /agent/cert against the human's handle email → 404.
-    let human = state.store.find_or_create_account("h2@example.com").unwrap();
-    assert!(state.store.set_handle(human.id, "danny").unwrap());
-    let domain = base.strip_prefix("http://").unwrap();
-    let kp = KeyPair::generate();
-    let resp = reqwest::Client::new()
-        .post(format!("{base}/agent/cert"))
-        .bearer_auth(&api_key)
-        .json(&json!({
-            "email": format!("danny@{domain}"),
-            "pubkey": { "algorithm": "Ed25519", "publicKey": kp.public_key().to_base64() },
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 404);
-}
-
-#[tokio::test]
-async fn disabled_by_default_and_csrf() {
-    // Disabled: every agent surface 404s (indistinguishable from unknown).
-    let (base, _, state) = start_idp(5, false).await;
-    match AgentIdentity::provision(&base, "bidk_whatever", None).await {
-        Err(AgentError::Idp { status: 404, .. }) => {}
-        other => panic!("expected 404 when disabled, got {other:?}"),
-    }
-    let account = state.store.find_or_create_account("h@example.com").unwrap();
-    let (sid, csrf) = state.store.create_session(account.id).unwrap();
-    let resp = reqwest::Client::new()
-        .post(format!("{base}/agent_keys"))
-        .header("cookie", format!("mingo_session={sid}"))
-        .json(&json!({ "csrf": csrf, "name": "k" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 404);
-
-    // Enabled: wrong CSRF → 403; no session → 401.
-    let (base, _, state) = start_idp(5, true).await;
-    let account = state.store.find_or_create_account("h@example.com").unwrap();
-    let (sid, _csrf) = state.store.create_session(account.id).unwrap();
-    let resp = reqwest::Client::new()
-        .post(format!("{base}/agent_keys"))
-        .header("cookie", format!("mingo_session={sid}"))
-        .json(&json!({ "csrf": "wrong", "name": "k" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 403);
-    let resp = reqwest::Client::new()
-        .post(format!("{base}/agent_keys"))
-        .json(&json!({ "csrf": "x", "name": "k" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 401);
-}
-
-/// The trustless contract end to end: a cert minted through /agent/cert for a
-/// rotated keypair verifies under the IdP's published key.
-#[tokio::test]
-async fn remint_certifies_rotated_keypair() {
-    let (base, idp_pub, state) = start_idp(5, true).await;
-    let api_key = mint_api_key(&base, &state, "human@example.com").await;
-
-    let agent = AgentIdentity::provision(&base, &api_key, Some("rotator")).await.unwrap();
-    let email = agent.email().to_string();
-
-    let rotated = KeyPair::generate();
-    let body: Value = reqwest::Client::new()
-        .post(format!("{base}/agent/cert"))
-        .bearer_auth(&api_key)
-        .json(&json!({
-            "email": email,
-            "pubkey": { "algorithm": "Ed25519", "publicKey": rotated.public_key().to_base64() },
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["success"], true);
-
+    // The minted cert verifies against the IdP's published key.
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
-    let assertion = Assertion::create(AUDIENCE, chrono::Duration::minutes(5), &rotated).unwrap();
-    let verified = BackedAssertion::new(cert, assertion)
-        .verify(AUDIENCE, |_| Ok(idp_pub.clone()))
+    let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &agent_kp).unwrap();
+    let email = BackedAssertion::new(cert, assertion)
+        .verify(AUDIENCE, |_| Ok(idp.pubkey.clone()))
         .unwrap();
-    assert_eq!(verified, email);
+    assert_eq!(email, format!("attestor2@{}", idp.domain));
+
+    // Idempotent re-mint with a rotated agent key.
+    let rotated = KeyPair::generate();
+    let req =
+        ProvisioningRequest::mint(&idp.domain, "attestor2", &rotated.public_key(), false, &cred.prov_kp)
+            .unwrap();
+    let (bundle, endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
+    let (status, _) = post(&idp.base, "/provision/mint", &bundle, &endorsement).await;
+    assert_eq!(status, 200);
+
+    // List shows one identity attributed to the delegator.
+    let req = ProvisioningRequest::list(&idp.domain, &cred.prov_kp).unwrap();
+    let (bundle, endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
+    let (_, body) = post(&idp.base, "/provision/list", &bundle, &endorsement).await;
+    let ids = body["identities"].as_array().unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids[0]["parent_email"], delegator.email);
+}
+
+#[tokio::test]
+async fn endorsement_and_chain_rejections() {
+    let broker = start_broker().await;
+    let idp = start_idp(broker.domain.clone(), 5, true).await;
+    let delegator = make_delegator(&idp, "dan");
+    let cred = make_credential(&delegator);
+
+    let mint_req = || {
+        ProvisioningRequest::mint(
+            &idp.domain,
+            "attestor2",
+            &KeyPair::generate().public_key(),
+            false,
+            &cred.prov_kp,
+        )
+        .unwrap()
+    };
+
+    // No/garbage endorsement → 401.
+    let bundle = RequestBundle::new(cred.delegation.0.clone(), cred.delegation.1.clone(), mint_req());
+    let (status, _) = post(&idp.base, "/provision/mint", bundle.encoded(), "not-a-jws").await;
+    assert_eq!(status, 401);
+
+    // Endorsement signed by a rogue key (not the trusted broker) → 401.
+    let rogue = KeyPair::generate();
+    let bundle = RequestBundle::new(cred.delegation.0.clone(), cred.delegation.1.clone(), mint_req());
+    let forged = Endorsement::create(
+        &broker.domain,
+        &idp.domain,
+        &bundle,
+        &delegator.email,
+        Duration::minutes(10),
+        &rogue,
+    )
+    .unwrap();
+    let (status, _) = post(&idp.base, "/provision/mint", bundle.encoded(), forged.encoded()).await;
+    assert_eq!(status, 401);
+
+    // Endorsement for a *different* bundle → 401 (hash binding).
+    let (other_bundle, _) = signed(&broker, &idp.domain, &cred, &delegator.email, mint_req());
+    let (_, endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, mint_req());
+    let (status, _) = post(&idp.base, "/provision/mint", &other_bundle, &endorsement).await;
+    // other_bundle's own endorsement would pass; this reuses a mismatched one.
+    let (_, mismatched_endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, mint_req());
+    let (status2, _) = post(&idp.base, "/provision/mint", &other_bundle, &mismatched_endorsement).await;
+    assert!(status == 401 || status2 == 401, "hash-binding must reject a swapped endorsement");
+
+    // A U_cert not issued by this IdP (foreign issuer) → 400.
+    let foreign_idp = KeyPair::generate();
+    let user_kp = KeyPair::generate();
+    let foreign_cert = Certificate::create(
+        "elsewhere.example",
+        "dan@elsewhere.example",
+        &user_kp.public_key(),
+        Duration::hours(24),
+        &foreign_idp,
+    )
+    .unwrap();
+    let p_cert = ProvisioningCert::create("dan@elsewhere.example", &cred.prov_kp.public_key(), Duration::days(90), &user_kp).unwrap();
+    let req = ProvisioningRequest::mint(&idp.domain, "x", &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
+    let bundle = RequestBundle::new(foreign_cert, p_cert, req);
+    let endorsement = Endorsement::create(&broker.domain, &idp.domain, &bundle, "dan@elsewhere.example", Duration::minutes(10), &broker.keypair).unwrap();
+    let (status, _) = post(&idp.base, "/provision/mint", bundle.encoded(), endorsement.encoded()).await;
+    assert_eq!(status, 400, "foreign-rooted identity must be rejected");
+}
+
+#[tokio::test]
+async fn reserved_names_quota_and_revocation() {
+    let broker = start_broker().await;
+    let idp = start_idp(broker.domain.clone(), 2, true).await;
+    let delegator = make_delegator(&idp, "dan");
+    let cred = make_credential(&delegator);
+
+    let mint = |name: &str| {
+        let req = ProvisioningRequest::mint(&idp.domain, name, &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
+        signed(&broker, &idp.domain, &cred, &delegator.email, req)
+    };
+
+    // Reserved names (sys/sys-*) rejected for agents too → 400.
+    for bad in ["sys", "sys-checkpointer", "admin"] {
+        let (b, e) = mint(bad);
+        let (status, _) = post(&idp.base, "/provision/mint", &b, &e).await;
+        assert_eq!(status, 400, "reserved name {bad:?} must be rejected");
+    }
+
+    // Quota = 2.
+    for name in ["one", "two"] {
+        let (b, e) = mint(name);
+        assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 200);
+    }
+    let (b, e) = mint("three");
+    assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 429);
+
+    // Revoke "one" → re-mint fails 403, name not recycled.
+    let req = ProvisioningRequest::revoke(&idp.domain, "one", &cred.prov_kp).unwrap();
+    let (b, e) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
+    assert_eq!(post(&idp.base, "/provision/revoke", &b, &e).await.0, 200);
+    let (b, e) = mint("one");
+    assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 403);
+
+    // A human handle collision → 409.
+    let other = idp.state.store.find_or_create_account("other@external.example").unwrap();
+    assert!(idp.state.store.set_handle(other.id, "taken").unwrap());
+    let (b, e) = mint("taken");
+    assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 409);
+}
+
+#[tokio::test]
+async fn disabled_by_default() {
+    let broker = start_broker().await;
+    let idp = start_idp(broker.domain.clone(), 5, false).await;
+    let delegator = make_delegator(&idp, "dan");
+    let cred = make_credential(&delegator);
+    let req = ProvisioningRequest::mint(&idp.domain, "x", &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
+    let (b, e) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
+    assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 404);
 }

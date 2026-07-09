@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 # BrowserID protocol primitives (certificate signing, assertion verify, discovery).
 # Pinned git dependency on browserid-ng (a59df64 = the agent-native l8lw release).
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "a59df6451ceb8af54b7c6a82fc6852b0868900eb" }
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "480a4be47465cab0626e6366b75ee536504a3896" }
 
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
@@ -34,11 +34,6 @@ anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-sha2 = "0.10"
-rand = "0.8"
 
 [dev-dependencies]
-# The agent SDK, used to conformance-test this IdP's implementation of the agent
-# provisioning spec (browserid-ng docs/specs/agent-provisioning-and-grant-api.md).
-browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "a59df6451ceb8af54b7c6a82fc6852b0868900eb" }
 tempfile = "3"

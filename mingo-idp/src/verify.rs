@@ -60,6 +60,20 @@ impl SupportDocumentFetcher for HttpFetcher {
     }
 }
 
+/// Fetch a broker/IdP domain's published signing key via `.well-known/browserid`
+/// discovery — used to verify provisioning endorsements from the trusted broker
+/// (mingo-ua8w / tdxf). Same HTTP-discovery path as assertion verification.
+pub fn fetch_domain_pubkey(
+    domain: &str,
+    require_https: bool,
+) -> Result<browserid_core::PublicKey, String> {
+    let fetcher = HttpFetcher::new(require_https);
+    let config = DiscoveryConfig::default();
+    discover(domain, &fetcher, &config)
+        .map(|r| r.document.public_key)
+        .map_err(|e| format!("discover {}: {}", domain, e))
+}
+
 /// Verify a backed assertion and return the certified external email on success.
 ///
 /// Authorization (mirrors Persona / the broker): the cert issuer must be either

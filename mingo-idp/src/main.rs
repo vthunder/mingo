@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let spa_dir = config.spa_dir.clone();
     let bind = config.bind.clone();
 
-    let state: Shared = Arc::new(AppState { keypair, store, config });
+    let state: Shared = Arc::new(AppState::new(keypair, store, config));
     let app = build_router(state, &static_dir, &spa_dir);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;

@@ -1,50 +1,38 @@
-//! Headless agent provisioning (mingo-ua8w) — mingo-idp's implementation of
-//! the agent provisioning spec (browserid-ng
-//! `docs/specs/agent-provisioning-and-grant-api.md`, §4).
+//! Delegation-chain agent provisioning — mingo-idp as a target IdP (tdxf,
+//! spec v0.2 §4.3-4.5). Key management lives at the broker (browserid.me);
+//! mingo-idp only *mints*, verifying a dual-signed request:
 //!
-//! Two route families, both gated on `config.agent_provisioning`:
+//! - the user-signed delegation chain `U_cert~P_cert~R`, where `U_cert` is a
+//!   `<handle>@mingo.place` identity cert **we issued** (verified against our
+//!   own key, with signing-time semantics), and
+//! - a fresh endorsement from the trusted broker (`config.broker_domain`),
+//!   whose key we discover via `.well-known/browserid`.
 //!
-//! - `/agent_keys*` — browser-side API-key management (mingo session + CSRF).
-//!   A key's attribution root is the account's `external_email` — the same
-//!   parent the cm8z `subordinate_to` machinery reports for human handles.
-//! - `/agent/*` — agent-side REST (`Authorization: Bearer bidk_…`): mint
-//!   `<name>@mingo.place` identities + certs for the agent's own keypair,
-//!   re-mint, list, revoke. Names share the human handle namespace (one
-//!   `<local>@<domain>` space) and go through `normalize_handle`, so the
-//!   `sys`/`sys-*` reservations hold for agents too.
-//!
-//! Error bodies follow the spec: `{"success": false, "reason": "…"}` with the
-//! spec's status contract (401/403/404/409/429). This replaces
-//! `/admin/provision` as the agent path; that endpoint stays for admin seeding.
+//! The agent identity `<name>@mingo.place` shares the human handle namespace
+//! (so `sys`/`sys-*` reservations apply), is attributed to the delegating
+//! identity, and re-mints/​revokes are ordinary signed requests. There is no
+//! bearer credential and no per-IdP key storage.
 
 use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use base64::Engine;
 use browserid_core::keys::PublicKey;
+use browserid_core::provisioning::{Action, Endorsement, RequestBundle, VerifiedRequest};
 use browserid_core::Certificate;
-use rand::RngCore;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tower_cookies::Cookies;
+use serde::Deserialize;
 
-use crate::routes::{normalize_handle, PubKeyJson, Shared, SESSION_COOKIE};
-use crate::store::ApiKey;
+use crate::routes::{normalize_handle, Shared};
 
-const API_KEY_PREFIX: &str = "bidk_";
-
-/// Spec-shaped errors: `{"success": false, "reason"}` + the §4 status contract.
+/// Spec-shaped errors with the §4 status contract.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("agent provisioning is not enabled")]
     Disabled,
-    #[error("invalid or revoked API key")]
-    InvalidApiKey,
-    #[error("not authenticated")]
-    NotAuthenticated,
-    #[error("invalid CSRF token")]
-    InvalidCsrf,
+    #[error("invalid provisioning request: {0}")]
+    BadRequest(String),
+    #[error("not endorsed: {0}")]
+    NotEndorsed(String),
     #[error("identity revoked")]
     IdentityRevoked,
     #[error("not found")]
@@ -53,8 +41,6 @@ pub enum AgentError {
     NameTaken,
     #[error("agent identity quota exceeded")]
     QuotaExceeded,
-    #[error("{0}")]
-    BadRequest(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -68,15 +54,15 @@ impl From<rusqlite::Error> for AgentError {
 impl IntoResponse for AgentError {
     fn into_response(self) -> Response {
         let status = match &self {
-            // Disabled and unknown/unowned are indistinguishable per spec §4.
+            // Disabled and unknown/unowned are indistinguishable (spec §4).
             AgentError::Disabled | AgentError::NotFound => StatusCode::NOT_FOUND,
-            AgentError::InvalidApiKey | AgentError::NotAuthenticated => StatusCode::UNAUTHORIZED,
-            AgentError::InvalidCsrf | AgentError::IdentityRevoked => StatusCode::FORBIDDEN,
+            AgentError::NotEndorsed(_) => StatusCode::UNAUTHORIZED,
+            AgentError::IdentityRevoked => StatusCode::FORBIDDEN,
             AgentError::NameTaken => StatusCode::CONFLICT,
             AgentError::QuotaExceeded => StatusCode::TOO_MANY_REQUESTS,
             AgentError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AgentError::Internal(msg) => {
-                tracing::error!("agent api internal error: {}", msg);
+                tracing::error!("agent provisioning internal error: {}", msg);
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         };
@@ -85,269 +71,182 @@ impl IntoResponse for AgentError {
     }
 }
 
-fn hash_api_key(secret: &str) -> String {
-    let digest = Sha256::digest(secret.as_bytes());
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
+#[derive(Deserialize)]
+pub struct ProvisionRequest {
+    pub request_bundle: String,
+    pub endorsement: String,
 }
 
-fn generate_api_key_secret() -> String {
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!(
-        "{}{}",
-        API_KEY_PREFIX,
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-    )
-}
-
-fn generate_agent_name() -> String {
-    let mut bytes = [0u8; 4];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!("agent-{}", bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>())
-}
-
-fn require_enabled(st: &Shared) -> Result<(), AgentError> {
-    if st.config.agent_provisioning {
-        Ok(())
-    } else {
-        Err(AgentError::Disabled)
+/// Resolve the trusted broker's signing key, discovering + caching it. The
+/// discovery fetch is blocking (`reqwest::blocking`), so run it off the async
+/// runtime.
+async fn broker_key(st: &Shared) -> Result<PublicKey, AgentError> {
+    if let Some(k) = st.broker_pubkey.lock().unwrap().clone() {
+        return Ok(k);
     }
-}
-
-/// Session + CSRF gate for the key-management endpoints.
-fn require_session_csrf(st: &Shared, cookies: &Cookies, csrf: &str) -> Result<i64, AgentError> {
-    let sid = cookies
-        .get(SESSION_COOKIE)
-        .map(|c| c.value().to_string())
-        .ok_or(AgentError::NotAuthenticated)?;
-    let account_id = st
-        .store
-        .account_for_session(&sid)?
-        .ok_or(AgentError::NotAuthenticated)?;
-    let expected = st.store.session_csrf(&sid)?.ok_or(AgentError::NotAuthenticated)?;
-    if csrf != expected {
-        return Err(AgentError::InvalidCsrf);
-    }
-    Ok(account_id)
-}
-
-/// Bearer gate for `/agent/*`: hash the presented secret, load the active key
-/// row, touch `last_used_at` (audit trail).
-fn authenticate_api_key(st: &Shared, headers: &HeaderMap) -> Result<ApiKey, AgentError> {
-    require_enabled(st)?;
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(AgentError::InvalidApiKey)?;
-    let key = st
-        .store
-        .get_api_key_by_hash(&hash_api_key(token))?
-        .ok_or(AgentError::InvalidApiKey)?;
-    if !key.is_active() {
-        return Err(AgentError::InvalidApiKey);
-    }
-    st.store.touch_api_key(key.id)?;
+    let broker_domain = st.config.broker_domain.clone();
+    let require_https = !st.config.allow_http_verify;
+    let key = tokio::task::spawn_blocking(move || {
+        crate::verify::fetch_domain_pubkey(&broker_domain, require_https)
+    })
+    .await
+    .map_err(|e| AgentError::Internal(format!("broker key task: {e}")))?
+    .map_err(|e| AgentError::Internal(format!("broker key discovery: {e}")))?;
+    *st.broker_pubkey.lock().unwrap() = Some(key.clone());
     Ok(key)
 }
 
-fn issue_cert(st: &Shared, email: &str, pubkey: &PubKeyJson, ephemeral: bool) -> Result<String, AgentError> {
-    if pubkey.algorithm != "Ed25519" {
+/// Verify a dual-signed provisioning request as the target IdP:
+/// full chain against our own key (we issued `U_cert`) + a fresh endorsement
+/// from the trusted broker bound to this exact bundle. Returns the verified
+/// request and the delegating identity's local handle.
+fn verify_request(
+    st: &Shared,
+    req: &ProvisionRequest,
+    expected: Action,
+    broker_key: &PublicKey,
+) -> Result<(VerifiedRequest, String), AgentError> {
+    if !st.config.agent_provisioning {
+        return Err(AgentError::Disabled);
+    }
+
+    let bundle =
+        RequestBundle::parse(&req.request_bundle).map_err(|e| AgentError::BadRequest(e.to_string()))?;
+
+    // The U_cert must be our own issuance (identity-domain rule): verifying the
+    // chain against our key rejects any foreign-rooted parent.
+    let verified = bundle
+        .verify(&st.keypair.public_key())
+        .map_err(|e| AgentError::BadRequest(e.to_string()))?;
+    if verified.issuer != st.config.domain {
         return Err(AgentError::BadRequest(format!(
-            "unsupported algorithm: {}",
-            pubkey.algorithm
+            "identity is rooted at '{}', not this IdP",
+            verified.issuer
         )));
     }
-    let pk = PublicKey::from_base64(&pubkey.public_key)
-        .map_err(|e| AgentError::BadRequest(format!("invalid public key: {}", e)))?;
-    let validity = if ephemeral {
-        chrono::Duration::hours(1)
-    } else {
-        chrono::Duration::hours(24)
-    };
-    let cert = Certificate::create(&st.config.domain, email, &pk, validity, &st.keypair)
-        .map_err(|e| AgentError::Internal(format!("cert create: {}", e)))?;
-    Ok(cert.encoded().to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Browser-side: API-key management (session + CSRF)
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-pub struct AgentKeyInfo {
-    pub id: i64,
-    pub name: String,
-    pub created_at: i64,
-    pub last_used_at: Option<i64>,
-    pub revoked: bool,
-}
-
-/// GET /agent_keys — list the session account's API keys (never secrets)
-pub async fn list_agent_keys(
-    State(st): State<Shared>,
-    cookies: Cookies,
-) -> Result<Json<serde_json::Value>, AgentError> {
-    require_enabled(&st)?;
-    let sid = cookies
-        .get(SESSION_COOKIE)
-        .map(|c| c.value().to_string())
-        .ok_or(AgentError::NotAuthenticated)?;
-    let account_id = st
-        .store
-        .account_for_session(&sid)?
-        .ok_or(AgentError::NotAuthenticated)?;
-
-    let keys: Vec<AgentKeyInfo> = st
-        .store
-        .list_api_keys(account_id)?
-        .into_iter()
-        .map(|k| AgentKeyInfo {
-            id: k.id,
-            name: k.name,
-            created_at: k.created_at,
-            last_used_at: k.last_used_at,
-            revoked: k.revoked_at.is_some(),
-        })
-        .collect();
-
-    Ok(Json(serde_json::json!({ "success": true, "keys": keys })))
-}
-
-#[derive(Deserialize)]
-pub struct CreateKeyReq {
-    pub csrf: String,
-    pub name: String,
-}
-
-/// POST /agent_keys — mint a key. The secret is returned exactly once. The
-/// attribution root is the account's external_email (no parent choice needed:
-/// a mingo account has exactly one external identity).
-pub async fn create_agent_key(
-    State(st): State<Shared>,
-    cookies: Cookies,
-    Json(req): Json<CreateKeyReq>,
-) -> Result<Json<serde_json::Value>, AgentError> {
-    require_enabled(&st)?;
-    let account_id = require_session_csrf(&st, &cookies, &req.csrf)?;
-
-    let name = req.name.trim();
-    if name.is_empty() || name.len() > 64 {
-        return Err(AgentError::BadRequest("key name must be 1-64 characters".into()));
+    if verified.request.domain != st.config.domain {
+        return Err(AgentError::BadRequest(
+            "request domain does not target this IdP".into(),
+        ));
+    }
+    if verified.request.action != expected {
+        return Err(AgentError::BadRequest(
+            "request action does not match this endpoint".into(),
+        ));
     }
 
-    let secret = generate_api_key_secret();
-    let key = st.store.create_api_key(account_id, name, &hash_api_key(&secret))?;
+    // Endorsement from the trusted broker, fresh, bound to this exact bundle.
+    let endorsement =
+        Endorsement::parse(&req.endorsement).map_err(|e| AgentError::NotEndorsed(e.to_string()))?;
+    endorsement
+        .verify_for(broker_key, &st.config.domain, &bundle)
+        .map_err(|e| AgentError::NotEndorsed(e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "id": key.id,
-        "name": key.name,
-        "api_key": secret,
-    })))
+    // The delegating identity's local part is the mingo handle (dan@mingo.place
+    // ↔ handle "dan").
+    let handle = verified
+        .delegator
+        .split('@')
+        .next()
+        .ok_or_else(|| AgentError::BadRequest("delegator has no local part".into()))?
+        .to_string();
+
+    Ok((verified, handle))
 }
 
-#[derive(Deserialize)]
-pub struct RevokeKeyReq {
-    pub csrf: String,
-    pub id: i64,
+/// Resolve the delegating identity's account (by its handle).
+fn delegator_account(st: &Shared, handle: &str) -> Result<i64, AgentError> {
+    st.store
+        .account_id_for_handle(handle)?
+        .ok_or(AgentError::NotFound)
 }
 
-/// POST /agent_keys/revoke
-pub async fn revoke_agent_key(
+/// POST /provision/mint
+pub async fn mint(
     State(st): State<Shared>,
-    cookies: Cookies,
-    Json(req): Json<RevokeKeyReq>,
+    Json(req): Json<ProvisionRequest>,
 ) -> Result<Json<serde_json::Value>, AgentError> {
-    require_enabled(&st)?;
-    let account_id = require_session_csrf(&st, &cookies, &req.csrf)?;
-    if !st.store.revoke_api_key(account_id, req.id)? {
-        return Err(AgentError::NotFound);
+    if !st.config.agent_provisioning {
+        return Err(AgentError::Disabled);
     }
-    Ok(Json(serde_json::json!({ "success": true })))
-}
+    let bk = broker_key(&st).await?;
+    let (verified, delegator_handle) = verify_request(&st, &req, Action::Mint, &bk)?;
+    let account_id = delegator_account(&st, &delegator_handle)?;
 
-// ---------------------------------------------------------------------------
-// Agent-side: REST provisioning (Bearer-key gated)
-// ---------------------------------------------------------------------------
+    let raw_name = verified
+        .request
+        .name
+        .as_deref()
+        .ok_or_else(|| AgentError::BadRequest("mint requires a name".into()))?;
+    // Same validation + reservations as human handles.
+    let name = normalize_handle(raw_name).map_err(|e| AgentError::BadRequest(e.to_string()))?;
+    let agent_pub = verified
+        .request
+        .agent_key
+        .as_ref()
+        .ok_or_else(|| AgentError::BadRequest("mint requires an agent-key".into()))?;
 
-#[derive(Deserialize)]
-pub struct CreateIdentityReq {
-    pub pubkey: PubKeyJson,
-    pub name: Option<String>,
-}
-
-/// POST /agent/identities — mint (or idempotently re-provision) an agent
-/// identity and issue a certificate for the presented pubkey (spec §4.2)
-pub async fn create_identity(
-    State(st): State<Shared>,
-    headers: HeaderMap,
-    Json(req): Json<CreateIdentityReq>,
-) -> Result<Json<serde_json::Value>, AgentError> {
-    let key = authenticate_api_key(&st, &headers)?;
-
-    // Same validation as human handles (incl. the sys/sys-* reservations —
-    // an agent must never mint a cert attributable to a system principal).
-    let name = match &req.name {
-        Some(raw) => normalize_handle(raw).map_err(|e| AgentError::BadRequest(e.to_string()))?,
-        None => generate_agent_name(),
-    };
-    let email = format!("{}@{}", name, st.config.domain);
-
+    // Mint (or idempotently re-provision) the identity record.
     match st.store.get_agent_identity(&name)? {
-        // Restart case: same account, still active → treat create as re-mint.
-        Some(rec) if rec.account_id == key.account_id => {
+        Some(rec) if rec.account_id == account_id => {
             if !rec.is_active() {
-                // Revocation sticks; a revoked name is not silently revivable.
                 return Err(AgentError::IdentityRevoked);
             }
         }
         Some(_) => return Err(AgentError::NameTaken),
         None => {
-            if st.store.count_active_agent_identities(key.account_id)? >= st.config.agent_quota {
+            if st.store.count_active_agent_identities(account_id)? >= st.config.agent_quota {
                 return Err(AgentError::QuotaExceeded);
             }
-            // False here means a human handle (or a racing insert) owns the name.
-            if !st.store.create_agent_identity(key.account_id, &name)? {
+            if !st.store.create_agent_identity(account_id, &name)? {
                 return Err(AgentError::NameTaken);
             }
         }
     }
 
-    let cert = issue_cert(&st, &email, &req.pubkey, false)?;
-    let subordinate_to = st.store.get_account(key.account_id)?.map(|a| a.external_email);
+    let email = format!("{}@{}", name, st.config.domain);
+    let cert = Certificate::create(
+        &st.config.domain,
+        &email,
+        agent_pub,
+        chrono::Duration::hours(24),
+        &st.keypair,
+    )
+    .map_err(|e| AgentError::Internal(format!("cert create: {e}")))?;
 
-    tracing::info!(email = %email, key_id = key.id, "provisioned agent identity");
-
+    tracing::info!(email = %email, delegator = %verified.delegator, "minted agent identity");
     Ok(Json(serde_json::json!({
         "success": true,
         "email": email,
-        "cert": cert,
-        // Attribution root, same private-channel semantics as /cert_key's
-        // subordinate_to (mingo-cm8z) — never present in the cert itself.
-        "subordinate_to": subordinate_to,
+        "cert": cert.encoded(),
+        // Attribution root = the delegating identity (dan@mingo.place),
+        // carried privately, never in the cert (cm8z semantics).
+        "subordinate_to": verified.delegator,
     })))
 }
 
-/// GET /agent/identities — list the account's agent identities (spec §4.4)
-pub async fn list_identities(
+/// POST /provision/list
+pub async fn list(
     State(st): State<Shared>,
-    headers: HeaderMap,
+    Json(req): Json<ProvisionRequest>,
 ) -> Result<Json<serde_json::Value>, AgentError> {
-    let key = authenticate_api_key(&st, &headers)?;
-    let parent = st.store.get_account(key.account_id)?.map(|a| a.external_email);
+    if !st.config.agent_provisioning {
+        return Err(AgentError::Disabled);
+    }
+    let bk = broker_key(&st).await?;
+    let (verified, delegator_handle) = verify_request(&st, &req, Action::List, &bk)?;
+    let account_id = delegator_account(&st, &delegator_handle)?;
 
     let identities: Vec<serde_json::Value> = st
         .store
-        .list_agent_identities(key.account_id)?
+        .list_agent_identities(account_id)?
         .into_iter()
         .map(|i| {
             serde_json::json!({
                 "email": format!("{}@{}", i.name, st.config.domain),
-                "parent_email": parent,
+                "parent_email": verified.delegator,
                 "active": i.is_active(),
-                "verified_at": chrono::DateTime::from_timestamp(i.created_at, 0)
-                    .map(|t| t.to_rfc3339()),
+                "created_at": chrono::DateTime::from_timestamp(i.created_at, 0).map(|t| t.to_rfc3339()),
             })
         })
         .collect();
@@ -355,87 +254,31 @@ pub async fn list_identities(
     Ok(Json(serde_json::json!({ "success": true, "identities": identities })))
 }
 
-#[derive(Deserialize)]
-pub struct AgentCertReq {
-    pub email: String,
-    pub pubkey: PubKeyJson,
-    #[serde(default)]
-    pub ephemeral: bool,
-}
-
-/// POST /agent/cert — re-mint for an existing agent identity (spec §4.3).
-/// The presented pubkey is what gets certified: the API key is the root
-/// credential, so the agent keypair may rotate freely.
-pub async fn agent_cert(
+/// POST /provision/revoke
+pub async fn revoke(
     State(st): State<Shared>,
-    headers: HeaderMap,
-    Json(req): Json<AgentCertReq>,
+    Json(req): Json<ProvisionRequest>,
 ) -> Result<Json<serde_json::Value>, AgentError> {
-    let key = authenticate_api_key(&st, &headers)?;
-    let rec = owned_agent_identity(&st, &key, &req.email)?;
-    if !rec.is_active() {
-        return Err(AgentError::IdentityRevoked);
+    if !st.config.agent_provisioning {
+        return Err(AgentError::Disabled);
     }
-    let email = format!("{}@{}", rec.name, st.config.domain);
-    let cert = issue_cert(&st, &email, &req.pubkey, req.ephemeral)?;
-    Ok(Json(serde_json::json!({ "success": true, "cert": cert })))
-}
+    let bk = broker_key(&st).await?;
+    let (verified, delegator_handle) = verify_request(&st, &req, Action::Revoke, &bk)?;
+    let account_id = delegator_account(&st, &delegator_handle)?;
 
-#[derive(Deserialize)]
-pub struct RevokeIdentityReq {
-    pub email: String,
-}
+    let raw_name = verified
+        .request
+        .name
+        .as_deref()
+        .ok_or_else(|| AgentError::BadRequest("revoke requires a name".into()))?;
+    let name = normalize_handle(raw_name).map_err(|e| AgentError::BadRequest(e.to_string()))?;
 
-/// POST /agent/identities/revoke — disable an identity (spec §4.5). Re-mints
-/// fail from now on; outstanding certs age out within their TTL (≤24 h).
-pub async fn revoke_identity(
-    State(st): State<Shared>,
-    headers: HeaderMap,
-    Json(req): Json<RevokeIdentityReq>,
-) -> Result<Json<serde_json::Value>, AgentError> {
-    let key = authenticate_api_key(&st, &headers)?;
-    let rec = owned_agent_identity(&st, &key, &req.email)?;
-    st.store.revoke_agent_identity(&rec.name)?;
-    tracing::info!(email = %req.email, key_id = key.id, "revoked agent identity");
+    // Visibility rule: only the delegator's own agent identities are actionable.
+    match st.store.get_agent_identity(&name)? {
+        Some(rec) if rec.account_id == account_id => {}
+        _ => return Err(AgentError::NotFound),
+    }
+    st.store.revoke_agent_identity(&name)?;
+    tracing::info!(name = %name, delegator = %verified.delegator, "revoked agent identity");
     Ok(Json(serde_json::json!({ "success": true })))
-}
-
-/// Resolve `email` to an agent identity owned by the key's account. Unknown
-/// name, foreign domain, someone else's identity, and human handles are all
-/// the same `NotFound` — an API key must never be able to probe or act on
-/// anything outside its own agent namespace (spec §4's visibility rule).
-fn owned_agent_identity(
-    st: &Shared,
-    key: &ApiKey,
-    email: &str,
-) -> Result<crate::store::AgentIdentity, AgentError> {
-    let (local, domain) = email.split_once('@').ok_or(AgentError::NotFound)?;
-    if !domain.eq_ignore_ascii_case(&st.config.domain) {
-        return Err(AgentError::NotFound);
-    }
-    match st.store.get_agent_identity(local)? {
-        Some(rec) if rec.account_id == key.account_id => Ok(rec),
-        _ => Err(AgentError::NotFound),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn api_key_secret_shape_and_hash() {
-        let s = generate_api_key_secret();
-        assert!(s.starts_with(API_KEY_PREFIX));
-        assert_eq!(hash_api_key(&s).len(), 64);
-        assert_ne!(generate_api_key_secret(), s);
-    }
-
-    #[test]
-    fn generated_names_pass_handle_validation() {
-        for _ in 0..20 {
-            let n = generate_agent_name();
-            assert_eq!(normalize_handle(&n).unwrap(), n);
-        }
-    }
 }

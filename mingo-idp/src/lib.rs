@@ -34,13 +34,12 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         .route("/admin/seed", post(routes::admin_seed))
         .route("/admin/provision", post(routes::admin_provision))
         .route("/admin/delete-account", post(routes::admin_delete_account))
-        // Agent provisioning (mingo-ua8w; spec §4) — 404s until
-        // config.agent_provisioning is enabled.
-        .route("/agent_keys", get(agent::list_agent_keys).post(agent::create_agent_key))
-        .route("/agent_keys/revoke", post(agent::revoke_agent_key))
-        .route("/agent/identities", post(agent::create_identity).get(agent::list_identities))
-        .route("/agent/cert", post(agent::agent_cert))
-        .route("/agent/identities/revoke", post(agent::revoke_identity))
+        // Agent provisioning (mingo-ua8w; tdxf spec v0.2 §4.3-4.5) — target-IdP
+        // mint/list/revoke of dual-signed requests. Key management is at the
+        // broker; 404s until config.agent_provisioning is enabled.
+        .route("/provision/mint", post(agent::mint))
+        .route("/provision/list", post(agent::list))
+        .route("/provision/revoke", post(agent::revoke))
         .route_service("/provision", file("provision.html"))
         .route_service("/auth", file("auth.html"))
         .route_service("/provision.js", file("provision.js"))

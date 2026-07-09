@@ -24,26 +24,6 @@ pub struct Account {
     pub handle: Option<String>,
 }
 
-/// A per-account API key (agent provisioning, mingo-ua8w). Only the SHA-256
-/// of the `bidk_…` secret is stored. The attribution root for identities
-/// minted with the key is the owning account's `external_email`.
-#[derive(Debug, Clone)]
-pub struct ApiKey {
-    pub id: i64,
-    pub account_id: i64,
-    pub key_hash: String,
-    pub name: String,
-    pub created_at: i64,
-    pub last_used_at: Option<i64>,
-    pub revoked_at: Option<i64>,
-}
-
-impl ApiKey {
-    pub fn is_active(&self) -> bool {
-        self.revoked_at.is_none()
-    }
-}
-
 /// An agent identity `<name>@<domain>` minted via the provisioning API. Shares
 /// the handle namespace with human handles (one `@<domain>` local-part space).
 #[derive(Debug, Clone)]
@@ -74,16 +54,6 @@ const SCHEMA: &str = r#"
         csrf        TEXT NOT NULL,
         created_at  INTEGER NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS api_keys (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_id    INTEGER NOT NULL,
-        key_hash      TEXT NOT NULL UNIQUE,
-        name          TEXT NOT NULL,
-        created_at    INTEGER NOT NULL,
-        last_used_at  INTEGER,
-        revoked_at    INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id);
     CREATE TABLE IF NOT EXISTS agent_identities (
         name        TEXT PRIMARY KEY,
         account_id  INTEGER NOT NULL,
@@ -270,76 +240,6 @@ impl Store {
     }
 
     // ------------------------------------------------------------------
-    // API keys (agent provisioning, mingo-ua8w)
-    // ------------------------------------------------------------------
-
-    pub fn create_api_key(
-        &self,
-        account_id: i64,
-        name: &str,
-        key_hash: &str,
-    ) -> rusqlite::Result<ApiKey> {
-        let now = Self::now();
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO api_keys (account_id, key_hash, name, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![account_id, key_hash, name, now],
-        )?;
-        Ok(ApiKey {
-            id: conn.last_insert_rowid(),
-            account_id,
-            key_hash: key_hash.to_string(),
-            name: name.to_string(),
-            created_at: now,
-            last_used_at: None,
-            revoked_at: None,
-        })
-    }
-
-    pub fn get_api_key_by_hash(&self, key_hash: &str) -> rusqlite::Result<Option<ApiKey>> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT id, account_id, key_hash, name, created_at, last_used_at, revoked_at
-             FROM api_keys WHERE key_hash = ?1",
-            params![key_hash],
-            api_key_from_row,
-        )
-        .optional()
-    }
-
-    pub fn list_api_keys(&self, account_id: i64) -> rusqlite::Result<Vec<ApiKey>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, account_id, key_hash, name, created_at, last_used_at, revoked_at
-             FROM api_keys WHERE account_id = ?1 ORDER BY id",
-        )?;
-        let keys = stmt
-            .query_map(params![account_id], api_key_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(keys)
-    }
-
-    /// Soft-revoke a key. Scoped to the owning account; Ok(false) if the key
-    /// doesn't exist or belongs to someone else.
-    pub fn revoke_api_key(&self, account_id: i64, key_id: i64) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "UPDATE api_keys SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2 AND account_id = ?3",
-            params![Self::now(), key_id, account_id],
-        )?;
-        Ok(rows > 0)
-    }
-
-    pub fn touch_api_key(&self, key_id: i64) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE api_keys SET last_used_at = ?1 WHERE id = ?2",
-            params![Self::now(), key_id],
-        )?;
-        Ok(())
-    }
-
-    // ------------------------------------------------------------------
     // Agent identities (one namespace with human handles)
     // ------------------------------------------------------------------
 
@@ -404,18 +304,6 @@ impl Store {
         )?;
         Ok(())
     }
-}
-
-fn api_key_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
-    Ok(ApiKey {
-        id: r.get(0)?,
-        account_id: r.get(1)?,
-        key_hash: r.get(2)?,
-        name: r.get(3)?,
-        created_at: r.get(4)?,
-        last_used_at: r.get(5)?,
-        revoked_at: r.get(6)?,
-    })
 }
 
 fn agent_identity_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentIdentity> {
@@ -495,28 +383,6 @@ mod tests {
         s.delete_account_sessions(a.id).unwrap();
         assert_eq!(s.account_for_session(&s1).unwrap(), None);
         assert_eq!(s.account_for_session(&s2).unwrap(), None);
-    }
-
-    #[test]
-    fn api_key_lifecycle() {
-        let s = store();
-        let a = s.find_or_create_account("a@x.com").unwrap();
-        let key = s.create_api_key(a.id, "ci-bot", "hash123").unwrap();
-        assert!(key.is_active());
-
-        let found = s.get_api_key_by_hash("hash123").unwrap().unwrap();
-        assert_eq!(found.id, key.id);
-        assert!(s.get_api_key_by_hash("nope").unwrap().is_none());
-
-        s.touch_api_key(key.id).unwrap();
-        assert!(s.get_api_key_by_hash("hash123").unwrap().unwrap().last_used_at.is_some());
-
-        // Revocation is account-scoped and sticks.
-        let b = s.find_or_create_account("b@x.com").unwrap();
-        assert!(!s.revoke_api_key(b.id, key.id).unwrap());
-        assert!(s.revoke_api_key(a.id, key.id).unwrap());
-        assert!(!s.get_api_key_by_hash("hash123").unwrap().unwrap().is_active());
-        assert_eq!(s.list_api_keys(a.id).unwrap().len(), 1);
     }
 
     #[test]

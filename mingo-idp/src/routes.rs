@@ -21,6 +21,15 @@ pub struct AppState {
     pub keypair: KeyPair,
     pub store: Store,
     pub config: Config,
+    /// Lazily-discovered signing key of the trusted broker (config.broker_domain),
+    /// for verifying provisioning endorsements (tdxf). Cached after first fetch.
+    pub broker_pubkey: std::sync::Mutex<Option<browserid_core::PublicKey>>,
+}
+
+impl AppState {
+    pub fn new(keypair: KeyPair, store: Store, config: Config) -> Self {
+        Self { keypair, store, config, broker_pubkey: std::sync::Mutex::new(None) }
+    }
 }
 
 pub type Shared = Arc<AppState>;
