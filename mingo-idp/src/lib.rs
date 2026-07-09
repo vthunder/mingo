@@ -13,12 +13,13 @@ pub mod verify;
 
 use std::path::Path;
 
-use axum::http::{header, Method};
+use axum::http::{header, HeaderValue, Method};
 use axum::routing::{get, post};
 use axum::Router;
 use tower_cookies::CookieManagerLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 pub use routes::{AppState, Shared};
 
@@ -61,6 +62,13 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         .route_service("/authentication_api.js", file("authentication_api.js"))
         // The mingo-web SPA, served same-origin as a fallback.
         .fallback_service(ServeDir::new(spa_dir).append_index_html_on_directories(true))
+        // Always revalidate served assets. The SPA (app.js) is security-critical
+        // and updates land per deploy; stale cached JS must never silently run.
+        // `no-cache` still allows 304s via etag/last-modified — cheap, never blindly fresh.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ))
         .layer(CookieManagerLayer::new())
         .with_state(state)
 }
