@@ -390,6 +390,18 @@ async function ensureDnssecFresh(domain) {
   return dnssecRefreshInFlight;
 }
 
+// The `iss` claim of a browserid cert (JWT). Attribution requires an on-chain
+// DNSSEC proof for THIS domain — the cert's issuer, which is the email's own
+// domain for a primary IdP (dan@mingo.place → mingo.place) but the BROKER for
+// a fallback-certified email (vthunder@gmail.com → browserid.me). Refreshing
+// the owner's email domain instead would miss the broker's proof entirely.
+function certIssuer(certJwt) {
+  try {
+    const payload = certJwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(payload)).iss || null;
+  } catch { return null; }
+}
+
 // Build → sign → assemble → submit a write. Email-rooted by default (Owner =
 // session email); pass `keyRooted: true` for self-authorizing writes like the
 // /sys/dnssec refresh, which omit Owner so the daemon's L2 gate passes by
@@ -397,13 +409,6 @@ async function ensureDnssecFresh(domain) {
 async function writeContent({ path, id, schema, payload, hlc, prev, owner, contentType, keyRooted }) {
   if (!session.email) { signIn(); return; }
   const wasm = await sbo();
-  // For email-rooted writes, make sure this domain's on-chain DNSSEC proof will
-  // still be valid at inclusion time — refresh it first if not, so attribution
-  // succeeds. Key-rooted writes need no attribution, so they skip this.
-  if (!keyRooted) {
-    const domain = (owner || session.email).split("@")[1];
-    if (domain) await ensureDnssecFresh(domain);
-  }
   const spec = {
     action: "", path, id,
     public_key: "ed25519:" + "00".repeat(32), // overridden by the signer
@@ -415,6 +420,15 @@ async function writeContent({ path, id, schema, payload, hlc, prev, owner, conte
   if (!keyRooted) spec.owner = owner || session.email;
   if (contentType) spec.content_type = contentType;
   const res = await signEnvelope(session.email, spec);
+  // For email-rooted writes, ensure the CERT ISSUER's on-chain DNSSEC proof is
+  // valid through inclusion, so attribution resolves. We use the issuer from
+  // the just-signed cert (not the owner's email domain) so a fallback-certified
+  // email posts /sys/dnssec/<broker>, not /sys/dnssec/<email-domain>. Key-rooted
+  // writes need no attribution and skip this.
+  if (!keyRooted) {
+    const issuer = certIssuer(res.cert) || (owner || session.email).split("@")[1];
+    if (issuer) await ensureDnssecFresh(issuer);
+  }
   const bound = { ...spec, public_key: res.pubkey, auth_cert: res.cert };
   const wire = wasm.assembleWire(bound, res.signature);
   return submitWire(wire);
