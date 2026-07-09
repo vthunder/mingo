@@ -287,6 +287,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "browserid-core"
+version = "0.1.0"
+source = "git+https://github.com/vthunder/browserid-ng?rev=d1bb886da15adc1a1bd09653682c06ec0ad22ce6#d1bb886da15adc1a1bd09653682c06ec0ad22ce6"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "jsonwebtoken",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1540,12 +1556,13 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "browserid-core",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=d1bb886da15adc1a1bd09653682c06ec0ad22ce6)",
  "chrono",
  "reqwest 0.12.25",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tower",
@@ -2158,7 +2175,7 @@ version = "0.1.0"
 source = "git+https://github.com/vthunder/sbo?rev=5855e9926374dce7eac87df9963f6b33093f7a63#5855e9926374dce7eac87df9963f6b33093f7a63"
 dependencies = [
  "base64 0.22.1",
- "browserid-core",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=7d69c948890eb19e6d06daf2c97b68fb66951c9a)",
  "dirs",
  "dnssec-prover",
  "ed25519-dalek",

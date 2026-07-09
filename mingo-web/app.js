@@ -411,27 +411,47 @@ async function writeContent({ path, id, schema, payload, hlc, prev, owner, conte
   const wasm = await sbo();
   const spec = {
     action: "", path, id,
-    public_key: "ed25519:" + "00".repeat(32), // overridden by the signer
+    public_key: "ed25519:" + "00".repeat(32), // set by whichever signer runs
     content_schema: schema,
     payload: Array.from(payload),
     hlc: hlc || `${Date.now()}.0`,
     prev,
   };
-  if (!keyRooted) spec.owner = owner || session.email;
   if (contentType) spec.content_type = contentType;
-  const res = await signEnvelope(session.email, spec);
-  // For email-rooted writes, ensure the CERT ISSUER's on-chain DNSSEC proof is
-  // valid through inclusion, so attribution resolves. We use the issuer from
-  // the just-signed cert (not the owner's email domain) so a fallback-certified
-  // email posts /sys/dnssec/<broker>, not /sys/dnssec/<email-domain>. Key-rooted
-  // writes need no attribution and skip this.
-  if (!keyRooted) {
-    const issuer = certIssuer(res.cert) || (owner || session.email).split("@")[1];
-    if (issuer) await ensureDnssecFresh(issuer);
+
+  // Self-authorizing writes (a /sys/dnssec proof: policy grants create/update to
+  // anyone and the proof attests its own domain) need NO identity — sign with a
+  // throwaway ephemeral key. The effective owner is just that key; the on-chain
+  // proof + policy authorize the write. So we never route it through the broker
+  // signer (which rightly refuses to sign an unowned write as the user).
+  if (keyRooted) {
+    return submitWire(await signLocalAndAssemble(wasm, spec));
   }
+
+  // Email-rooted write: sign with the broker's cert-bound key for the identity.
+  spec.owner = owner || session.email;
+  const res = await signEnvelope(session.email, spec);
+  // Ensure the CERT ISSUER's on-chain DNSSEC proof is valid through inclusion so
+  // attribution resolves — the issuer (from the just-signed cert) is the email's
+  // own domain for a primary, but the BROKER for a fallback-certified email, so
+  // we post /sys/dnssec/<issuer>, not /sys/dnssec/<email-domain>.
+  const issuer = certIssuer(res.cert) || (owner || session.email).split("@")[1];
+  if (issuer) await ensureDnssecFresh(issuer);
   const bound = { ...spec, public_key: res.pubkey, auth_cert: res.cert };
-  const wire = wasm.assembleWire(bound, res.signature);
-  return submitWire(wire);
+  return submitWire(wasm.assembleWire(bound, res.signature));
+}
+
+// Sign a self-authorizing (unowned) envelope with a throwaway Ed25519 key and
+// return the assembled wire. Used for /sys/dnssec proof writes: no identity is
+// asserted (no Owner, no Auth-Cert) — the on-chain proof authorizes it.
+async function signLocalAndAssemble(wasm, spec) {
+  const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const kp = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign"]);
+  const rawPub = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+  const bound = { ...spec, public_key: "ed25519:" + hex(rawPub) };
+  const bytes = wasm.signingBytes(bound);
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, kp.privateKey, bytes));
+  return wasm.assembleWire(bound, hex(sig));
 }
 
 // ---------------------------------------------------------------------------
