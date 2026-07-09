@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 # BrowserID protocol primitives (certificate signing, assertion verify, discovery).
 # Pinned git dependency on browserid-ng (a59df64 = the agent-native l8lw release).
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "480a4be47465cab0626e6366b75ee536504a3896" }
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "d1bb886da15adc1a1bd09653682c06ec0ad22ce6" }
 
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"

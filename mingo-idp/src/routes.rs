@@ -446,17 +446,30 @@ fn handle_is_reserved(h: &str) -> bool {
 }
 
 pub(crate) fn normalize_handle(raw: &str) -> Result<String, AppError> {
+    normalize_name(raw, false)
+}
+
+/// Like [`normalize_handle`] but allows `+` for `<handle>+<suffix>`
+/// subaddressing — agent identities (mingo-ua8w) may use it; human handles
+/// may not. Reservations (`sys`/`sys-*`, …) apply either way.
+pub(crate) fn normalize_agent_name(raw: &str) -> Result<String, AppError> {
+    normalize_name(raw, true)
+}
+
+fn normalize_name(raw: &str, allow_plus: bool) -> Result<String, AppError> {
     let h = raw.trim().to_lowercase();
-    if h.is_empty() || h.len() > 31 {
-        return Err(AppError::InvalidHandle("must be 1–31 chars".into()));
+    let max = if allow_plus { 64 } else { 31 };
+    if h.is_empty() || h.len() > max {
+        return Err(AppError::InvalidHandle(format!("must be 1–{max} chars")));
     }
     let mut chars = h.chars();
     let first = chars.next().unwrap();
     if !first.is_ascii_alphanumeric() {
         return Err(AppError::InvalidHandle("must start with a letter or digit".into()));
     }
-    if !h.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
-        return Err(AppError::InvalidHandle("only a-z 0-9 . _ - allowed".into()));
+    let ok = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') || (allow_plus && c == '+');
+    if !h.chars().all(ok) {
+        return Err(AppError::InvalidHandle("disallowed character in name".into()));
     }
     if handle_is_reserved(&h) {
         return Err(AppError::InvalidHandle("this handle is reserved".into()));

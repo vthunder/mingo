@@ -37,6 +37,7 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         // Agent provisioning (mingo-ua8w; tdxf spec v0.2 §4.3-4.5) — target-IdP
         // mint/list/revoke of dual-signed requests. Key management is at the
         // broker; 404s until config.agent_provisioning is enabled.
+        .route("/provision/reserve", post(agent::reserve))
         .route("/provision/mint", post(agent::mint))
         .route("/provision/list", post(agent::list))
         .route("/provision/revoke", post(agent::revoke))

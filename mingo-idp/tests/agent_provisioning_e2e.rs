@@ -12,7 +12,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use browserid_core::keys::{KeyPair, PublicKey};
 use browserid_core::provisioning::{
-    Endorsement, ProvisioningCert, ProvisioningRequest, RequestBundle,
+    Constraint, Endorsement, ProvisioningCert, ProvisioningRequest, RequestBundle,
 };
 use browserid_core::{Assertion, BackedAssertion, Certificate};
 use chrono::Duration;
@@ -136,10 +136,25 @@ struct Credential {
 }
 
 fn make_credential(delegator: &Delegator) -> Credential {
+    // Broad constraint covering the names the tests mint, plus a pattern.
+    make_credential_with(
+        delegator,
+        Constraint {
+            names: ["attestor2", "x", "one", "two", "three", "taken"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            patterns: vec!["svc+*".into()],
+        },
+    )
+}
+
+fn make_credential_with(delegator: &Delegator, constraint: Constraint) -> Credential {
     let prov_kp = KeyPair::generate();
     let p_cert = ProvisioningCert::create(
         &delegator.email,
         &prov_kp.public_key(),
+        constraint,
         Duration::days(90),
         &delegator.user_kp,
     )
@@ -284,7 +299,7 @@ async fn endorsement_and_chain_rejections() {
         &foreign_idp,
     )
     .unwrap();
-    let p_cert = ProvisioningCert::create("dan@elsewhere.example", &cred.prov_kp.public_key(), Duration::days(90), &user_kp).unwrap();
+    let p_cert = ProvisioningCert::create("dan@elsewhere.example", &cred.prov_kp.public_key(), Constraint::names(["x"]), Duration::days(90), &user_kp).unwrap();
     let req = ProvisioningRequest::mint(&idp.domain, "x", &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
     let bundle = RequestBundle::new(foreign_cert, p_cert, req);
     let endorsement = Endorsement::create(&broker.domain, &idp.domain, &bundle, "dan@elsewhere.example", Duration::minutes(10), &broker.keypair).unwrap();
@@ -342,4 +357,41 @@ async fn disabled_by_default() {
     let req = ProvisioningRequest::mint(&idp.domain, "x", &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
     let (b, e) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
     assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 404);
+}
+
+#[tokio::test]
+async fn constraint_and_reserve() {
+    let broker = start_broker().await;
+    let idp = start_idp(broker.domain.clone(), 10, true).await;
+    let delegator = make_delegator(&idp, "dan");
+    // Bound names + a subaddress pattern.
+    let cred = make_credential_with(
+        &delegator,
+        Constraint { names: vec!["alpha".into(), "beta".into()], patterns: vec!["dan+*".into()] },
+    );
+
+    // Reserve pre-allocates the bound names (no per-request name).
+    let req = ProvisioningRequest::reserve(&idp.domain, &cred.prov_kp).unwrap();
+    let (b, e) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
+    assert_eq!(post(&idp.base, "/provision/reserve", &b, &e).await.0, 200);
+
+    // A reserved name mints fine.
+    let mint = |name: &str| {
+        let r = ProvisioningRequest::mint(&idp.domain, name, &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
+        signed(&broker, &idp.domain, &cred, &delegator.email, r)
+    };
+    let (b, e) = mint("alpha");
+    assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 200);
+
+    // A subaddress under the pattern mints on demand (not reserved).
+    let (b, e) = mint("dan+ci");
+    assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 200);
+
+    // A name outside the constraint is refused (400).
+    let (b, e) = mint("gamma");
+    assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 400);
+
+    // A subaddress NOT under an allowed prefix is refused.
+    let (b, e) = mint("bob+ci");
+    assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 400);
 }

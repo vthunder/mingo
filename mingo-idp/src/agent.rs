@@ -22,7 +22,7 @@ use browserid_core::provisioning::{Action, Endorsement, RequestBundle, VerifiedR
 use browserid_core::Certificate;
 use serde::Deserialize;
 
-use crate::routes::{normalize_handle, Shared};
+use crate::routes::{normalize_agent_name, Shared};
 
 /// Spec-shaped errors with the §4 status contract.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +39,9 @@ pub enum AgentError {
     NotFound,
     #[error("name already taken")]
     NameTaken,
+    /// Reservation collision — carries the unavailable names for UI feedback.
+    #[error("some requested handles are unavailable")]
+    NamesTaken(Vec<String>),
     #[error("agent identity quota exceeded")]
     QuotaExceeded,
     #[error("internal error: {0}")]
@@ -53,12 +56,21 @@ impl From<rusqlite::Error> for AgentError {
 
 impl IntoResponse for AgentError {
     fn into_response(self) -> Response {
+        // Reservation collisions carry the specific unavailable names.
+        if let AgentError::NamesTaken(taken) = &self {
+            let body = Json(serde_json::json!({
+                "success": false,
+                "reason": "some requested handles are unavailable",
+                "taken": taken,
+            }));
+            return (StatusCode::CONFLICT, body).into_response();
+        }
         let status = match &self {
             // Disabled and unknown/unowned are indistinguishable (spec §4).
             AgentError::Disabled | AgentError::NotFound => StatusCode::NOT_FOUND,
             AgentError::NotEndorsed(_) => StatusCode::UNAUTHORIZED,
             AgentError::IdentityRevoked => StatusCode::FORBIDDEN,
-            AgentError::NameTaken => StatusCode::CONFLICT,
+            AgentError::NameTaken | AgentError::NamesTaken(_) => StatusCode::CONFLICT,
             AgentError::QuotaExceeded => StatusCode::TOO_MANY_REQUESTS,
             AgentError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AgentError::Internal(msg) => {
@@ -161,6 +173,41 @@ fn delegator_account(st: &Shared, handle: &str) -> Result<i64, AgentError> {
         .ok_or(AgentError::NotFound)
 }
 
+/// Ensure the agent identity `raw_name` exists for `account_id`, creating it
+/// (quota-checked) if new. Enforces the constraint + name grammar + `sys/sys-*`
+/// reservations. Returns the normalized name. Shared by mint (issues a cert)
+/// and reserve (pre-allocates, no cert).
+fn ensure_identity(
+    st: &Shared,
+    verified: &VerifiedRequest,
+    account_id: i64,
+    raw_name: &str,
+) -> Result<String, AgentError> {
+    let name = normalize_agent_name(raw_name).map_err(|e| AgentError::BadRequest(e.to_string()))?;
+    if !verified.constraint.authorizes(&name) {
+        return Err(AgentError::BadRequest(format!(
+            "'{name}' is not authorized by this key's constraint"
+        )));
+    }
+    match st.store.get_agent_identity(&name)? {
+        Some(rec) if rec.account_id == account_id => {
+            if !rec.is_active() {
+                return Err(AgentError::IdentityRevoked);
+            }
+        }
+        Some(_) => return Err(AgentError::NameTaken),
+        None => {
+            if st.store.count_active_agent_identities(account_id)? >= st.config.agent_quota {
+                return Err(AgentError::QuotaExceeded);
+            }
+            if !st.store.create_agent_identity(account_id, &name)? {
+                return Err(AgentError::NameTaken);
+            }
+        }
+    }
+    Ok(name)
+}
+
 /// POST /provision/mint
 pub async fn mint(
     State(st): State<Shared>,
@@ -178,31 +225,13 @@ pub async fn mint(
         .name
         .as_deref()
         .ok_or_else(|| AgentError::BadRequest("mint requires a name".into()))?;
-    // Same validation + reservations as human handles.
-    let name = normalize_handle(raw_name).map_err(|e| AgentError::BadRequest(e.to_string()))?;
     let agent_pub = verified
         .request
         .agent_key
         .as_ref()
         .ok_or_else(|| AgentError::BadRequest("mint requires an agent-key".into()))?;
 
-    // Mint (or idempotently re-provision) the identity record.
-    match st.store.get_agent_identity(&name)? {
-        Some(rec) if rec.account_id == account_id => {
-            if !rec.is_active() {
-                return Err(AgentError::IdentityRevoked);
-            }
-        }
-        Some(_) => return Err(AgentError::NameTaken),
-        None => {
-            if st.store.count_active_agent_identities(account_id)? >= st.config.agent_quota {
-                return Err(AgentError::QuotaExceeded);
-            }
-            if !st.store.create_agent_identity(account_id, &name)? {
-                return Err(AgentError::NameTaken);
-            }
-        }
-    }
+    let name = ensure_identity(&st, &verified, account_id, raw_name)?;
 
     let email = format!("{}@{}", name, st.config.domain);
     let cert = Certificate::create(
@@ -223,6 +252,44 @@ pub async fn mint(
         // carried privately, never in the cert (cm8z semantics).
         "subordinate_to": verified.delegator,
     })))
+}
+
+/// POST /provision/reserve — pre-allocate the cert's bound `names` (all-or-
+/// nothing) so a later mint can't be refused. Idempotent; consumes quota.
+pub async fn reserve(
+    State(st): State<Shared>,
+    Json(req): Json<ProvisionRequest>,
+) -> Result<Json<serde_json::Value>, AgentError> {
+    if !st.config.agent_provisioning {
+        return Err(AgentError::Disabled);
+    }
+    let bk = broker_key(&st).await?;
+    let (verified, delegator_handle) = verify_request(&st, &req, Action::Reserve, &bk)?;
+    let account_id = delegator_account(&st, &delegator_handle)?;
+
+    // Availability up front (all-or-nothing): collect every name taken by
+    // another account or already a human handle, so the user learns exactly
+    // which handles to change.
+    let names = verified.constraint.names.clone();
+    let mut taken = Vec::new();
+    for raw in &names {
+        let name = normalize_agent_name(raw).map_err(|e| AgentError::BadRequest(e.to_string()))?;
+        let unavailable = match st.store.get_agent_identity(&name)? {
+            Some(rec) => rec.account_id != account_id,
+            None => st.store.account_id_for_handle(&name)?.is_some(),
+        };
+        if unavailable {
+            taken.push(name);
+        }
+    }
+    if !taken.is_empty() {
+        return Err(AgentError::NamesTaken(taken));
+    }
+    for raw in &names {
+        ensure_identity(&st, &verified, account_id, raw)?;
+    }
+    tracing::info!(delegator = %verified.delegator, count = names.len(), "reserved agent identities");
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 /// POST /provision/list
@@ -271,7 +338,7 @@ pub async fn revoke(
         .name
         .as_deref()
         .ok_or_else(|| AgentError::BadRequest("revoke requires a name".into()))?;
-    let name = normalize_handle(raw_name).map_err(|e| AgentError::BadRequest(e.to_string()))?;
+    let name = normalize_agent_name(raw_name).map_err(|e| AgentError::BadRequest(e.to_string()))?;
 
     // Visibility rule: only the delegator's own agent identities are actionable.
     match st.store.get_agent_identity(&name)? {
