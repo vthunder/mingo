@@ -26,6 +26,12 @@ pub struct Config {
     pub admin_token: Option<String>,
     /// Allow plain-HTTP issuer discovery when verifying inbound assertions (dev only).
     pub allow_http_verify: bool,
+    /// Headless agent provisioning (mingo-ua8w; spec: browserid-ng
+    /// docs/specs/agent-provisioning-and-grant-api.md). Off by default;
+    /// `/agent/*` and API-key management 404 until enabled.
+    pub agent_provisioning: bool,
+    /// Per-account cap on active agent identities (the sybil limit).
+    pub agent_quota: usize,
 }
 
 fn home() -> PathBuf {
@@ -60,6 +66,13 @@ impl Config {
             allow_http_verify: std::env::var("MINGO_ALLOW_HTTP")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
+            agent_provisioning: std::env::var("MINGO_AGENT_PROVISIONING")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+            agent_quota: std::env::var("MINGO_AGENT_QUOTA")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
         }
     }
 }

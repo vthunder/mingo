@@ -240,6 +240,12 @@ pub async fn admin_seed(
 // POST /admin/provision  (X-Admin-Token)
 //   { external_email, handle, pubkey: { algorithm, publicKey } }
 //   -> { email, cert, subordinate_to }
+//
+// DEPRECATED as the agent path (mingo-ua8w): agents should use the per-user,
+// API-key-gated `/agent/*` provisioning surface (src/agent.rs; spec in
+// browserid-ng docs/specs/agent-provisioning-and-grant-api.md). This endpoint
+// remains for genesis/admin seeding only.
+//
 // Programmatic provisioning for automation and tests: bind `handle` to
 // `external_email` (like /admin/seed) AND issue a `<handle>@<domain>` cert for
 // `pubkey` (like /cert_key) — all under admin auth, bypassing the interactive
@@ -344,7 +350,7 @@ pub async fn admin_delete_account(
 // --------------------------------------------------------------------------
 // helpers
 // --------------------------------------------------------------------------
-fn require_session(st: &Shared, cookies: &Cookies) -> Result<i64, AppError> {
+pub(crate) fn require_session(st: &Shared, cookies: &Cookies) -> Result<i64, AppError> {
     let sid = cookies.get(SESSION_COOKIE).map(|c| c.value().to_string());
     let sid = sid.ok_or(AppError::NotAuthenticated)?;
     st.store
@@ -430,7 +436,7 @@ fn handle_is_reserved(h: &str) -> bool {
     h == "sys" || h.starts_with("sys-") || RESERVED_HANDLES.contains(&h)
 }
 
-fn normalize_handle(raw: &str) -> Result<String, AppError> {
+pub(crate) fn normalize_handle(raw: &str) -> Result<String, AppError> {
     let h = raw.trim().to_lowercase();
     if h.is_empty() || h.len() > 31 {
         return Err(AppError::InvalidHandle("must be 1–31 chars".into()));

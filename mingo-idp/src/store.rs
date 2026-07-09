@@ -24,28 +24,89 @@ pub struct Account {
     pub handle: Option<String>,
 }
 
+/// A per-account API key (agent provisioning, mingo-ua8w). Only the SHA-256
+/// of the `bidk_…` secret is stored. The attribution root for identities
+/// minted with the key is the owning account's `external_email`.
+#[derive(Debug, Clone)]
+pub struct ApiKey {
+    pub id: i64,
+    pub account_id: i64,
+    pub key_hash: String,
+    pub name: String,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+impl ApiKey {
+    pub fn is_active(&self) -> bool {
+        self.revoked_at.is_none()
+    }
+}
+
+/// An agent identity `<name>@<domain>` minted via the provisioning API. Shares
+/// the handle namespace with human handles (one `@<domain>` local-part space).
+#[derive(Debug, Clone)]
+pub struct AgentIdentity {
+    pub name: String,
+    pub account_id: i64,
+    pub created_at: i64,
+    pub revoked_at: Option<i64>,
+}
+
+impl AgentIdentity {
+    pub fn is_active(&self) -> bool {
+        self.revoked_at.is_none()
+    }
+}
+
+/// Schema, shared by `open()` and the in-memory test constructor.
+const SCHEMA: &str = r#"
+    CREATE TABLE IF NOT EXISTS accounts (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        external_email  TEXT NOT NULL UNIQUE,
+        handle          TEXT UNIQUE,
+        created_at      INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+        id          TEXT PRIMARY KEY,
+        account_id  INTEGER NOT NULL,
+        csrf        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS api_keys (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id    INTEGER NOT NULL,
+        key_hash      TEXT NOT NULL UNIQUE,
+        name          TEXT NOT NULL,
+        created_at    INTEGER NOT NULL,
+        last_used_at  INTEGER,
+        revoked_at    INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id);
+    CREATE TABLE IF NOT EXISTS agent_identities (
+        name        TEXT PRIMARY KEY,
+        account_id  INTEGER NOT NULL,
+        created_at  INTEGER NOT NULL,
+        revoked_at  INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_identities_account ON agent_identities(account_id);
+"#;
+
 impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
         let conn = Connection::open(path)?;
-        conn.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS accounts (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                external_email  TEXT NOT NULL UNIQUE,
-                handle          TEXT UNIQUE,
-                created_at      INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-                id          TEXT PRIMARY KEY,
-                account_id  INTEGER NOT NULL,
-                csrf        TEXT NOT NULL,
-                created_at  INTEGER NOT NULL
-            );
-            "#,
-        )?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Self { conn: Mutex::new(conn) })
+    }
+
+    /// In-memory store (tests).
+    pub fn open_in_memory() -> rusqlite::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(SCHEMA)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -90,10 +151,22 @@ impl Store {
     }
 
     /// Claim a handle for an account. Returns Ok(false) if the handle is taken by
-    /// another account. Idempotent if the account already owns it.
+    /// another account — or by an agent identity: human handles and agent names
+    /// share one `<local>@<domain>` namespace, so each must check the other.
+    /// Idempotent if the account already owns it.
     pub fn set_handle(&self, account_id: i64, handle: &str) -> rusqlite::Result<bool> {
         let handle = handle.to_lowercase();
         let conn = self.conn.lock().unwrap();
+        let agent_taken: Option<i64> = conn
+            .query_row(
+                "SELECT account_id FROM agent_identities WHERE name = ?1",
+                params![handle],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if agent_taken.is_some() {
+            return Ok(false);
+        }
         let owner: Option<i64> = conn
             .query_row(
                 "SELECT id FROM accounts WHERE handle = ?1",
@@ -183,6 +256,175 @@ impl Store {
             None => Ok(None),
         }
     }
+
+    /// The CSRF token bound to a session (TTL not re-checked here; callers
+    /// resolve the session via `account_for_session` first).
+    pub fn session_csrf(&self, session_id: &str) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT csrf FROM sessions WHERE id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .optional()
+    }
+
+    // ------------------------------------------------------------------
+    // API keys (agent provisioning, mingo-ua8w)
+    // ------------------------------------------------------------------
+
+    pub fn create_api_key(
+        &self,
+        account_id: i64,
+        name: &str,
+        key_hash: &str,
+    ) -> rusqlite::Result<ApiKey> {
+        let now = Self::now();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO api_keys (account_id, key_hash, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![account_id, key_hash, name, now],
+        )?;
+        Ok(ApiKey {
+            id: conn.last_insert_rowid(),
+            account_id,
+            key_hash: key_hash.to_string(),
+            name: name.to_string(),
+            created_at: now,
+            last_used_at: None,
+            revoked_at: None,
+        })
+    }
+
+    pub fn get_api_key_by_hash(&self, key_hash: &str) -> rusqlite::Result<Option<ApiKey>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, account_id, key_hash, name, created_at, last_used_at, revoked_at
+             FROM api_keys WHERE key_hash = ?1",
+            params![key_hash],
+            api_key_from_row,
+        )
+        .optional()
+    }
+
+    pub fn list_api_keys(&self, account_id: i64) -> rusqlite::Result<Vec<ApiKey>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, key_hash, name, created_at, last_used_at, revoked_at
+             FROM api_keys WHERE account_id = ?1 ORDER BY id",
+        )?;
+        let keys = stmt
+            .query_map(params![account_id], api_key_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(keys)
+    }
+
+    /// Soft-revoke a key. Scoped to the owning account; Ok(false) if the key
+    /// doesn't exist or belongs to someone else.
+    pub fn revoke_api_key(&self, account_id: i64, key_id: i64) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE api_keys SET revoked_at = COALESCE(revoked_at, ?1) WHERE id = ?2 AND account_id = ?3",
+            params![Self::now(), key_id, account_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn touch_api_key(&self, key_id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE api_keys SET last_used_at = ?1 WHERE id = ?2",
+            params![Self::now(), key_id],
+        )?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Agent identities (one namespace with human handles)
+    // ------------------------------------------------------------------
+
+    /// Create an agent identity. Returns Ok(false) if the name is taken —
+    /// by any human handle or by an agent identity (including a revoked one:
+    /// revoked names are never recycled).
+    pub fn create_agent_identity(&self, account_id: i64, name: &str) -> rusqlite::Result<bool> {
+        let name = name.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let handle_taken: Option<i64> = conn
+            .query_row("SELECT id FROM accounts WHERE handle = ?1", params![name], |r| r.get(0))
+            .optional()?;
+        if handle_taken.is_some() {
+            return Ok(false);
+        }
+        let rows = conn.execute(
+            "INSERT OR IGNORE INTO agent_identities (name, account_id, created_at) VALUES (?1, ?2, ?3)",
+            params![name, account_id, Self::now()],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn get_agent_identity(&self, name: &str) -> rusqlite::Result<Option<AgentIdentity>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT name, account_id, created_at, revoked_at FROM agent_identities WHERE name = ?1",
+            params![name.to_lowercase()],
+            agent_identity_from_row,
+        )
+        .optional()
+    }
+
+    pub fn list_agent_identities(&self, account_id: i64) -> rusqlite::Result<Vec<AgentIdentity>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, account_id, created_at, revoked_at FROM agent_identities
+             WHERE account_id = ?1 ORDER BY created_at, name",
+        )?;
+        let ids = stmt
+            .query_map(params![account_id], agent_identity_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    pub fn count_active_agent_identities(&self, account_id: i64) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_identities WHERE account_id = ?1 AND revoked_at IS NULL",
+            params![account_id],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// Soft-revoke an agent identity: re-mints fail from now on; the name is
+    /// never recycled. Idempotent.
+    pub fn revoke_agent_identity(&self, name: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agent_identities SET revoked_at = COALESCE(revoked_at, ?1) WHERE name = ?2",
+            params![Self::now(), name.to_lowercase()],
+        )?;
+        Ok(())
+    }
+}
+
+fn api_key_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
+    Ok(ApiKey {
+        id: r.get(0)?,
+        account_id: r.get(1)?,
+        key_hash: r.get(2)?,
+        name: r.get(3)?,
+        created_at: r.get(4)?,
+        last_used_at: r.get(5)?,
+        revoked_at: r.get(6)?,
+    })
+}
+
+fn agent_identity_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentIdentity> {
+    Ok(AgentIdentity {
+        name: r.get(0)?,
+        account_id: r.get(1)?,
+        created_at: r.get(2)?,
+        revoked_at: r.get(3)?,
+    })
 }
 
 #[cfg(test)]
@@ -190,23 +432,8 @@ mod tests {
     use super::*;
 
     fn store() -> Store {
-        // In-memory DB per test.
-        Store { conn: Mutex::new(Connection::open_in_memory().unwrap()) }
-            .init_schema()
-    }
-
-    impl Store {
-        fn init_schema(self) -> Self {
-            self.conn
-                .lock()
-                .unwrap()
-                .execute_batch(
-                    "CREATE TABLE accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, external_email TEXT NOT NULL UNIQUE, handle TEXT UNIQUE, created_at INTEGER NOT NULL);
-                     CREATE TABLE sessions (id TEXT PRIMARY KEY, account_id INTEGER NOT NULL, csrf TEXT NOT NULL, created_at INTEGER NOT NULL);",
-                )
-                .unwrap();
-            self
-        }
+        // In-memory DB per test, real schema.
+        Store::open_in_memory().unwrap()
     }
 
     #[test]
@@ -268,6 +495,55 @@ mod tests {
         s.delete_account_sessions(a.id).unwrap();
         assert_eq!(s.account_for_session(&s1).unwrap(), None);
         assert_eq!(s.account_for_session(&s2).unwrap(), None);
+    }
+
+    #[test]
+    fn api_key_lifecycle() {
+        let s = store();
+        let a = s.find_or_create_account("a@x.com").unwrap();
+        let key = s.create_api_key(a.id, "ci-bot", "hash123").unwrap();
+        assert!(key.is_active());
+
+        let found = s.get_api_key_by_hash("hash123").unwrap().unwrap();
+        assert_eq!(found.id, key.id);
+        assert!(s.get_api_key_by_hash("nope").unwrap().is_none());
+
+        s.touch_api_key(key.id).unwrap();
+        assert!(s.get_api_key_by_hash("hash123").unwrap().unwrap().last_used_at.is_some());
+
+        // Revocation is account-scoped and sticks.
+        let b = s.find_or_create_account("b@x.com").unwrap();
+        assert!(!s.revoke_api_key(b.id, key.id).unwrap());
+        assert!(s.revoke_api_key(a.id, key.id).unwrap());
+        assert!(!s.get_api_key_by_hash("hash123").unwrap().unwrap().is_active());
+        assert_eq!(s.list_api_keys(a.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn agent_identities_share_the_handle_namespace() {
+        let s = store();
+        let a = s.find_or_create_account("a@x.com").unwrap();
+        let b = s.find_or_create_account("b@x.com").unwrap();
+
+        // Human handle blocks an agent name…
+        assert!(s.set_handle(a.id, "dan").unwrap());
+        assert!(!s.create_agent_identity(b.id, "dan").unwrap());
+        // …and an agent name blocks a human handle.
+        assert!(s.create_agent_identity(a.id, "attestor").unwrap());
+        assert!(!s.set_handle(b.id, "attestor").unwrap());
+
+        // Duplicate agent name (any account, even the owner) is not re-creatable.
+        assert!(!s.create_agent_identity(a.id, "attestor").unwrap());
+        assert!(!s.create_agent_identity(b.id, "attestor").unwrap());
+
+        // Quota counting + revocation semantics.
+        assert_eq!(s.count_active_agent_identities(a.id).unwrap(), 1);
+        s.revoke_agent_identity("attestor").unwrap();
+        assert_eq!(s.count_active_agent_identities(a.id).unwrap(), 0);
+        assert!(!s.get_agent_identity("attestor").unwrap().unwrap().is_active());
+        // Revoked names are never recycled.
+        assert!(!s.create_agent_identity(a.id, "attestor").unwrap());
+        assert!(!s.set_handle(b.id, "attestor").unwrap());
     }
 
     #[test]

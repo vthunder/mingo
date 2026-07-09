@@ -1,11 +1,11 @@
 ---
 # mingo-ua8w
 title: Use agent-native browserid for the SBO attestor + service agents (followup)
-status: todo
+status: in-progress
 type: task
 priority: high
 created_at: 2026-07-08T00:04:32Z
-updated_at: 2026-07-08T22:24:10Z
+updated_at: 2026-07-09T07:39:24Z
 parent: mingo-sux8
 ---
 
@@ -43,8 +43,8 @@ Upstream shipped: browserid-ng l8lw is complete (REST spec at browserid-ng/docs/
 
 Full plan: **docs/plans/2026-07-09-agent-native-attestor-plan.md**. Recommendation: mingo-idp implements the provisioning spec itself (attestor = `<name>@mingo.place`, existing on-chain machinery unchanged) rather than blocking on foreign-domain (@browserid.me) identity support, which moves to Phase 4 / its own bean.
 
-- [ ] Phase 1: mingo-idp implements spec §4 — api_keys + agent_identities tables, /agent/* routes, session-gated key minting, quota; deprecate /admin/provision as the agent path
-- [ ] Phase 1: conformance test — browserid-agent SDK e2e against mingo-idp
+- [x] Phase 1: mingo-idp implements spec §4 — api_keys + agent_identities tables (one namespace with human handles, sys/sys-* reserved for agents too), /agent/* routes with the spec status contract, session+CSRF-gated /agent_keys minting, quota (MINGO_AGENT_PROVISIONING / MINGO_AGENT_QUOTA); /admin/provision marked deprecated as the agent path
+- [x] Phase 1: conformance test — browserid-agent SDK e2e against mingo-idp (5 tests: full flow incl. persist/revoke, name rules + cross-namespace collisions, quota + auth rejections + visibility rule, disabled/CSRF gates, rotated-keypair re-mint verifying against the IdP key)
 - [ ] Phase 2: `sbo id provision-agent` one-shot (browserid-agent crate → cert → DNSSEC evidence → key-rooted claim_name_attributed → submit; idempotent)
 - [ ] Phase 2: entrypoint provision-if-needed replaces SBO_ATTEST_KEY hand-seeding
 - [ ] Phase 3: go live co-located on da.sandmill.org (mingo-02ta option a), verify attestation flow + fast-sync backer counting
