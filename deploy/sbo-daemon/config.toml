@@ -54,11 +54,16 @@ snapshots_dir = "/data/snapshots"
 # pipeline but is not operationally independent. entrypoint.sh writes the key
 # file from SBO_ATTEST_KEY, like the checkpointer.
 #
-# Identity setup (one-time, agent-native — mingo-ua8w): mint an API key at
-# mingo.place (signed in, POST /agent_keys), then claim the key-rooted name:
-#   SBO_AGENT_API_KEY=bidk_… sbo id provision-agent <name> sbo+raw://avail:turing:506/
-# using the SAME key as SBO_ATTEST_KEY. After that claim, `attestor = "<name>"`
-# writes are authorized by signature alone (no browserid at runtime).
+# Identity setup (one-time, agent-native — mingo-ua8w / delegation chain):
+#   1. At https://browserid.me/agents (signed in with your mingo.place identity),
+#      create an agent key delegated from it → download the credential JSON.
+#   2. Claim the key-rooted name using the SAME key as SBO_ATTEST_KEY:
+#        SBO_AGENT_CREDENTIAL=cred.json \
+#          sbo id provision-agent <name> sbo+raw://avail:turing:506/
+#      (broker + IdP come from the credential; browserid.me endorses, mingo.place
+#      mints the <name>@mingo.place cert, then the name is claimed key-rooted.)
+# After that claim, `attestor = "<name>"` writes are authorized by signature
+# alone (no browserid at runtime); the credential is only needed to re-provision.
 # [attest]
 # enabled = true
 # key_file = "/data/attest-key.json"
