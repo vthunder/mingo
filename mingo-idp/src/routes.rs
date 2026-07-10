@@ -76,12 +76,17 @@ pub async fn session_from_assertion(
     let require_https = !st.config.allow_http_verify;
     let assertion = req.assertion;
 
-    let email = tokio::task::spawn_blocking(move || {
+    let verified = tokio::task::spawn_blocking(move || {
         verify_external_assertion(&assertion, &audience, &broker, require_https)
     })
     .await
     .map_err(|e| AppError::Internal(format!("verify task: {}", e)))?
     .map_err(AppError::InvalidAssertion)?;
+    let email = verified.email;
+    if let Some((parent, scopes)) = &verified.agent {
+        tracing::info!(agent = %email, parent = %parent, ?scopes,
+            "agent session (warrant-backed)");
+    }
 
     reject_own_domain(&email, &st.config.domain)?;
 

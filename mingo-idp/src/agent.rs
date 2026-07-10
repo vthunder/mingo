@@ -234,9 +234,13 @@ pub async fn mint(
     let name = ensure_identity(&st, &verified, account_id, raw_name)?;
 
     let email = format!("{}@{}", name, st.config.domain);
-    let cert = Certificate::create(
+    // v0.4: agent certificates are typed and carry issuer-set attribution
+    // (agent.parent = the delegator). Presentations additionally require a
+    // user-signed warrant for the RP's audience (spec §5).
+    let cert = Certificate::create_agent(
         &st.config.domain,
         &email,
+        &verified.delegator,
         agent_pub,
         chrono::Duration::hours(24),
         &st.keypair,

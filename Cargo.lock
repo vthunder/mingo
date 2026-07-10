@@ -289,7 +289,7 @@ dependencies = [
 [[package]]
 name = "browserid-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=d1bb886da15adc1a1bd09653682c06ec0ad22ce6#d1bb886da15adc1a1bd09653682c06ec0ad22ce6"
+source = "git+https://github.com/vthunder/browserid-ng?rev=a849ade#a849ade511651e4aa7330d0ed4dcc829ee0a160c"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1556,7 +1556,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=d1bb886da15adc1a1bd09653682c06ec0ad22ce6)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=a849ade)",
  "chrono",
  "reqwest 0.12.25",
  "rusqlite",

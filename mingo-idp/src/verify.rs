@@ -70,21 +70,34 @@ pub fn fetch_domain_pubkey(
     let fetcher = HttpFetcher::new(require_https);
     let config = DiscoveryConfig::default();
     discover(domain, &fetcher, &config)
-        .map(|r| r.document.public_key)
-        .map_err(|e| format!("discover {}: {}", domain, e))
+        .map_err(|e| format!("discover {}: {}", domain, e))?
+        .document
+        .public_key
+        .ok_or_else(|| format!("{} published no public key", domain))
 }
 
-/// Verify a backed assertion and return the certified external email on success.
+/// A verified external presentation: the certified email, plus agent
+/// attribution when it was a warrant-backed agent presentation (v0.4).
+pub struct VerifiedExternal {
+    pub email: String,
+    /// `Some((parent, scopes))` iff the presenter is an agent — its
+    /// delegator authorized it at exactly this audience via a warrant.
+    pub agent: Option<(String, Vec<String>)>,
+}
+
+/// Verify a backed assertion and return the certified external identity.
 ///
 /// Authorization (mirrors Persona / the broker): the cert issuer must be either
 /// the trusted broker, the email's own domain (native primary), or a domain the
-/// email's domain delegates to.
+/// email's domain delegates to. Agent presentations (typed cert + warrant,
+/// spec v0.4 §5.3) verify the user-signed warrant against this audience —
+/// parse is fail-closed, so a warrant-less agent cert never gets this far.
 pub fn verify_external_assertion(
     assertion: &str,
     audience: &str,
     trusted_broker: &str,
     require_https: bool,
-) -> Result<String, String> {
+) -> Result<VerifiedExternal, String> {
     let fetcher = HttpFetcher::new(require_https);
     let config = DiscoveryConfig::default();
 
@@ -130,9 +143,26 @@ pub fn verify_external_assertion(
     let issuer_key = discover(&issuer, &fetcher, &config)
         .map_err(|e| format!("discover issuer {}: {}", issuer, e))?
         .document
-        .public_key;
+        .public_key
+        .ok_or_else(|| format!("issuer {} published no public key", issuer))?;
     cert.verify(&issuer_key)
         .map_err(|e| format!("certificate signature invalid: {}", e))?;
 
-    Ok(email)
+    // Agent presentation: the warrant is load-bearing (spec §5.3). Verify it
+    // against the same issuer key (delegator and agent share one IdP) and
+    // surface the attribution.
+    let agent = if cert.is_agent() {
+        let warrant = backed
+            .warrant()
+            .ok_or_else(|| "agent certificate requires a warrant".to_string())?;
+        let scopes = warrant
+            .verify_for(cert, audience, &issuer_key)
+            .map_err(|e| format!("warrant invalid: {}", e))?;
+        let parent = cert.agent_parent().unwrap_or_default().to_string();
+        Some((parent, scopes))
+    } else {
+        None
+    };
+
+    Ok(VerifiedExternal { email, agent })
 }

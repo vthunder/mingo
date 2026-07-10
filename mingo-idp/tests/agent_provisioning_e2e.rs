@@ -14,7 +14,7 @@ use browserid_core::keys::{KeyPair, PublicKey};
 use browserid_core::provisioning::{
     Constraint, Endorsement, ProvisioningCert, ProvisioningRequest, RequestBundle,
 };
-use browserid_core::{Assertion, BackedAssertion, Certificate};
+use browserid_core::{Assertion, BackedAssertion, Certificate, Warrant};
 use chrono::Duration;
 use mingo_idp::config::Config;
 use mingo_idp::store::Store;
@@ -215,13 +215,35 @@ async fn mint_assert_verify_full_chain() {
     assert_eq!(body["email"], format!("attestor2@{}", idp.domain));
     assert_eq!(body["subordinate_to"], delegator.email);
 
-    // The minted cert verifies against the IdP's published key.
+    // The minted cert is a typed agent certificate (v0.4), attributed to the
+    // delegator, and verifies against the IdP's published key only as a
+    // warrant-backed presentation.
     let cert = Certificate::parse(body["cert"].as_str().unwrap()).unwrap();
+    assert!(cert.is_agent());
+    assert_eq!(cert.agent_parent(), Some(delegator.email.as_str()));
+
+    // Bare cert~assertion is fail-closed.
     let assertion = Assertion::create(AUDIENCE, Duration::minutes(5), &agent_kp).unwrap();
-    let email = BackedAssertion::new(cert, assertion)
+    let bare = format!("{}~{}", cert.encoded(), assertion.encoded());
+    assert!(BackedAssertion::parse(&bare).is_err());
+
+    // With the delegator-signed warrant it verifies, with attribution.
+    let warrant = Warrant::create(
+        &delegator.user_cert,
+        &format!("attestor2@{}", idp.domain),
+        AUDIENCE,
+        Some(vec!["post".into()]),
+        Duration::days(30),
+        &delegator.user_kp,
+    )
+    .unwrap();
+    let verified = BackedAssertion::new_agent(cert, warrant, assertion)
         .verify(AUDIENCE, |_| Ok(idp.pubkey.clone()))
         .unwrap();
-    assert_eq!(email, format!("attestor2@{}", idp.domain));
+    assert_eq!(verified.email, format!("attestor2@{}", idp.domain));
+    let attribution = verified.agent.expect("agent attribution");
+    assert_eq!(attribution.parent, delegator.email);
+    assert_eq!(attribution.scopes, vec!["post"]);
 
     // Idempotent re-mint with a rotated agent key.
     let rotated = KeyPair::generate();
