@@ -30,9 +30,10 @@ deploy-daemon:
 deploy-daemon-onhost:
 	$(GIT_SSH) git push $(HOST):sbo-daemon $(BRANCH):master
 
-## Deploy mingo.place (mingo-idp + SPA).
+## Deploy mingo.place (mingo-idp + SPA). The dokku app's deploy branch is
+## `main` (not `master`); pushing to master silently no-ops with a warning.
 deploy-mingo:
-	$(GIT_SSH) git push $(HOST):mingo $(BRANCH):master
+	$(GIT_SSH) git push $(HOST):mingo $(BRANCH):main
 
 ## Deploy both, concurrently. The two apps are independent dokku remotes with
 ## separate build caches, so there's no reason to serialize them — running in
