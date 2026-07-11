@@ -179,6 +179,7 @@ fn signed(
         idp_domain,
         &bundle,
         delegator_email,
+        &format!("https://{}", broker.domain),
         Duration::minutes(10),
         &broker.keypair,
     )
@@ -228,13 +229,20 @@ async fn mint_assert_verify_full_chain() {
     assert!(BackedAssertion::parse(&bare).is_err());
 
     // With the delegator-signed warrant it verifies, with attribution.
-    let warrant = Warrant::create(
+    // v0.5: the warrant's status ref is pinned to the cert's registrar (the
+    // origin the broker's endorsement named), which the IdP stamped in.
+    let registrar = cert.registrar().expect("minted cert names a registrar").to_string();
+    let warrant = Warrant::create_with_status(
         &delegator.user_cert,
         &format!("attestor2@{}", idp.domain),
         AUDIENCE,
         Some(vec!["post".into()]),
         Duration::days(30),
         &delegator.user_kp,
+        Some(browserid_core::StatusRef {
+            uri: format!("{registrar}/.well-known/browserid-status"),
+            idx: 1,
+        }),
     )
     .unwrap();
     let verified = BackedAssertion::new_agent(cert, warrant, assertion)
@@ -294,6 +302,7 @@ async fn endorsement_and_chain_rejections() {
         &idp.domain,
         &bundle,
         &delegator.email,
+        &format!("https://{}", broker.domain),
         Duration::minutes(10),
         &rogue,
     )
@@ -324,7 +333,7 @@ async fn endorsement_and_chain_rejections() {
     let p_cert = ProvisioningCert::create("dan@elsewhere.example", &cred.prov_kp.public_key(), Constraint::names(["x"]), Duration::days(90), &user_kp).unwrap();
     let req = ProvisioningRequest::mint(&idp.domain, "x", &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
     let bundle = RequestBundle::new(foreign_cert, p_cert, req);
-    let endorsement = Endorsement::create(&broker.domain, &idp.domain, &bundle, "dan@elsewhere.example", Duration::minutes(10), &broker.keypair).unwrap();
+    let endorsement = Endorsement::create(&broker.domain, &idp.domain, &bundle, "dan@elsewhere.example", &format!("https://{}", broker.domain), Duration::minutes(10), &broker.keypair).unwrap();
     let (status, _) = post(&idp.base, "/provision/mint", bundle.encoded(), endorsement.encoded()).await;
     assert_eq!(status, 400, "foreign-rooted identity must be rejected");
 }

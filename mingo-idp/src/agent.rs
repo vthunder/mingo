@@ -117,7 +117,7 @@ fn verify_request(
     req: &ProvisionRequest,
     expected: Action,
     broker_key: &PublicKey,
-) -> Result<(VerifiedRequest, String), AgentError> {
+) -> Result<(VerifiedRequest, String, String), AgentError> {
     if !st.config.agent_provisioning {
         return Err(AgentError::Disabled);
     }
@@ -163,7 +163,12 @@ fn verify_request(
         .ok_or_else(|| AgentError::BadRequest("delegator has no local part".into()))?
         .to_string();
 
-    Ok((verified, handle))
+    // The registrar origin the broker named (agent spec §4.2) — stamped into
+    // the minted cert (§5.1) so warrants pin revocation to the user's chosen
+    // registrar, not this IdP.
+    let registrar = endorsement.registrar().to_string();
+
+    Ok((verified, handle, registrar))
 }
 
 /// Resolve the delegating identity's account (by its handle).
@@ -217,7 +222,7 @@ pub async fn mint(
         return Err(AgentError::Disabled);
     }
     let bk = broker_key(&st).await?;
-    let (verified, delegator_handle) = verify_request(&st, &req, Action::Mint, &bk)?;
+    let (verified, delegator_handle, registrar) = verify_request(&st, &req, Action::Mint, &bk)?;
     let account_id = delegator_account(&st, &delegator_handle)?;
 
     let raw_name = verified
@@ -244,6 +249,7 @@ pub async fn mint(
         agent_pub,
         chrono::Duration::hours(24),
         &st.keypair,
+        Some(registrar),
     )
     .map_err(|e| AgentError::Internal(format!("cert create: {e}")))?;
 
@@ -268,7 +274,7 @@ pub async fn reserve(
         return Err(AgentError::Disabled);
     }
     let bk = broker_key(&st).await?;
-    let (verified, delegator_handle) = verify_request(&st, &req, Action::Reserve, &bk)?;
+    let (verified, delegator_handle, _registrar) = verify_request(&st, &req, Action::Reserve, &bk)?;
     let account_id = delegator_account(&st, &delegator_handle)?;
 
     // Availability up front (all-or-nothing): collect every name taken by
@@ -305,7 +311,7 @@ pub async fn list(
         return Err(AgentError::Disabled);
     }
     let bk = broker_key(&st).await?;
-    let (verified, delegator_handle) = verify_request(&st, &req, Action::List, &bk)?;
+    let (verified, delegator_handle, _registrar) = verify_request(&st, &req, Action::List, &bk)?;
     let account_id = delegator_account(&st, &delegator_handle)?;
 
     let identities: Vec<serde_json::Value> = st
@@ -334,7 +340,7 @@ pub async fn revoke(
         return Err(AgentError::Disabled);
     }
     let bk = broker_key(&st).await?;
-    let (verified, delegator_handle) = verify_request(&st, &req, Action::Revoke, &bk)?;
+    let (verified, delegator_handle, _registrar) = verify_request(&st, &req, Action::Revoke, &bk)?;
     let account_id = delegator_account(&st, &delegator_handle)?;
 
     let raw_name = verified
