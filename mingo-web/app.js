@@ -221,9 +221,42 @@ async function signIn() {
       }
     }
 
-    // Grant SBO signing for the chosen identity. For a @mingo.place handle the
-    // broker mints via mingo.place; for the external email it uses the cert the
-    // user's own IdP already put in broker custody at login.
+    // The SBO-signing grant needs a SECOND broker popup — but we're now several
+    // awaits past the original "Sign in" click, so its window.open would be
+    // outside a user gesture and Chrome blocks it (and a blocked/re-opened popup
+    // loses its opener, so it can't even post back to us). Gate it behind a
+    // fresh click: a one-button step whose handler opens the popup synchronously.
+    promptGrantSigning(email);
+  } catch (e) {
+    toast("Sign-in failed: " + e.message);
+  }
+}
+
+// Second half of sign-in. MUST be reached from a real click so the broker popup
+// (window.open, opened synchronously inside brokerDialog) is user-initiated.
+function promptGrantSigning(email) {
+  const overlay = el(`<div class="modal-overlay">
+    <div class="modal card">
+      <div class="h2">Almost done</div>
+      <p class="muted" style="margin-top:8px">Authorize Mingo to sign as
+        <strong>${esc(email)}</strong>. Your browser needs a click to open the approval window.</p>
+      <div class="row-between" style="margin-top:12px">
+        <button id="g-cancel">Cancel</button>
+        <button class="primary" id="g-ok">Continue</button>
+      </div>
+    </div></div>`);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#g-cancel").onclick = () => { overlay.remove(); toast("Sign-in canceled"); };
+  overlay.querySelector("#g-ok").onclick = () => {
+    overlay.remove();
+    grantSigning(email); // opens the popup synchronously within this click
+  };
+}
+
+async function grantSigning(email) {
+  try {
+    // window.open runs synchronously inside brokerDialog's Promise executor, so
+    // it's still inside this click gesture and isn't blocked.
     const prov = await brokerDialog({ sboSign: true, provisionEmail: email });
     if (!prov || !prov.assertion) { toast(`Could not provision ${email}`); return; }
     if (prov.sbo_sign_granted === false) toast("Signed in, but signing was not granted");
