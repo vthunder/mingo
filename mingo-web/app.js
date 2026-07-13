@@ -154,30 +154,64 @@ const session = {
   set email(v) { v ? localStorage.setItem("mingo_email", v) : localStorage.removeItem("mingo_email"); },
 };
 
-// Open the broker dialog and resolve with its response ({assertion, email?,
-// sbo_sign_granted?}). When `provisionEmail` is set, the dialog skips its chooser
-// and provisions/sign-in that exact identity (silent if a session exists at its IdP).
-function brokerDialog({ sboSign = false, provisionEmail = null } = {}) {
-  return new Promise((resolve) => {
-    let url = `${CONFIG.broker}/dialog/dialog.html?origin=${encodeURIComponent(location.origin)}`;
-    if (sboSign) url += "&sbo_sign=1";
-    if (provisionEmail) url += `&provision_email=${encodeURIComponent(provisionEmail)}`;
-    const popup = window.open(url, "mingo_login", "width=440,height=600");
-    let done = false;
-    const onMsg = (e) => {
-      if (e.origin !== CONFIG.broker || !e.data || e.data.assertion === undefined) return;
-      done = true;
-      window.removeEventListener("message", onMsg);
-      try { popup && popup.close(); } catch {}
-      resolve(e.data);
-    };
-    window.addEventListener("message", onMsg);
-    // If the user closes the popup without finishing, resolve null.
-    const poll = setInterval(() => {
-      if (done) return clearInterval(poll);
-      if (popup && popup.closed) { clearInterval(poll); window.removeEventListener("message", onMsg); resolve(null); }
-    }, 500);
+// Sign-in via the STANDARD browserid client (include.js, loaded in index.html),
+// which sets up navigator.id and uses FedCM where the browser supports it. We
+// wrap request() in a promise — onlogin resolves it — so the existing two-step
+// flow reads the same as before. The dialog reads `sboSign` / `provisionEmail`
+// straight from these options (same as the old query-param URL did).
+let _pendingAssertion = null;
+function requestAssertion(opts) {
+  return new Promise((resolve, reject) => {
+    _pendingAssertion = { resolve, reject };
+    try {
+      navigator.id.request(opts || {});
+    } catch (e) {
+      _pendingAssertion = null;
+      reject(e);
+    }
   });
+}
+
+navigator.id.watch({
+  loggedInUser: session.email || null,
+  onready: function () {},
+  onlogin: function (assertion) {
+    if (_pendingAssertion) {
+      const p = _pendingAssertion;
+      _pendingAssertion = null;
+      p.resolve(assertion);
+    } else {
+      silentLogin(assertion); // background (e.g. FedCM) login — re-establish the session
+    }
+  },
+  onlogout: function () {
+    if (_pendingAssertion) {
+      const p = _pendingAssertion;
+      _pendingAssertion = null;
+      p.resolve(null);
+    }
+  },
+});
+
+// A background login (FedCM silent auto-reauthn) delivers an external-identity
+// assertion with no pending request(). Re-establish the mingo session for a
+// RETURNING user; a brand-new user still needs the interactive flow.
+async function silentLogin(assertion) {
+  if (session.email) return; // already signed in via the RP's own session
+  try {
+    const sess = await idpPost("/session/from-assertion", { assertion });
+    const email = sess.handle
+      ? `${sess.handle}@${CONFIG.domain}`
+      : sess.identity_mode === "email"
+        ? sess.email
+        : null;
+    if (!email) return; // new user — don't silently auto-register
+    session.email = email;
+    renderAuth();
+    route();
+  } catch (e) {
+    /* silent */
+  }
 }
 
 const idpPost = async (path, body) => {
@@ -198,9 +232,9 @@ const idpPost = async (path, body) => {
 // cert into custody without a second login.
 async function signIn() {
   try {
-    const ext = await brokerDialog({ sboSign: false });
-    if (!ext || !ext.assertion) return; // cancelled
-    const sess = await idpPost("/session/from-assertion", { assertion: ext.assertion });
+    const assertion = await requestAssertion({ sboSign: false });
+    if (!assertion) return; // cancelled
+    const sess = await idpPost("/session/from-assertion", { assertion });
 
     // Decide the identity to sign as: a returning handle user, a returning
     // external-email user, or a new user who picks in the chooser.
@@ -233,7 +267,7 @@ async function signIn() {
 }
 
 // Second half of sign-in. MUST be reached from a real click so the broker popup
-// (window.open, opened synchronously inside brokerDialog) is user-initiated.
+// (window.open, opened synchronously inside navigator.id.request) is user-initiated.
 function promptGrantSigning(email) {
   const overlay = el(`<div class="modal-overlay">
     <div class="modal card">
@@ -255,13 +289,15 @@ function promptGrantSigning(email) {
 
 async function grantSigning(email) {
   try {
-    // window.open runs synchronously inside brokerDialog's Promise executor, so
-    // it's still inside this click gesture and isn't blocked.
-    const prov = await brokerDialog({ sboSign: true, provisionEmail: email });
-    if (!prov || !prov.assertion) { toast(`Could not provision ${email}`); return; }
-    if (prov.sbo_sign_granted === false) toast("Signed in, but signing was not granted");
+    // navigator.id.request opens the dialog popup synchronously (window.open
+    // inside WinChan), so called from the Continue click it stays in-gesture.
+    // (We no longer get sbo_sign_granted back — onlogin returns only the
+    // assertion — so we drop the "signing not granted" warning; a user who
+    // declined finds out when they try to post, which is fine.)
+    const assertion = await requestAssertion({ sboSign: true, provisionEmail: email });
+    if (!assertion) { toast(`Could not provision ${email}`); return; }
 
-    session.email = prov.email || email;
+    session.email = email;
     renderAuth();
     route(); // re-render the current view (e.g. flip "Sign in to post" → Join/New post)
     toast(`Signed in as ${session.email}`);
@@ -277,6 +313,9 @@ async function signOut() {
   } catch (e) {
     console.warn("logout request failed (clearing local state anyway):", e);
   }
+  // Standard browserid logout too: clears the FedCM auto-login opt-in + server
+  // consent (so we don't silently sign back in) and notifies the broker.
+  try { navigator.id.logout(); } catch (e) {}
   session.email = null;
   renderAuth();
   route();
