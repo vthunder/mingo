@@ -331,10 +331,16 @@ async function ensureSigningReady() {
     document.body.appendChild(overlay);
     overlay.querySelector("#s-cancel").onclick = () => { overlay.remove(); resolve(false); };
     overlay.querySelector("#s-ok").onclick = async () => {
-      dbg("enable-signing TAP");
+      // Open the dialog FIRST, while the tapped button is still in the DOM.
+      // requestAssertion's window.open runs synchronously inside this call, so
+      // it stays within the user gesture. Removing the overlay (which contains
+      // this button) BEFORE the popup opens invalidates the gesture on iOS
+      // Safari and the popup gets blocked — so remove it only after.
+      const p = requestAssertion({ sboSign: true, provisionEmail: session.email });
+      dbg("enable-signing TAP (request kicked off)");
       overlay.remove();
       try {
-        const assertion = await requestAssertion({ sboSign: true, provisionEmail: session.email });
+        const assertion = await p;
         if (!assertion) { toast("Signing not enabled"); return resolve(false); }
         localStorage.setItem("mingo_signing_ready", "1");
         resolve(true);
