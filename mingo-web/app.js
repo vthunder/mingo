@@ -198,14 +198,6 @@ navigator.id.watch({
 // whose popup the browser turned into a full-page REDIRECT (Chrome on iOS) —
 // the reload dropped our in-page promise, so the assertion lands here instead.
 async function silentLogin(assertion) {
-  // If a signing grant was in flight when the redirect happened, this return IS
-  // that grant completing — mark signing ready (the in-page promise that would
-  // normally do this was destroyed by the reload).
-  if (localStorage.getItem("mingo_grant_pending") === "1") {
-    localStorage.setItem("mingo_signing_ready", "1");
-    localStorage.removeItem("mingo_grant_pending");
-    if (session.email) { renderAuth(); route(); toast("Signing enabled — you can post now."); return; }
-  }
   if (session.email) return; // already signed in via the RP's own session
   try {
     const sess = await idpPost("/session/from-assertion", { assertion });
@@ -304,20 +296,12 @@ async function ensureSigningReady() {
     overlay.querySelector("#s-cancel").onclick = () => { overlay.remove(); resolve(false); };
     overlay.querySelector("#s-ok").onclick = async () => {
       overlay.remove();
-      // Mark the grant in-flight BEFORE requesting. On Chrome-iOS the request is
-      // a full-page redirect that unloads us here — silentLogin reads this flag
-      // on the way back and finishes the grant. On desktop/Safari (popup) the
-      // await below resolves normally and we clear it.
-      localStorage.setItem("mingo_grant_pending", "1");
       try {
-        // navigator.id.request opens the dialog popup synchronously (window.open
-        // inside WinChan), so from this click it stays in-gesture.
         const assertion = await requestAssertion({ sboSign: true, provisionEmail: session.email });
-        if (!assertion) { localStorage.removeItem("mingo_grant_pending"); toast("Signing not enabled"); return resolve(false); }
+        if (!assertion) { toast("Signing not enabled"); return resolve(false); }
         localStorage.setItem("mingo_signing_ready", "1");
-        localStorage.removeItem("mingo_grant_pending");
         resolve(true);
-      } catch (e) { localStorage.removeItem("mingo_grant_pending"); toast("Could not enable signing: " + e.message); resolve(false); }
+      } catch (e) { toast("Could not enable signing: " + e.message); resolve(false); }
     };
   });
   if (granted) toast("Signing enabled — tap once more to publish.");
@@ -335,7 +319,6 @@ async function signOut() {
   // consent (so we don't silently sign back in) and notifies the broker.
   try { navigator.id.logout(); } catch (e) {}
   localStorage.removeItem("mingo_signing_ready"); // re-grant on next sign-in
-  localStorage.removeItem("mingo_grant_pending");
   session.email = null;
   renderAuth();
   route();
