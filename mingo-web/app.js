@@ -26,85 +26,6 @@ const CONFIG = Object.assign(
   qs.get("idp") ? { idp: qs.get("idp") } : {}
 );
 
-// --- TEMP on-screen diagnostics (enable with ?debug=1) — remove once fixed ----
-// Shows a live log at the bottom of the screen and wraps window.open so we can
-// see, on mobile, whether include.js actually attempts a popup for the grant.
-function dbg(m) {}
-if (qs.get("debug") === "1") {
-  const box = document.createElement("div");
-  box.style.cssText =
-    "position:fixed;left:0;right:0;bottom:0;max-height:45vh;overflow:auto;z-index:99999;" +
-    "background:rgba(0,0,0,.88);color:#3f6;font:11px/1.35 ui-monospace,monospace;padding:6px;white-space:pre-wrap;";
-  const mount = () => (document.body || document.documentElement).appendChild(box);
-  document.readyState === "loading" ? addEventListener("DOMContentLoaded", mount) : mount();
-  dbg = (m) => {
-    const t = new Date().toISOString().slice(11, 19);
-    box.textContent += `[${t}] ${m}\n`;
-    box.scrollTop = box.scrollHeight;
-    try { console.log("[dbg]", m); } catch (e) {}
-  };
-  const _open = window.open;
-  window.open = function () {
-    const w = _open.apply(this, arguments);
-    dbg("window.open(" + String(arguments[0] || "").slice(0, 60) + ") => " + (w ? "OK" : "NULL(blocked)"));
-    return w;
-  };
-  dbg("diagnostics ready; navigator.id=" + (typeof (window.navigator && navigator.id)) +
-      " IdentityCredential=" + ("IdentityCredential" in window));
-
-  // Two ALWAYS-PRESENT test buttons (never removed from the DOM) to isolate the
-  // blocked-2nd-popup cause. After logging in, tap each:
-  //  T1 = a plain DIRECT window.open (no navigator.id). If this opens, a 2nd
-  //       popup is fine and the problem is navigator.id/WinChan's code path.
-  //  T2 = navigator.id.request again. Compares the standard path head-to-head.
-  const bar = document.createElement("div");
-  bar.style.cssText =
-    "position:fixed;left:0;top:0;z-index:99999;display:flex;gap:6px;padding:6px;background:rgba(0,0,0,.8);";
-  const mkBtn = (label, fn) => {
-    const b = document.createElement("button");
-    b.textContent = label;
-    b.style.cssText = "font:12px monospace;padding:8px 10px;background:#3f6;color:#000;border:0;border-radius:6px;";
-    b.addEventListener("click", fn);
-    bar.appendChild(b);
-  };
-  mkBtn("T1 direct-open", () => {
-    dbg("T1: tap → direct window.open");
-    const w = window.open("https://browserid.me/", "mingo_t1_" + (Date.now() % 100000), "width=440,height=600");
-    dbg("T1: returned " + (w ? "OK (window)" : "NULL"));
-  });
-  mkBtn("T2 nav.id", () => {
-    dbg("T2: tap → navigator.id.request (sbo=false)");
-    try { navigator.id.request({}); dbg("T2: request returned"); }
-    catch (e) { dbg("T2: THREW " + (e && e.message)); }
-  });
-  const provEmail = () => localStorage.getItem("mingo_email") || "test@mingo.place";
-  // T3: EXACT grant options, but from a plain button (no overlay).
-  mkBtn("T3 grant-plain", () => {
-    dbg("T3: navigator.id.request(sbo=true, prov=" + provEmail() + ") from plain button");
-    try { navigator.id.request({ sboSign: true, provisionEmail: provEmail() }); dbg("T3: returned"); }
-    catch (e) { dbg("T3: THREW " + (e && e.message)); }
-  });
-  // T4: same grant options, but triggered from a button INSIDE a modal overlay,
-  // replicating the real ensureSigningReady flow.
-  mkBtn("T4 grant-overlay", () => {
-    dbg("T4: show overlay");
-    const ov = document.createElement("div");
-    ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100;";
-    const b = document.createElement("button");
-    b.textContent = "T4: Enable (in overlay)";
-    b.style.cssText = "font:14px monospace;padding:14px 18px;";
-    b.addEventListener("click", () => {
-      dbg("T4: overlay-button tap → navigator.id.request(sbo=true)");
-      try { navigator.id.request({ sboSign: true, provisionEmail: provEmail() }); dbg("T4: returned"); }
-      catch (e) { dbg("T4: THREW " + (e && e.message)); }
-    });
-    ov.appendChild(b);
-    document.body.appendChild(ov);
-    ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
-  });
-  const mountBar = () => (document.body || document.documentElement).appendChild(bar);
-  document.readyState === "loading" ? addEventListener("DOMContentLoaded", mountBar) : mountBar();
-}
 const SBO_WASM_URL = CONFIG.sboWasm || `${CONFIG.broker}/common/js/sbo-wasm/sbo_wasm.js`;
 
 // ---------------------------------------------------------------------------
@@ -243,13 +164,11 @@ let _pendingAssertion = null;
 function requestAssertion(opts) {
   return new Promise((resolve, reject) => {
     _pendingAssertion = { resolve, reject };
-    dbg("requestAssertion: sbo=" + !!(opts && opts.sboSign) + " prov=" + ((opts && opts.provisionEmail) || "-"));
     // oncancel fires when the user closes the dialog OR the popup is blocked
     // (include.js reports it). Without it, a blocked/cancelled request would
     // never resolve and this promise would hang.
     const req = Object.assign({}, opts, {
       oncancel: function () {
-        dbg("requestAssertion: oncancel");
         if (_pendingAssertion && _pendingAssertion.resolve === resolve) {
           _pendingAssertion = null;
           resolve(null);
@@ -258,24 +177,17 @@ function requestAssertion(opts) {
     });
     try {
       navigator.id.request(req);
-      dbg("requestAssertion: navigator.id.request returned (no throw)");
     } catch (e) {
       _pendingAssertion = null;
-      dbg("requestAssertion: THREW " + (e && e.message));
       reject(e);
-      return;
     }
-    setTimeout(() => {
-      if (_pendingAssertion && _pendingAssertion.resolve === resolve) dbg("requestAssertion: STILL PENDING after 15s (no onlogin/onlogout)");
-    }, 15000);
   });
 }
 
 navigator.id.watch({
   loggedInUser: session.email || null,
-  onready: function () { dbg("watch: onready"); },
+  onready: function () {},
   onlogin: function (assertion) {
-    dbg("watch: onlogin (len=" + (assertion && assertion.length) + ") pending=" + !!_pendingAssertion);
     if (_pendingAssertion) {
       const p = _pendingAssertion;
       _pendingAssertion = null;
@@ -285,7 +197,6 @@ navigator.id.watch({
     }
   },
   onlogout: function () {
-    dbg("watch: onlogout pending=" + !!_pendingAssertion);
     if (_pendingAssertion) {
       const p = _pendingAssertion;
       _pendingAssertion = null;
@@ -334,9 +245,7 @@ const idpPost = async (path, body) => {
 // cert into custody without a second login.
 async function signIn() {
   try {
-    dbg("signIn: start (requesting assertion, sbo=false)");
     const assertion = await requestAssertion({ sboSign: false });
-    dbg("signIn: got assertion=" + !!assertion);
     if (!assertion) return; // cancelled
     const sess = await idpPost("/session/from-assertion", { assertion });
 
@@ -398,13 +307,10 @@ async function ensureSigningReady() {
     document.body.appendChild(overlay);
     overlay.querySelector("#s-cancel").onclick = () => { overlay.remove(); resolve(false); };
     overlay.querySelector("#s-ok").onclick = async () => {
-      // Open the dialog FIRST, while the tapped button is still in the DOM.
-      // requestAssertion's window.open runs synchronously inside this call, so
-      // it stays within the user gesture. Removing the overlay (which contains
-      // this button) BEFORE the popup opens invalidates the gesture on iOS
-      // Safari and the popup gets blocked — so remove it only after.
+      // Open the dialog FIRST, while the tapped button is still in the DOM, so
+      // requestAssertion's window.open stays within the user gesture (removing
+      // the overlay before it opens can invalidate the gesture).
       const p = requestAssertion({ sboSign: true, provisionEmail: session.email });
-      dbg("enable-signing TAP (request kicked off)");
       overlay.remove();
       try {
         const assertion = await p;
@@ -418,7 +324,6 @@ async function ensureSigningReady() {
   return false; // never ready on the same gesture that ran the grant
 }
 async function signOut() {
-  dbg("signOut");
   // Real sign-out: end the mingo.place server session + clear its cookie, not
   // just client state (a stale session could otherwise still mint certs — mingo-n153).
   try {
