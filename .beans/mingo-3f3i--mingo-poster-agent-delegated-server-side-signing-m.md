@@ -5,7 +5,7 @@ status: draft
 type: feature
 priority: normal
 created_at: 2026-07-14T16:52:00Z
-updated_at: 2026-07-14T16:52:00Z
+updated_at: 2026-07-14T20:17:12Z
 ---
 
 Problem: mingo's posting requires client-side per-object signing via browserid
@@ -70,3 +70,61 @@ vs "approve each post").
 - browserid-ng-ak1n (SBO agent-SDK signing — blocker)
 - browserid-ng-k426 (cross-RP pseudonyms — deferred; would eventually subsume
   mingo handles but is orthogonal to this)
+
+## Design locked (with Dan)
+
+- Cross-issuer warrants: relax same-issuer so ANY email can warrant
+  mingo-poster@mingo.place. Foundation tracked in browserid-ng bean
+  'Cross-issuer agent warrants'. Single-parent binding unchanged (per-user
+  in-process certs).
+- Second DNSSEC proof: support both inline + on-chain; mingo uses on-chain
+  (/sys/dnssec/<issuer> refreshed for both agent + delegator issuers).
+- Attribution: user warrants mingo-poster with as:<user>, on-chain visible.
+- Delegation UX: mingo.place -> browserid.me/account, sign a WARRANT ONLY (no
+  agent creation); mingo-poster appears under a separate 'external agents'
+  list; revoke there. The warrant request carries a DELEGATOR HINT (mingo knows
+  which identity the user should sign as) so the consent page pre-selects it.
+- Service identity: mingo mints/refreshes mingo-poster@mingo.place headlessly
+  in-process (owns mingo.place IdP key); per-user certs parent=<user>.
+
+## Sequencing
+1. sbo-core two-issuer warrant verification + tests + spec (foundation).
+2. Daemon: resolve delegator issuer proof (inline | on-chain).
+3. Registrar: third-party warrant-request entry point (+ delegator hint).
+4. Account UI: external-agents list.
+5. mingo backend signer + mingo-web delegation redirect + submit-unsigned.
+
+## Registrar consent — implementation plan (design confirmed with Dan)
+
+Unify into the EXISTING /warrant/request (not a separate endpoint), branching on
+request contents. Both modes keep the 'request signed by the agent' principle.
+
+- Own-agent mode (today): RequestBundle U_cert~P_cert~R, gated by a registered
+  provisioning cert; agent_email = <name>@<user-domain>.
+- External mode (new): body carries agent_cert ~ R, where R is signed by the
+  AGENT IDENTITY key (verified under agent_cert.public_key()); agent_email = the
+  agent cert's email (mingo-poster@mingo.place); delegator = a NEW claim in the
+  request (the hint mingo passes; the identity the user signs as). No
+  provisioning-cert gate.
+
+browserid-core change: add `delegator: Option<String>` to
+ProvisioningRequestClaims + a warrant_external() constructor (Action::Warrant,
+signed by agent key) + a verify path for the agent_cert~R bundle
+(agent_cert.is_agent(), R.verify(agent_cert.public_key()), delegator present).
+
+Anti-spam (signing alone is insufficient — Dan):
+1. Redirect-tied: mingo creates the request, gets a code, redirects the user to
+   verification_uri_complete (/consent/<code>). No browsable pending inbox for
+   external requests — unsolicited ones are never surfaced, just expire.
+2. Per-delegator rate-limit on pending external requests.
+
+Consent UI (account.html): 'external services' section shows GRANTED warrants
+(revocable via existing /wsapi/revoke_warrant), NOT a pending inbox.
+
+respond(): confirm it only does binding checks (audience/agent/delegator vs the
+pending record) + stores; relax only if it cryptographically re-enforces
+same-issuer.
+
+Sequence: (1) browserid-core external request type + tests; (2) registrar
+/warrant/request external branch + store + rate-limit; (3) consent page +
+account 'external services' UI; (4) mingo backend signer + mingo-web redirect.
