@@ -255,55 +255,58 @@ async function signIn() {
       }
     }
 
-    // The SBO-signing grant needs a SECOND broker popup — but we're now several
-    // awaits past the original "Sign in" click, so its window.open would be
-    // outside a user gesture and Chrome blocks it (and a blocked/re-opened popup
-    // loses its opener, so it can't even post back to us). Gate it behind a
-    // fresh click: a one-button step whose handler opens the popup synchronously.
-    promptGrantSigning(email);
-  } catch (e) {
-    toast("Sign-in failed: " + e.message);
-  }
-}
-
-// Second half of sign-in. MUST be reached from a real click so the broker popup
-// (window.open, opened synchronously inside navigator.id.request) is user-initiated.
-function promptGrantSigning(email) {
-  const overlay = el(`<div class="modal-overlay">
-    <div class="modal card">
-      <div class="h2">Almost done</div>
-      <p class="muted" style="margin-top:8px">Authorize Mingo to sign as
-        <strong>${esc(email)}</strong>. Your browser needs a click to open the approval window.</p>
-      <div class="row-between" style="margin-top:12px">
-        <button id="g-cancel">Cancel</button>
-        <button class="primary" id="g-ok">Continue</button>
-      </div>
-    </div></div>`);
-  document.body.appendChild(overlay);
-  overlay.querySelector("#g-cancel").onclick = () => { overlay.remove(); toast("Sign-in canceled"); };
-  overlay.querySelector("#g-ok").onclick = () => {
-    overlay.remove();
-    grantSigning(email); // opens the popup synchronously within this click
-  };
-}
-
-async function grantSigning(email) {
-  try {
-    // navigator.id.request opens the dialog popup synchronously (window.open
-    // inside WinChan), so called from the Continue click it stays in-gesture.
-    // (We no longer get sbo_sign_granted back — onlogin returns only the
-    // assertion — so we drop the "signing not granted" warning; a user who
-    // declined finds out when they try to post, which is fine.)
-    const assertion = await requestAssertion({ sboSign: true, provisionEmail: email });
-    if (!assertion) { toast(`Could not provision ${email}`); return; }
-
+    // Deferred signing: DON'T provision/grant now. Login is a single, standard
+    // popup — we just show the user as signed in. The SBO-signing grant (a
+    // second popup) is requested lazily, the first time they actually sign
+    // something (see ensureSigningReady). That keeps login clean and avoids
+    // colliding with the FedCM chooser that fires right after this dialog.
     session.email = email;
     renderAuth();
-    route(); // re-render the current view (e.g. flip "Sign in to post" → Join/New post)
+    route(); // flip "Sign in to post" → Join / New post
     toast(`Signed in as ${session.email}`);
   } catch (e) {
     toast("Sign-in failed: " + e.message);
   }
+}
+
+// Lazy signing grant. mingo signs objects through a first-party signer popup
+// (ensureSigner → /sign), which needs the identity provisioned + the origin
+// granted SBO-signing — done here via the broker dialog, once, on first use.
+// Returns true only when signing is ready RIGHT NOW. When it has to run the
+// grant, it returns false (the signer popup below would be outside the current
+// gesture and get blocked), so the caller aborts and the user repeats the
+// action — the retry opens the signer inside a fresh gesture. After that the
+// signer window is reused, so it's a one-time extra tap.
+async function ensureSigningReady() {
+  if (localStorage.getItem("mingo_signing_ready") === "1") return true;
+  const granted = await new Promise((resolve) => {
+    const overlay = el(`<div class="modal-overlay">
+      <div class="modal card">
+        <div class="h2">Enable signing</div>
+        <p class="muted" style="margin-top:8px">To publish as
+          <strong>${esc(session.email)}</strong>, authorize Mingo to sign on your
+          behalf. Your browser will open a one-time approval window.</p>
+        <div class="row-between" style="margin-top:12px">
+          <button id="s-cancel">Not now</button>
+          <button class="primary" id="s-ok">Enable signing</button>
+        </div>
+      </div></div>`);
+    document.body.appendChild(overlay);
+    overlay.querySelector("#s-cancel").onclick = () => { overlay.remove(); resolve(false); };
+    overlay.querySelector("#s-ok").onclick = async () => {
+      overlay.remove();
+      try {
+        // navigator.id.request opens the dialog popup synchronously (window.open
+        // inside WinChan), so from this click it stays in-gesture.
+        const assertion = await requestAssertion({ sboSign: true, provisionEmail: session.email });
+        if (!assertion) { toast("Signing not enabled"); return resolve(false); }
+        localStorage.setItem("mingo_signing_ready", "1");
+        resolve(true);
+      } catch (e) { toast("Could not enable signing: " + e.message); resolve(false); }
+    };
+  });
+  if (granted) toast("Signing enabled — tap once more to publish.");
+  return false; // never ready on the same gesture that ran the grant
 }
 async function signOut() {
   // Real sign-out: end the mingo.place server session + clear its cookie, not
@@ -316,6 +319,7 @@ async function signOut() {
   // Standard browserid logout too: clears the FedCM auto-login opt-in + server
   // consent (so we don't silently sign back in) and notifies the broker.
   try { navigator.id.logout(); } catch (e) {}
+  localStorage.removeItem("mingo_signing_ready"); // re-grant on next sign-in
   session.email = null;
   renderAuth();
   route();
@@ -710,6 +714,7 @@ async function viewCommunity(commId) {
     <div id="posts" class="muted">loading…</div>`;
   if (session.email && member) $("#newpost").onclick = () => showCompose(c.id);
   else if (session.email) $("#join").onclick = async (e) => {
+    if (!(await ensureSigningReady())) return;
     e.target.disabled = true; e.target.textContent = "Joining…";
     try {
       await joinHub(c.id);
@@ -737,6 +742,7 @@ function showCompose(commId) {
   $("#post-submit").onclick = async () => {
     const body = $("#post-body").value.trim();
     if (!body) return;
+    if (!(await ensureSigningReady())) return;
     $("#post-submit").disabled = true;
     try {
       const id = await composePost(commId, CONFIG.space, body);
@@ -776,6 +782,7 @@ async function viewThread(commId, postId) {
     <div id="comments">${kids.length ? kids.map((c) => commentBox(c, votes)).join("") : `<div class="muted">No comments yet.</div>`}</div>`;
   $("#c-submit").onclick = async () => {
     const body = $("#c-body").value.trim(); if (!body) return;
+    if (!(await ensureSigningReady())) return;
     $("#c-submit").disabled = true;
     try {
       await addComment(commId, CONFIG.space, post.uri, body);
@@ -806,6 +813,7 @@ function wireVoteButtons() {
     b.onclick = async () => {
       const [comm, uri] = b.getAttribute("data-vote").split("|");
       if (b.dataset.voted) return; // already counted
+      if (!(await ensureSigningReady())) return;
       // Bump just this count + mark the button without re-rendering (so content
       // doesn't jump). The daemon overlay also stages the vote server-side, so
       // the bump is now backed by shared state and visible to other users.
