@@ -51,6 +51,34 @@ if (qs.get("debug") === "1") {
   };
   dbg("diagnostics ready; navigator.id=" + (typeof (window.navigator && navigator.id)) +
       " IdentityCredential=" + ("IdentityCredential" in window));
+
+  // Two ALWAYS-PRESENT test buttons (never removed from the DOM) to isolate the
+  // blocked-2nd-popup cause. After logging in, tap each:
+  //  T1 = a plain DIRECT window.open (no navigator.id). If this opens, a 2nd
+  //       popup is fine and the problem is navigator.id/WinChan's code path.
+  //  T2 = navigator.id.request again. Compares the standard path head-to-head.
+  const bar = document.createElement("div");
+  bar.style.cssText =
+    "position:fixed;left:0;top:0;z-index:99999;display:flex;gap:6px;padding:6px;background:rgba(0,0,0,.8);";
+  const mkBtn = (label, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.style.cssText = "font:12px monospace;padding:8px 10px;background:#3f6;color:#000;border:0;border-radius:6px;";
+    b.addEventListener("click", fn);
+    bar.appendChild(b);
+  };
+  mkBtn("T1 direct-open", () => {
+    dbg("T1: tap → direct window.open");
+    const w = window.open("https://browserid.me/", "mingo_t1_" + (Date.now() % 100000), "width=440,height=600");
+    dbg("T1: returned " + (w ? "OK (window)" : "NULL"));
+  });
+  mkBtn("T2 nav.id", () => {
+    dbg("T2: tap → navigator.id.request (sbo=false)");
+    try { navigator.id.request({}); dbg("T2: request returned"); }
+    catch (e) { dbg("T2: THREW " + (e && e.message)); }
+  });
+  const mountBar = () => (document.body || document.documentElement).appendChild(bar);
+  document.readyState === "loading" ? addEventListener("DOMContentLoaded", mountBar) : mountBar();
 }
 const SBO_WASM_URL = CONFIG.sboWasm || `${CONFIG.broker}/common/js/sbo-wasm/sbo_wasm.js`;
 
