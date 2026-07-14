@@ -56,6 +56,9 @@ fn test_config(domain: String, broker_domain: String, quota: usize, enabled: boo
         app_origin: "https://mingo.place".into(),
         broker_domain,
         key_file: PathBuf::from("/nonexistent"),
+        poster_key_file: PathBuf::from("/nonexistent"),
+        sbo_db_audience: "sbo+raw://avail:turing:506/".into(),
+        daemon_url: "http://127.0.0.1:0".into(),
         db_path: PathBuf::from("/nonexistent"),
         static_dir: PathBuf::from("/nonexistent"),
         spa_dir: PathBuf::from("/nonexistent"),
@@ -83,6 +86,7 @@ async fn start_idp(broker_domain: String, quota: usize, enabled: bool) -> Idp {
     let seed = *keypair.secret_bytes();
     let state: Shared = Arc::new(AppState::new(
         keypair,
+        KeyPair::generate(),
         Store::open_in_memory().unwrap(),
         test_config(domain.clone(), broker_domain, quota, enabled),
     ));
@@ -99,7 +103,13 @@ async fn start_idp(broker_domain: String, quota: usize, enabled: bool) -> Idp {
         }
     });
 
-    Idp { base: format!("http://{domain}"), domain, pubkey, keypair_seed: seed, state }
+    Idp {
+        base: format!("http://{domain}"),
+        domain,
+        pubkey,
+        keypair_seed: seed,
+        state,
+    }
 }
 
 /// A delegator identity rooted at the IdP: an account with handle `handle`, a
@@ -112,7 +122,11 @@ struct Delegator {
 
 fn make_delegator(idp: &Idp, handle: &str) -> Delegator {
     // Register the human account + handle so account_id_for_handle resolves.
-    let account = idp.state.store.find_or_create_account(&format!("{handle}@external.example")).unwrap();
+    let account = idp
+        .state
+        .store
+        .find_or_create_account(&format!("{handle}@external.example"))
+        .unwrap();
     assert!(idp.state.store.set_handle(account.id, handle).unwrap());
 
     let idp_kp = KeyPair::from_seed(&idp.keypair_seed).unwrap();
@@ -126,7 +140,11 @@ fn make_delegator(idp: &Idp, handle: &str) -> Delegator {
         &idp_kp,
     )
     .unwrap();
-    Delegator { email, user_kp, user_cert }
+    Delegator {
+        email,
+        user_kp,
+        user_cert,
+    }
 }
 
 /// A registered provisioning credential: P key + the U_cert~P_cert delegation.
@@ -173,7 +191,11 @@ fn signed(
     delegator_email: &str,
     request: ProvisioningRequest,
 ) -> (String, String) {
-    let bundle = RequestBundle::new(cred.delegation.0.clone(), cred.delegation.1.clone(), request);
+    let bundle = RequestBundle::new(
+        cred.delegation.0.clone(),
+        cred.delegation.1.clone(),
+        request,
+    );
     let endorsement = Endorsement::create(
         &broker.domain,
         idp_domain,
@@ -184,7 +206,10 @@ fn signed(
         &broker.keypair,
     )
     .unwrap();
-    (bundle.encoded().to_string(), endorsement.encoded().to_string())
+    (
+        bundle.encoded().to_string(),
+        endorsement.encoded().to_string(),
+    )
 }
 
 async fn post(base: &str, path: &str, bundle: &str, endorsement: &str) -> (u16, Value) {
@@ -206,9 +231,14 @@ async fn mint_assert_verify_full_chain() {
     let cred = make_credential(&delegator);
 
     let agent_kp = KeyPair::generate();
-    let req =
-        ProvisioningRequest::mint(&idp.domain, "attestor2", &agent_kp.public_key(), false, &cred.prov_kp)
-            .unwrap();
+    let req = ProvisioningRequest::mint(
+        &idp.domain,
+        "attestor2",
+        &agent_kp.public_key(),
+        false,
+        &cred.prov_kp,
+    )
+    .unwrap();
     let (bundle, endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
 
     let (status, body) = post(&idp.base, "/provision/mint", &bundle, &endorsement).await;
@@ -231,7 +261,10 @@ async fn mint_assert_verify_full_chain() {
     // With the delegator-signed warrant it verifies, with attribution.
     // v0.5: the warrant's status ref is pinned to the cert's registrar (the
     // origin the broker's endorsement named), which the IdP stamped in.
-    let registrar = cert.registrar().expect("minted cert names a registrar").to_string();
+    let registrar = cert
+        .registrar()
+        .expect("minted cert names a registrar")
+        .to_string();
     let warrant = Warrant::create_with_status(
         &delegator.user_cert,
         &format!("attestor2@{}", idp.domain),
@@ -255,9 +288,14 @@ async fn mint_assert_verify_full_chain() {
 
     // Idempotent re-mint with a rotated agent key.
     let rotated = KeyPair::generate();
-    let req =
-        ProvisioningRequest::mint(&idp.domain, "attestor2", &rotated.public_key(), false, &cred.prov_kp)
-            .unwrap();
+    let req = ProvisioningRequest::mint(
+        &idp.domain,
+        "attestor2",
+        &rotated.public_key(),
+        false,
+        &cred.prov_kp,
+    )
+    .unwrap();
     let (bundle, endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
     let (status, _) = post(&idp.base, "/provision/mint", &bundle, &endorsement).await;
     assert_eq!(status, 200);
@@ -290,13 +328,21 @@ async fn endorsement_and_chain_rejections() {
     };
 
     // No/garbage endorsement → 401.
-    let bundle = RequestBundle::new(cred.delegation.0.clone(), cred.delegation.1.clone(), mint_req());
+    let bundle = RequestBundle::new(
+        cred.delegation.0.clone(),
+        cred.delegation.1.clone(),
+        mint_req(),
+    );
     let (status, _) = post(&idp.base, "/provision/mint", bundle.encoded(), "not-a-jws").await;
     assert_eq!(status, 401);
 
     // Endorsement signed by a rogue key (not the trusted broker) → 401.
     let rogue = KeyPair::generate();
-    let bundle = RequestBundle::new(cred.delegation.0.clone(), cred.delegation.1.clone(), mint_req());
+    let bundle = RequestBundle::new(
+        cred.delegation.0.clone(),
+        cred.delegation.1.clone(),
+        mint_req(),
+    );
     let forged = Endorsement::create(
         &broker.domain,
         &idp.domain,
@@ -307,7 +353,13 @@ async fn endorsement_and_chain_rejections() {
         &rogue,
     )
     .unwrap();
-    let (status, _) = post(&idp.base, "/provision/mint", bundle.encoded(), forged.encoded()).await;
+    let (status, _) = post(
+        &idp.base,
+        "/provision/mint",
+        bundle.encoded(),
+        forged.encoded(),
+    )
+    .await;
     assert_eq!(status, 401);
 
     // Endorsement for a *different* bundle → 401 (hash binding).
@@ -315,9 +367,19 @@ async fn endorsement_and_chain_rejections() {
     let (_, endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, mint_req());
     let (status, _) = post(&idp.base, "/provision/mint", &other_bundle, &endorsement).await;
     // other_bundle's own endorsement would pass; this reuses a mismatched one.
-    let (_, mismatched_endorsement) = signed(&broker, &idp.domain, &cred, &delegator.email, mint_req());
-    let (status2, _) = post(&idp.base, "/provision/mint", &other_bundle, &mismatched_endorsement).await;
-    assert!(status == 401 || status2 == 401, "hash-binding must reject a swapped endorsement");
+    let (_, mismatched_endorsement) =
+        signed(&broker, &idp.domain, &cred, &delegator.email, mint_req());
+    let (status2, _) = post(
+        &idp.base,
+        "/provision/mint",
+        &other_bundle,
+        &mismatched_endorsement,
+    )
+    .await;
+    assert!(
+        status == 401 || status2 == 401,
+        "hash-binding must reject a swapped endorsement"
+    );
 
     // A U_cert not issued by this IdP (foreign issuer) → 400.
     let foreign_idp = KeyPair::generate();
@@ -330,11 +392,40 @@ async fn endorsement_and_chain_rejections() {
         &foreign_idp,
     )
     .unwrap();
-    let p_cert = ProvisioningCert::create("dan@elsewhere.example", &cred.prov_kp.public_key(), Constraint::names(["x"]), Duration::days(90), &user_kp).unwrap();
-    let req = ProvisioningRequest::mint(&idp.domain, "x", &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
+    let p_cert = ProvisioningCert::create(
+        "dan@elsewhere.example",
+        &cred.prov_kp.public_key(),
+        Constraint::names(["x"]),
+        Duration::days(90),
+        &user_kp,
+    )
+    .unwrap();
+    let req = ProvisioningRequest::mint(
+        &idp.domain,
+        "x",
+        &KeyPair::generate().public_key(),
+        false,
+        &cred.prov_kp,
+    )
+    .unwrap();
     let bundle = RequestBundle::new(foreign_cert, p_cert, req);
-    let endorsement = Endorsement::create(&broker.domain, &idp.domain, &bundle, "dan@elsewhere.example", &format!("https://{}", broker.domain), Duration::minutes(10), &broker.keypair).unwrap();
-    let (status, _) = post(&idp.base, "/provision/mint", bundle.encoded(), endorsement.encoded()).await;
+    let endorsement = Endorsement::create(
+        &broker.domain,
+        &idp.domain,
+        &bundle,
+        "dan@elsewhere.example",
+        &format!("https://{}", broker.domain),
+        Duration::minutes(10),
+        &broker.keypair,
+    )
+    .unwrap();
+    let (status, _) = post(
+        &idp.base,
+        "/provision/mint",
+        bundle.encoded(),
+        endorsement.encoded(),
+    )
+    .await;
     assert_eq!(status, 400, "foreign-rooted identity must be rejected");
 }
 
@@ -346,7 +437,14 @@ async fn reserved_names_quota_and_revocation() {
     let cred = make_credential(&delegator);
 
     let mint = |name: &str| {
-        let req = ProvisioningRequest::mint(&idp.domain, name, &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
+        let req = ProvisioningRequest::mint(
+            &idp.domain,
+            name,
+            &KeyPair::generate().public_key(),
+            false,
+            &cred.prov_kp,
+        )
+        .unwrap();
         signed(&broker, &idp.domain, &cred, &delegator.email, req)
     };
 
@@ -373,7 +471,11 @@ async fn reserved_names_quota_and_revocation() {
     assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 403);
 
     // A human handle collision → 409.
-    let other = idp.state.store.find_or_create_account("other@external.example").unwrap();
+    let other = idp
+        .state
+        .store
+        .find_or_create_account("other@external.example")
+        .unwrap();
     assert!(idp.state.store.set_handle(other.id, "taken").unwrap());
     let (b, e) = mint("taken");
     assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 409);
@@ -385,7 +487,14 @@ async fn disabled_by_default() {
     let idp = start_idp(broker.domain.clone(), 5, false).await;
     let delegator = make_delegator(&idp, "dan");
     let cred = make_credential(&delegator);
-    let req = ProvisioningRequest::mint(&idp.domain, "x", &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
+    let req = ProvisioningRequest::mint(
+        &idp.domain,
+        "x",
+        &KeyPair::generate().public_key(),
+        false,
+        &cred.prov_kp,
+    )
+    .unwrap();
     let (b, e) = signed(&broker, &idp.domain, &cred, &delegator.email, req);
     assert_eq!(post(&idp.base, "/provision/mint", &b, &e).await.0, 404);
 }
@@ -398,7 +507,10 @@ async fn constraint_and_reserve() {
     // Bound names + a subaddress pattern.
     let cred = make_credential_with(
         &delegator,
-        Constraint { names: vec!["alpha".into(), "beta".into()], patterns: vec!["dan+*".into()] },
+        Constraint {
+            names: vec!["alpha".into(), "beta".into()],
+            patterns: vec!["dan+*".into()],
+        },
     );
 
     // Reserve pre-allocates the bound names (no per-request name).
@@ -408,7 +520,14 @@ async fn constraint_and_reserve() {
 
     // A reserved name mints fine.
     let mint = |name: &str| {
-        let r = ProvisioningRequest::mint(&idp.domain, name, &KeyPair::generate().public_key(), false, &cred.prov_kp).unwrap();
+        let r = ProvisioningRequest::mint(
+            &idp.domain,
+            name,
+            &KeyPair::generate().public_key(),
+            false,
+            &cred.prov_kp,
+        )
+        .unwrap();
         signed(&broker, &idp.domain, &cred, &delegator.email, r)
     };
     let (b, e) = mint("alpha");

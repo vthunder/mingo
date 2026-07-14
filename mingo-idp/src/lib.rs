@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod config;
 pub mod error;
+pub mod poster;
 pub mod routes;
 pub mod store;
 pub mod verify;
@@ -44,7 +45,10 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         );
     Router::new()
         .route("/.well-known/browserid", get(routes::well_known))
-        .route("/session/from-assertion", post(routes::session_from_assertion))
+        .route(
+            "/session/from-assertion",
+            post(routes::session_from_assertion),
+        )
         .route("/whoami", get(routes::whoami))
         .route("/logout", post(routes::logout))
         .route("/claim_handle", post(routes::claim_handle))

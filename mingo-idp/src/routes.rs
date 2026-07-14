@@ -19,6 +19,10 @@ pub const SESSION_COOKIE: &str = "mingo_session";
 
 pub struct AppState {
     pub keypair: KeyPair,
+    /// The shared **mingo-poster** agent signing key: mingo signs SBO objects
+    /// on a consenting user's behalf with this one key, attaching a per-user
+    /// agent cert (parent = the user) + the user-signed warrant (poster.rs).
+    pub poster_key: KeyPair,
     pub store: Store,
     pub config: Config,
     /// Lazily-discovered signing key of the trusted broker (config.broker_domain),
@@ -27,8 +31,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(keypair: KeyPair, store: Store, config: Config) -> Self {
-        Self { keypair, store, config, broker_pubkey: std::sync::Mutex::new(None) }
+    pub fn new(keypair: KeyPair, poster_key: KeyPair, store: Store, config: Config) -> Self {
+        Self {
+            keypair,
+            poster_key,
+            store,
+            config,
+            broker_pubkey: std::sync::Mutex::new(None),
+        }
     }
 }
 
@@ -135,10 +145,21 @@ pub struct WhoAmI {
 pub async fn whoami(State(st): State<Shared>, cookies: Cookies) -> Json<WhoAmI> {
     match require_session(&st, &cookies) {
         Ok(account_id) => {
-            let handle = st.store.get_account(account_id).ok().flatten().and_then(|a| a.handle);
-            Json(WhoAmI { authenticated: true, handle })
+            let handle = st
+                .store
+                .get_account(account_id)
+                .ok()
+                .flatten()
+                .and_then(|a| a.handle);
+            Json(WhoAmI {
+                authenticated: true,
+                handle,
+            })
         }
-        Err(_) => Json(WhoAmI { authenticated: false, handle: None }),
+        Err(_) => Json(WhoAmI {
+            authenticated: false,
+            handle: None,
+        }),
     }
 }
 
@@ -167,7 +188,9 @@ pub async fn claim_handle(
         return Err(AppError::HandleTaken);
     }
     st.store.set_identity_mode(account_id, "handle")?;
-    Ok(Json(ClaimResp { email: format!("{}@{}", handle, st.config.domain) }))
+    Ok(Json(ClaimResp {
+        email: format!("{}@{}", handle, st.config.domain),
+    }))
 }
 
 // --------------------------------------------------------------------------
@@ -220,7 +243,10 @@ pub async fn cert_key(
     }
 
     if req.pubkey.algorithm != "Ed25519" {
-        return Err(AppError::BadRequest(format!("unsupported algorithm: {}", req.pubkey.algorithm)));
+        return Err(AppError::BadRequest(format!(
+            "unsupported algorithm: {}",
+            req.pubkey.algorithm
+        )));
     }
     let user_pk = PublicKey::from_base64(&req.pubkey.public_key)
         .map_err(|e| AppError::BadRequest(format!("invalid public key: {}", e)))?;
@@ -259,8 +285,15 @@ pub struct SeedReq {
 /// Verify the `X-Admin-Token` header against the configured admin token. Fails
 /// closed when no admin token is configured.
 fn require_admin(st: &Shared, headers: &axum::http::HeaderMap) -> Result<(), AppError> {
-    let expected = st.config.admin_token.as_deref().ok_or(AppError::Forbidden)?;
-    let provided = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let expected = st
+        .config
+        .admin_token
+        .as_deref()
+        .ok_or(AppError::Forbidden)?;
+    let provided = headers
+        .get("x-admin-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if provided != expected {
         return Err(AppError::Forbidden);
     }
@@ -279,7 +312,9 @@ pub async fn admin_seed(
     if !st.store.set_handle(account.id, &handle)? {
         return Err(AppError::HandleTaken);
     }
-    Ok(Json(ClaimResp { email: format!("{}@{}", handle, st.config.domain) }))
+    Ok(Json(ClaimResp {
+        email: format!("{}@{}", handle, st.config.domain),
+    }))
 }
 
 // --------------------------------------------------------------------------
@@ -332,7 +367,10 @@ pub async fn admin_provision(
     }
 
     if req.pubkey.algorithm != "Ed25519" {
-        return Err(AppError::BadRequest(format!("unsupported algorithm: {}", req.pubkey.algorithm)));
+        return Err(AppError::BadRequest(format!(
+            "unsupported algorithm: {}",
+            req.pubkey.algorithm
+        )));
     }
     let user_pk = PublicKey::from_base64(&req.pubkey.public_key)
         .map_err(|e| AppError::BadRequest(format!("invalid public key: {}", e)))?;
@@ -384,8 +422,15 @@ pub async fn admin_delete_account(
     headers: axum::http::HeaderMap,
     Json(req): Json<DeleteReq>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let expected = st.config.admin_token.as_deref().ok_or(AppError::Forbidden)?;
-    let provided = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let expected = st
+        .config
+        .admin_token
+        .as_deref()
+        .ok_or(AppError::Forbidden)?;
+    let provided = headers
+        .get("x-admin-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if provided != expected {
         return Err(AppError::Forbidden);
     }
@@ -471,9 +516,19 @@ fn set_session_cookie(cookies: &Cookies, sid: &str, dev_insecure: bool) {
 /// convention (e.g. `sys-checkpointer`) is auto-reserved without editing this list.
 /// The remaining entries are conventionally-sensitive email local-parts.
 const RESERVED_HANDLES: &[&str] = &[
-    "admin", "administrator", "root", "superuser",
-    "postmaster", "hostmaster", "webmaster", "abuse", "security",
-    "noreply", "no-reply", "mailer-daemon", "daemon",
+    "admin",
+    "administrator",
+    "root",
+    "superuser",
+    "postmaster",
+    "hostmaster",
+    "webmaster",
+    "abuse",
+    "security",
+    "noreply",
+    "no-reply",
+    "mailer-daemon",
+    "daemon",
 ];
 
 /// A handle is reserved if it is `sys`, lives in the `sys-*` system namespace, or
@@ -502,11 +557,17 @@ fn normalize_name(raw: &str, allow_plus: bool) -> Result<String, AppError> {
     let mut chars = h.chars();
     let first = chars.next().unwrap();
     if !first.is_ascii_alphanumeric() {
-        return Err(AppError::InvalidHandle("must start with a letter or digit".into()));
+        return Err(AppError::InvalidHandle(
+            "must start with a letter or digit".into(),
+        ));
     }
-    let ok = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') || (allow_plus && c == '+');
+    let ok = |c: char| {
+        c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') || (allow_plus && c == '+')
+    };
     if !h.chars().all(ok) {
-        return Err(AppError::InvalidHandle("disallowed character in name".into()));
+        return Err(AppError::InvalidHandle(
+            "disallowed character in name".into(),
+        ));
     }
     if handle_is_reserved(&h) {
         return Err(AppError::InvalidHandle("this handle is reserved".into()));
@@ -564,8 +625,16 @@ mod tests {
     fn reserved_handles_are_rejected() {
         // Privileged on-chain principals must not be claimable via the email onramp
         // (issuing sys@<domain> → attributed as the on-chain `sys` admin identity).
-        for h in ["sys", "Sys", " SYS ", "admin", "root",
-                  "sys-checkpointer", "sys-moderator", "SYS-anything"] {
+        for h in [
+            "sys",
+            "Sys",
+            " SYS ",
+            "admin",
+            "root",
+            "sys-checkpointer",
+            "sys-moderator",
+            "SYS-anything",
+        ] {
             assert!(
                 matches!(normalize_handle(h), Err(AppError::InvalidHandle(_))),
                 "reserved handle {h:?} must be rejected"
@@ -574,7 +643,13 @@ mod tests {
         // Ordinary handles still pass — including a "sys"-substring that isn't the
         // reserved `sys` / `sys-*` namespace.
         assert_eq!(normalize_handle(" Dan ").unwrap(), "dan");
-        assert!(normalize_handle("system").is_ok(), "not in the sys- namespace");
-        assert!(normalize_handle("sysadmin").is_ok(), "sysadmin != sys / sys-*");
+        assert!(
+            normalize_handle("system").is_ok(),
+            "not in the sys- namespace"
+        );
+        assert!(
+            normalize_handle("sysadmin").is_ok(),
+            "sysadmin != sys / sys-*"
+        );
     }
 }

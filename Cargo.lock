@@ -279,11 +279,12 @@ dependencies = [
 [[package]]
 name = "browserid-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=7d69c948890eb19e6d06daf2c97b68fb66951c9a#7d69c948890eb19e6d06daf2c97b68fb66951c9a"
+source = "git+https://github.com/vthunder/browserid-ng?rev=4fdfa86#4fdfa866aa32125b90908314561e4a28f56e6ef0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
+ "flate2",
  "jsonwebtoken",
  "rand",
  "serde",
@@ -295,7 +296,7 @@ dependencies = [
 [[package]]
 name = "browserid-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=a39b5ea#a39b5ea6b7a212845462d24bbcd329d68951ea13"
+source = "git+https://github.com/vthunder/browserid-ng?rev=e572cda#e572cda17ef210385f96d4367474d70a69b261ee"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1582,10 +1583,11 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=a39b5ea)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=e572cda)",
  "chrono",
  "reqwest 0.12.25",
  "rusqlite",
+ "sbo-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -2208,10 +2210,10 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 [[package]]
 name = "sbo-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/sbo?rev=5855e9926374dce7eac87df9963f6b33093f7a63#5855e9926374dce7eac87df9963f6b33093f7a63"
+source = "git+https://github.com/vthunder/sbo?rev=3a6f959#3a6f959afaa394d5dca4d53a5f6bfb850349d096"
 dependencies = [
  "base64 0.22.1",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=7d69c948890eb19e6d06daf2c97b68fb66951c9a)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=4fdfa86)",
  "dirs",
  "dnssec-prover",
  "ed25519-dalek",
@@ -2232,7 +2234,7 @@ dependencies = [
 [[package]]
 name = "sbo-crypto"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/sbo?rev=5855e9926374dce7eac87df9963f6b33093f7a63#5855e9926374dce7eac87df9963f6b33093f7a63"
+source = "git+https://github.com/vthunder/sbo?rev=3a6f959#3a6f959afaa394d5dca4d53a5f6bfb850349d096"
 dependencies = [
  "blst",
  "ed25519-dalek",
@@ -2244,7 +2246,7 @@ dependencies = [
 [[package]]
 name = "sbo-types"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/sbo?rev=5855e9926374dce7eac87df9963f6b33093f7a63#5855e9926374dce7eac87df9963f6b33093f7a63"
+source = "git+https://github.com/vthunder/sbo?rev=3a6f959#3a6f959afaa394d5dca4d53a5f6bfb850349d096"
 dependencies = [
  "serde",
 ]

@@ -6,11 +6,14 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use sbo_core::keyring::Keyring;
 use mingo_app::genesis::{community_policy_open, mingo_genesis, MingoCommunity};
+use sbo_core::keyring::Keyring;
 
 #[derive(Parser)]
-#[command(name = "mingo", about = "Mingo application CLI (emits signed SBO wire)")]
+#[command(
+    name = "mingo",
+    about = "Mingo application CLI (emits signed SBO wire)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -83,7 +86,8 @@ enum Commands {
 /// provider key without importing it into the keyring.
 fn load_domain_key_file(path: &str) -> Result<sbo_core::crypto::SigningKey> {
     let contents = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-    let v: serde_json::Value = serde_json::from_str(&contents).context("parsing domain key file")?;
+    let v: serde_json::Value =
+        serde_json::from_str(&contents).context("parsing domain key file")?;
     let secret = v
         .get("secret_key")
         .and_then(|s| s.as_str())
@@ -101,7 +105,17 @@ fn main() -> Result<()> {
     let keyring = Keyring::open().context("opening keyring")?;
 
     match cli.command {
-        Commands::Genesis { domain, broker, key, domain_key, domain_key_file, checkpoint_key, checkpoint_key_out, dnssec_evidence, out } => {
+        Commands::Genesis {
+            domain,
+            broker,
+            key,
+            domain_key,
+            domain_key_file,
+            checkpoint_key,
+            checkpoint_key_out,
+            dnssec_evidence,
+            out,
+        } => {
             let sys_alias = keyring.resolve_alias(key.as_deref())?;
             let sys_key = keyring.get_signing_key(&sys_alias)?;
             // Domain key: a transient file (browserid StoredKeypair seed — e.g. the
@@ -113,7 +127,10 @@ fn main() -> Result<()> {
                         Some(dk) => keyring.resolve_alias(Some(dk))?,
                         None => sys_alias.clone(),
                     };
-                    (keyring.get_signing_key(&alias)?, format!("keyring `{alias}`"))
+                    (
+                        keyring.get_signing_key(&alias)?,
+                        format!("keyring `{alias}`"),
+                    )
                 }
             };
             // Dedicated checkpoint authority key — from a keyring alias, or freshly
@@ -124,24 +141,49 @@ fn main() -> Result<()> {
                     let k = keyring.get_signing_key(&a)?;
                     (k, format!("keyring alias `{a}`"))
                 }
-                None => (sbo_core::crypto::SigningKey::generate(), "freshly generated".to_string()),
+                None => (
+                    sbo_core::crypto::SigningKey::generate(),
+                    "freshly generated".to_string(),
+                ),
             };
             let broker = broker.unwrap_or_else(|| format!("id.{}", domain));
 
             // Starter communities (issuer = <id>@<domain>).
             let issuers: Vec<(String, String, String, String)> = [
-                ("cooks", "Cooks", "Home cooks swapping recipes and technique."),
-                ("woodworking", "Woodworking", "Makers, joinery, and finishing."),
-                ("homelab", "Homelab", "Self-hosters and home infrastructure."),
+                (
+                    "cooks",
+                    "Cooks",
+                    "Home cooks swapping recipes and technique.",
+                ),
+                (
+                    "woodworking",
+                    "Woodworking",
+                    "Makers, joinery, and finishing.",
+                ),
+                (
+                    "homelab",
+                    "Homelab",
+                    "Self-hosters and home infrastructure.",
+                ),
             ]
             .iter()
             .map(|(id, name, desc)| {
-                ((*id).to_string(), (*name).to_string(), (*desc).to_string(), format!("{}@{}", id, domain))
+                (
+                    (*id).to_string(),
+                    (*name).to_string(),
+                    (*desc).to_string(),
+                    format!("{}@{}", id, domain),
+                )
             })
             .collect();
             let communities: Vec<MingoCommunity> = issuers
                 .iter()
-                .map(|(id, name, desc, issuer)| MingoCommunity { id, name, description: desc, issuer })
+                .map(|(id, name, desc, issuer)| MingoCommunity {
+                    id,
+                    name,
+                    description: desc,
+                    issuer,
+                })
                 .collect();
 
             let created_at = std::time::SystemTime::now()
@@ -150,7 +192,9 @@ fn main() -> Result<()> {
                 .ok();
 
             let dnssec_bytes = match dnssec_evidence.as_deref() {
-                Some(p) => Some(std::fs::read(p).with_context(|| format!("reading dnssec evidence {p}"))?),
+                Some(p) => {
+                    Some(std::fs::read(p).with_context(|| format!("reading dnssec evidence {p}"))?)
+                }
                 None => None,
             };
 
@@ -195,7 +239,12 @@ fn main() -> Result<()> {
                 out
             );
         }
-        Commands::OpenCommunity { community_id, issuer, key, out } => {
+        Commands::OpenCommunity {
+            community_id,
+            issuer,
+            key,
+            out,
+        } => {
             let alias = keyring.resolve_alias(key.as_deref())?;
             let signing_key = keyring.get_signing_key(&alias)?;
             let wire = community_policy_open(&signing_key, &community_id, &issuer);

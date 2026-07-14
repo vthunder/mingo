@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use mingo_idp::config::{load_or_generate_keypair, Config};
+use mingo_idp::config::{load_or_generate_keypair, load_or_generate_named_keypair, Config};
 use mingo_idp::store::Store;
 use mingo_idp::{build_router, AppState, Shared};
 
@@ -33,13 +33,23 @@ async fn main() -> anyhow::Result<()> {
     if config.agent_provisioning {
         tracing::info!(quota = config.agent_quota, "agent provisioning enabled");
     }
+    let poster_key = load_or_generate_named_keypair(
+        "MINGO_POSTER_SECRET",
+        "MINGO_POSTER_KEY_JSON",
+        &config.poster_key_file,
+    )?;
+    tracing::info!(
+        agent = %format!("mingo-poster@{}", config.domain),
+        pubkey = %poster_key.public_key().to_base64(),
+        "mingo-poster agent key loaded"
+    );
     let store = Store::open(&config.db_path)?;
 
     let static_dir = config.static_dir.clone();
     let spa_dir = config.spa_dir.clone();
     let bind = config.bind.clone();
 
-    let state: Shared = Arc::new(AppState::new(keypair, store, config));
+    let state: Shared = Arc::new(AppState::new(keypair, poster_key, store, config));
     let app = build_router(state, &static_dir, &spa_dir);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;

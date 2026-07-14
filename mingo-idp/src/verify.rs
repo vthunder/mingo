@@ -27,7 +27,10 @@ impl HttpFetcher {
             .timeout(Duration::from_secs(10))
             .build()
             .expect("http client");
-        Self { client, require_https }
+        Self {
+            client,
+            require_https,
+        }
     }
 }
 
@@ -37,9 +40,15 @@ impl SupportDocumentFetcher for HttpFetcher {
         let resp = self.client.get(try_url("https")).send();
         let resp = match resp {
             Ok(r) if r.status().is_success() => r,
-            _ if !self.require_https => self.client.get(try_url("http")).send().map_err(|e| {
-                CoreError::DiscoveryFailed { domain: domain.to_string(), reason: e.to_string() }
-            })?,
+            _ if !self.require_https => {
+                self.client
+                    .get(try_url("http"))
+                    .send()
+                    .map_err(|e| CoreError::DiscoveryFailed {
+                        domain: domain.to_string(),
+                        reason: e.to_string(),
+                    })?
+            }
             Ok(r) => {
                 return Err(CoreError::DiscoveryFailed {
                     domain: domain.to_string(),
@@ -108,7 +117,10 @@ pub fn verify_external_assertion(
         .ok_or_else(|| "no certificate".to_string())?;
 
     let issuer = cert.issuer().to_string();
-    let email = cert.email().ok_or_else(|| "cert has no email".to_string())?.to_string();
+    let email = cert
+        .email()
+        .ok_or_else(|| "cert has no email".to_string())?
+        .to_string();
     let email_domain = email
         .split('@')
         .nth(1)
@@ -119,7 +131,10 @@ pub fn verify_external_assertion(
         || issuer == email_domain
         || matches!(discover(&email_domain, &fetcher, &config), Ok(r) if r.domain == issuer);
     if !authorized {
-        return Err(format!("issuer '{}' not authorized for '{}'", issuer, email_domain));
+        return Err(format!(
+            "issuer '{}' not authorized for '{}'",
+            issuer, email_domain
+        ));
     }
 
     if backed.assertion().audience() != audience {

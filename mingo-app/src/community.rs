@@ -119,7 +119,8 @@ mod tests {
 
     #[test]
     fn defaults_apply_when_paths_omitted() {
-        let payload = br#"{"name":"Cooks","issuer":"cooks@example.org","policy":"/sys/policies/root"}"#;
+        let payload =
+            br#"{"name":"Cooks","issuer":"cooks@example.org","policy":"/sys/policies/root"}"#;
         let c = parse_community(payload).unwrap();
         assert_eq!(c.members_prefix(), "/members/");
         assert_eq!(c.spaces_prefix(), "/spaces/");

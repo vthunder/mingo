@@ -79,14 +79,18 @@ impl Store {
         // Migration for pre-existing DBs: add identity_mode if absent. SQLite
         // has no ADD COLUMN IF NOT EXISTS, so add-and-ignore the dup error.
         let _ = conn.execute("ALTER TABLE accounts ADD COLUMN identity_mode TEXT", []);
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// In-memory store (tests).
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn now() -> i64 {
@@ -203,7 +207,10 @@ impl Store {
         {
             conn.execute("DELETE FROM sessions WHERE account_id = ?1", params![id])?;
         }
-        conn.execute("DELETE FROM accounts WHERE external_email = ?1", params![email])
+        conn.execute(
+            "DELETE FROM accounts WHERE external_email = ?1",
+            params![email],
+        )
     }
 
     /// Invalidate a single session (logout). Idempotent.
@@ -217,7 +224,10 @@ impl Store {
     /// sessions can't linger and keep authorizing /cert_key.
     pub fn delete_account_sessions(&self, account_id: i64) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM sessions WHERE account_id = ?1", params![account_id])?;
+        conn.execute(
+            "DELETE FROM sessions WHERE account_id = ?1",
+            params![account_id],
+        )?;
         Ok(())
     }
 
@@ -269,7 +279,11 @@ impl Store {
         let name = name.to_lowercase();
         let conn = self.conn.lock().unwrap();
         let handle_taken: Option<i64> = conn
-            .query_row("SELECT id FROM accounts WHERE handle = ?1", params![name], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM accounts WHERE handle = ?1",
+                params![name],
+                |r| r.get(0),
+            )
             .optional()?;
         if handle_taken.is_some() {
             return Ok(false);
@@ -457,7 +471,11 @@ mod tests {
         assert_eq!(s.count_active_agent_identities(a.id).unwrap(), 1);
         s.revoke_agent_identity("attestor").unwrap();
         assert_eq!(s.count_active_agent_identities(a.id).unwrap(), 0);
-        assert!(!s.get_agent_identity("attestor").unwrap().unwrap().is_active());
+        assert!(!s
+            .get_agent_identity("attestor")
+            .unwrap()
+            .unwrap()
+            .is_active());
         // Revoked names are never recycled.
         assert!(!s.create_agent_identity(a.id, "attestor").unwrap());
         assert!(!s.set_handle(b.id, "attestor").unwrap());
@@ -470,7 +488,11 @@ mod tests {
         let (sid, _csrf) = s.create_session(a.id).unwrap();
         assert_eq!(s.account_for_session(&sid).unwrap(), Some(a.id));
         s.delete_session(&sid).unwrap();
-        assert_eq!(s.account_for_session(&sid).unwrap(), None, "logout must invalidate the session");
+        assert_eq!(
+            s.account_for_session(&sid).unwrap(),
+            None,
+            "logout must invalidate the session"
+        );
         // Idempotent.
         s.delete_session(&sid).unwrap();
     }

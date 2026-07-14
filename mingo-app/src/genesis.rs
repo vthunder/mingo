@@ -99,7 +99,11 @@ pub fn community_policy(signing_key: &SigningKey, community_id: &str, issuer: &s
 /// attestation `type` carries the community id, and the matcher filters on `type`
 /// (no engine change needed — the same mechanism `role:moderator` uses). Bans are
 /// still gated on the community `issuer` so moderation stays with the authority.
-pub fn community_policy_open(signing_key: &SigningKey, community_id: &str, issuer: &str) -> Vec<u8> {
+pub fn community_policy_open(
+    signing_key: &SigningKey,
+    community_id: &str,
+    issuer: &str,
+) -> Vec<u8> {
     let path = format!("/communities/{community_id}/");
     let spaces = format!("/communities/{community_id}/spaces/**");
     let membership_type = format!("membership:{community_id}");
@@ -206,6 +210,7 @@ pub fn mingo_genesis(
             prev: None,
             auth_cert: None,
             auth_evidence: None,
+            auth_warrant: None,
         };
         ev_msg.sign(domain_signing_key);
         batch.extend(wire::serialize(&ev_msg));
@@ -239,6 +244,7 @@ pub fn mingo_genesis(
         prev: None,
         auth_cert: None,
         auth_evidence: domain_auth_evidence,
+        auth_warrant: None,
     };
     domain_msg.sign(domain_signing_key);
     batch.extend(wire::serialize(&domain_msg));
@@ -275,6 +281,7 @@ pub fn mingo_genesis(
         prev: None,
         auth_cert: None,
         auth_evidence: None,
+        auth_warrant: None,
     };
     sys_msg.sign(sys_signing_key);
     batch.extend(wire::serialize(&sys_msg));
@@ -287,8 +294,12 @@ pub fn mingo_genesis(
     // `checkpoint.v1` roots signed by this dedicated key without ever holding the
     // `sys` key (State Commitment §Checkpoint authority).
     let checkpoint_public_key = checkpoint_signing_key.public_key();
-    let ckpt_jwt = sbo_core::jwt::create_self_signed_identity(checkpoint_signing_key, "sys-checkpointer", None)
-        .expect("sys-checkpointer JWT creation should not fail");
+    let ckpt_jwt = sbo_core::jwt::create_self_signed_identity(
+        checkpoint_signing_key,
+        "sys-checkpointer",
+        None,
+    )
+    .expect("sys-checkpointer JWT creation should not fail");
     let ckpt_bytes = ckpt_jwt.as_bytes().to_vec();
     let ckpt_hash = ContentHash::sha256(&ckpt_bytes);
     let mut ckpt_msg = Message {
@@ -311,6 +322,7 @@ pub fn mingo_genesis(
         prev: None,
         auth_cert: None,
         auth_evidence: None,
+        auth_warrant: None,
     };
     ckpt_msg.sign(checkpoint_signing_key);
     batch.extend(wire::serialize(&ckpt_msg));
@@ -416,6 +428,7 @@ pub fn mingo_genesis(
         prev: None,
         auth_cert: None,
         auth_evidence: None,
+        auth_warrant: None,
     };
     policy_msg.sign(sys_signing_key);
     batch.extend(wire::serialize(&policy_msg));
@@ -431,7 +444,8 @@ mod tests {
     fn parse_verified(wire_bytes: &[u8]) -> Message {
         let msg = wire::parse(wire_bytes).expect("serialized message should parse");
         sbo_core::message::verify_message(&msg).expect("signature should verify");
-        sbo_core::schema::validate_schema(&msg).expect("payload should validate against its schema");
+        sbo_core::schema::validate_schema(&msg)
+            .expect("payload should validate against its schema");
         msg
     }
 
@@ -473,30 +487,50 @@ mod tests {
         let sys_key = SigningKey::generate();
         let ckpt_key = SigningKey::generate();
         let batch = mingo_genesis(
-            &domain_key, &sys_key, &ckpt_key, "mingo.place", "id.mingo.place", &[],
-            Some(1_700_000_000), None,
+            &domain_key,
+            &sys_key,
+            &ckpt_key,
+            "mingo.place",
+            "id.mingo.place",
+            &[],
+            Some(1_700_000_000),
+            None,
         );
         let msgs = wire::parse_batch(&batch).expect("batch parses");
-        let policy_msg = msgs.iter()
+        let policy_msg = msgs
+            .iter()
             .find(|m| m.path.to_string() == "/sys/policies/" && m.id.as_str() == "root")
             .expect("root policy present");
         // It is a valid policy.v2 document.
         let _typed: sbo_core::policy::Policy =
-            serde_json::from_slice(policy_msg.payload.as_ref().unwrap()).expect("parses as policy.v2");
+            serde_json::from_slice(policy_msg.payload.as_ref().unwrap())
+                .expect("parses as policy.v2");
         // The admin role is the sys identity, granted transfer+delete over /**.
         let v: serde_json::Value =
             serde_json::from_slice(policy_msg.payload.as_ref().unwrap()).unwrap();
         // admin is matched by the sys public KEY (not the bare name), so IdP-issued
         // sys@<domain> emails can't reach admin (mingo-d7bi).
         assert!(
-            v["roles"]["admin"][0]["key"].as_str().unwrap().starts_with("ed25519:"),
+            v["roles"]["admin"][0]["key"]
+                .as_str()
+                .unwrap()
+                .starts_with("ed25519:"),
             "admin role member must be key-form"
         );
-        let admin_grant = v["grants"].as_array().unwrap().iter().find(|g| {
-            g["to"]["role"] == serde_json::json!("admin") && g["on"] == serde_json::json!("/**")
-        }).expect("admin grant on /** present");
-        let can: Vec<&str> = admin_grant["can"].as_array().unwrap()
-            .iter().filter_map(|c| c.as_str()).collect();
+        let admin_grant = v["grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| {
+                g["to"]["role"] == serde_json::json!("admin") && g["on"] == serde_json::json!("/**")
+            })
+            .expect("admin grant on /** present");
+        let can: Vec<&str> = admin_grant["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.as_str())
+            .collect();
         assert!(can.contains(&"transfer"), "admin must be granted transfer");
         assert!(can.contains(&"delete"), "admin must be granted delete");
 
@@ -505,27 +539,50 @@ mod tests {
         let owner_grant = v["grants"].as_array().unwrap().iter().find(|g| {
             g["to"] == serde_json::json!("owner") && g["on"] == serde_json::json!("/u/$owner/**")
         });
-        assert!(owner_grant.is_some(), "owner namespace grant must be /u/$owner/**");
+        assert!(
+            owner_grant.is_some(),
+            "owner namespace grant must be /u/$owner/**"
+        );
 
         // The checkpoint authority is granted CREATE (only) on /sys/checkpoints/**,
         // matched by its public key (not a bare name, which would canonicalize-mismatch).
-        let ckpt_grant = v["grants"].as_array().unwrap().iter().find(|g| {
-            g["to"].get("key").is_some() && g["on"] == serde_json::json!("/sys/checkpoints/**")
-        }).expect("checkpointer key grant present");
+        let ckpt_grant = v["grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| {
+                g["to"].get("key").is_some() && g["on"] == serde_json::json!("/sys/checkpoints/**")
+            })
+            .expect("checkpointer key grant present");
         assert!(
-            ckpt_grant["to"]["key"].as_str().unwrap().starts_with("ed25519:"),
+            ckpt_grant["to"]["key"]
+                .as_str()
+                .unwrap()
+                .starts_with("ed25519:"),
             "checkpointer grant must match by ed25519 pubkey"
         );
-        let ckpt_can: Vec<&str> = ckpt_grant["can"].as_array().unwrap()
-            .iter().filter_map(|c| c.as_str()).collect();
-        assert_eq!(ckpt_can, vec!["create"], "checkpointer must have create only (write-once), not update");
+        let ckpt_can: Vec<&str> = ckpt_grant["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.as_str())
+            .collect();
+        assert_eq!(
+            ckpt_can,
+            vec!["create"],
+            "checkpointer must have create only (write-once), not update"
+        );
         // And a key-rooted checkpointer identity exists.
         assert!(
             msgs.iter().any(|m| m.path.to_string() == "/sys/names/" && m.id.as_str() == "sys-checkpointer"),
             "sys-checkpointer identity must be registered at genesis"
         );
         assert!(
-            !v["grants"].as_array().unwrap().iter().any(|g| g["on"] == serde_json::json!("/$owner/**")),
+            !v["grants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g["on"] == serde_json::json!("/$owner/**")),
             "root-level /$owner/** grant must be gone (moved under /u/)"
         );
     }
@@ -535,9 +592,24 @@ mod tests {
         let domain_key = SigningKey::generate();
         let sys_key = SigningKey::generate();
         let communities = [
-            MingoCommunity { id: "cooks", name: "Cooks", description: "Home cooks.", issuer: "cooks@mingo.place" },
-            MingoCommunity { id: "woodworking", name: "Woodworking", description: "Makers.", issuer: "woodworking@mingo.place" },
-            MingoCommunity { id: "homelab", name: "Homelab", description: "Self-hosters.", issuer: "homelab@mingo.place" },
+            MingoCommunity {
+                id: "cooks",
+                name: "Cooks",
+                description: "Home cooks.",
+                issuer: "cooks@mingo.place",
+            },
+            MingoCommunity {
+                id: "woodworking",
+                name: "Woodworking",
+                description: "Makers.",
+                issuer: "woodworking@mingo.place",
+            },
+            MingoCommunity {
+                id: "homelab",
+                name: "Homelab",
+                description: "Self-hosters.",
+                issuer: "homelab@mingo.place",
+            },
         ];
         let ckpt_key = SigningKey::generate();
         let batch = mingo_genesis(
@@ -581,32 +653,57 @@ mod tests {
         let evidence: &[u8] = b"fake-dnssec-chain-bytes";
 
         let batch = mingo_genesis(
-            &domain_key, &sys_key, &ckpt_key, "mingo.place", "browserid.me", &[],
-            Some(1_700_000_000), Some(evidence),
+            &domain_key,
+            &sys_key,
+            &ckpt_key,
+            "mingo.place",
+            "browserid.me",
+            &[],
+            Some(1_700_000_000),
+            Some(evidence),
         );
         let msgs = wire::parse_batch(&batch).expect("batch parses");
 
         // A dnssec.v1 object is seeded at /sys/dnssec/mingo.place, BEFORE the domain object…
-        let dnssec_idx = msgs.iter().position(|m| {
-            m.path.to_string() == "/sys/dnssec/" && m.id.as_str() == "mingo.place"
-                && m.content_schema.as_deref() == Some("dnssec.v1")
-        }).expect("dnssec.v1 seeded");
-        let domain_idx = msgs.iter().position(|m| {
-            m.path.to_string() == "/sys/domains/" && m.id.as_str() == "mingo.place"
-        }).expect("domain object present");
+        let dnssec_idx = msgs
+            .iter()
+            .position(|m| {
+                m.path.to_string() == "/sys/dnssec/"
+                    && m.id.as_str() == "mingo.place"
+                    && m.content_schema.as_deref() == Some("dnssec.v1")
+            })
+            .expect("dnssec.v1 seeded");
+        let domain_idx = msgs
+            .iter()
+            .position(|m| m.path.to_string() == "/sys/domains/" && m.id.as_str() == "mingo.place")
+            .expect("domain object present");
         assert!(dnssec_idx < domain_idx, "dnssec.v1 must precede domain.v1");
         assert_eq!(msgs[dnssec_idx].payload.as_deref(), Some(evidence));
         // …and the domain object references it via Auth-Evidence: ref:.
-        assert_eq!(msgs[domain_idx].auth_evidence.as_deref(), Some("ref:/sys/dnssec/mingo.place"));
+        assert_eq!(
+            msgs[domain_idx].auth_evidence.as_deref(),
+            Some("ref:/sys/dnssec/mingo.place")
+        );
 
         // Plain Mode B (no evidence): no dnssec object, no ref.
         let plain = mingo_genesis(
-            &domain_key, &sys_key, &ckpt_key, "mingo.place", "browserid.me", &[],
-            Some(1_700_000_000), None,
+            &domain_key,
+            &sys_key,
+            &ckpt_key,
+            "mingo.place",
+            "browserid.me",
+            &[],
+            Some(1_700_000_000),
+            None,
         );
         let pmsgs = wire::parse_batch(&plain).unwrap();
-        assert!(!pmsgs.iter().any(|m| m.content_schema.as_deref() == Some("dnssec.v1")));
-        let pdomain = pmsgs.iter().find(|m| m.path.to_string() == "/sys/domains/").unwrap();
+        assert!(!pmsgs
+            .iter()
+            .any(|m| m.content_schema.as_deref() == Some("dnssec.v1")));
+        let pdomain = pmsgs
+            .iter()
+            .find(|m| m.path.to_string() == "/sys/domains/")
+            .unwrap();
         assert_eq!(pdomain.auth_evidence, None);
     }
 }

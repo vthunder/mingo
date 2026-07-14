@@ -1,11 +1,11 @@
 ---
 # mingo-3f3i
 title: 'mingo-poster agent: delegated server-side signing (mobile posting)'
-status: draft
+status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-14T16:52:00Z
-updated_at: 2026-07-14T20:17:12Z
+updated_at: 2026-07-14T21:56:09Z
 ---
 
 Problem: mingo's posting requires client-side per-object signing via browserid
@@ -128,3 +128,53 @@ same-issuer.
 Sequence: (1) browserid-core external request type + tests; (2) registrar
 /warrant/request external branch + store + rate-limit; (3) consent page +
 account 'external services' UI; (4) mingo backend signer + mingo-web redirect.
+
+
+## Implementation plan (confirmed 2026-07-14, browserid-ng side shipped)
+
+browserid-ng external-warrant support is MERGED + DEPLOYED (browserid.me): POST /warrant/request
+accepts a 2-part `agent_cert~R` bundle, verifies it against the agent's foreign issuer key
+(DNSSEC-discovered), routes the delegator hint to the local account, and parks a redirect-tied
+`/consent/<code>` row. So mingo is now unblocked to build the requester + signer side.
+
+### Confirmed attribution (from sbo-core authorize.rs)
+Post attributed to the USER (pseudonym preserved) via an on-behalf warrant: the warrant the user
+signs at consent MUST carry `as:<user-email>` + at least one `path:` scope → `warrant_effective_email`
+returns the delegator (the user). Audience must identify the mingo db (`sbo+raw://avail:turing:506/`
+bare, per deploy/sbo-daemon; `audience_identifies_db` accepts the bare authority across regenesis).
+
+### SBO agent-write shape (from sbo-core tests/agent_write.rs)
+Message signed by the shared mingo-poster agent key, with `auth_cert` = per-user agent cert
+(agent=mingo-poster@mingo.place, parent=<user>, minted in-process by mingo IdP key),
+`auth_warrant` = the user-signed warrant JWS (from /warrant/poll), `auth_evidence` = on-chain
+`/sys/dnssec/` ref (mingo posts /sys/dnssec for BOTH mingo.place and the user's issuer). owner =
+the user's email (object lives in the user's namespace; effective author resolved from warrant).
+
+### Dependency bumps needed
+- mingo-idp/Cargo.toml: browserid-core rev a39b5ea → (>= e572cda, the merged external-warrant work)
+  for ProvisioningRequest::warrant_external + ExternalWarrantRequest. Non-breaking (additive;
+  create_agent signature unchanged).
+- mingo-idp: ADD sbo-core dep (rev 3a6f959, matching deployed daemon) for Message/wire assembly +
+  authorize/attribution helpers. (mingo-idp currently has no sbo-core dep.)
+
+### Pieces (in dependency order)
+1. Config: shared mingo-poster agent key (MINGO_POSTER_KEY_* mirroring load_or_generate_keypair).
+2. poster.rs (mingo-idp): pure, unit-testable —
+   - mint_poster_cert(user_email) -> Certificate (create_agent, parent=user, mingo IdP key)
+   - external_warrant_request(user_email, grants) -> `agent_cert~R` string (warrant_external, signed
+     by the poster agent key)
+   - assemble_agent_write(user_email, warrant_jws, spec) -> wire bytes (Message + auth_cert/warrant/
+     evidence, signed by agent key)
+3. store.rs: `poster_warrants` table (account_id/user_email → warrant JWS + aud + scopes + exp).
+4. Endpoints (routes): POST /poster/enable (session-gated) → build external request, POST to
+   browser id.me/warrant/request, return verification_uri for redirect; POST /poster/poll (or
+   server-side poll loop) → /warrant/poll, store warrant; GET /poster/status; POST /poster/submit
+   (session-gated) → look up warrant, mint/refresh cert, assemble wire, POST daemon /v1/submit.
+5. On-chain /sys/dnssec refresh for mingo.place + each delegator issuer (auth_evidence source).
+6. mingo-web app.js: "Let mingo post for me" toggle → /poster/enable redirect; when enabled, route
+   writeContent to /poster/submit instead of signEnvelope+submitWire. Keep client path as fallback.
+
+### Open/verify during impl
+- Daemon owner-vs-effective-email check: confirm owner=<user> is accepted for an on-behalf agent write.
+- auth_evidence format the deployed daemon expects for the second (delegator) issuer proof (on-chain
+  /sys/dnssec ref vs inline) — align with sbo-core attribution.rs daemon-resolved path.

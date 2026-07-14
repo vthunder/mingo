@@ -15,8 +15,13 @@ path = "src/main.rs"
 
 [dependencies]
 # BrowserID protocol primitives (certificate signing, assertion verify, discovery).
-# Pinned git dependency on browserid-ng (a849ade = spec v0.4: typed agent certs + warrants).
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "a39b5ea" }
+# Pinned git dependency on browserid-ng (e572cda = external warrant requests:
+# ProvisioningRequest::warrant_external + ExternalWarrantRequest, for mingo-poster).
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "e572cda" }
+
+# SBO reference impl — server-side agent-write assembly (Message/wire) + the
+# authorize/attribution helpers. Shares the workspace rev (the deployed daemon's).
+sbo-core.workspace = true
 
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"

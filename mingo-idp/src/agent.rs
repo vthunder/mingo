@@ -122,8 +122,8 @@ fn verify_request(
         return Err(AgentError::Disabled);
     }
 
-    let bundle =
-        RequestBundle::parse(&req.request_bundle).map_err(|e| AgentError::BadRequest(e.to_string()))?;
+    let bundle = RequestBundle::parse(&req.request_bundle)
+        .map_err(|e| AgentError::BadRequest(e.to_string()))?;
 
     // The U_cert must be our own issuance (identity-domain rule): verifying the
     // chain against our key rejects any foreign-rooted parent.
@@ -328,7 +328,9 @@ pub async fn list(
         })
         .collect();
 
-    Ok(Json(serde_json::json!({ "success": true, "identities": identities })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "identities": identities }),
+    ))
 }
 
 /// POST /provision/revoke
