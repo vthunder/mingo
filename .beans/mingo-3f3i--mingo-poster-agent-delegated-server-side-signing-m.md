@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-14T16:52:00Z
-updated_at: 2026-07-14T22:12:37Z
+updated_at: 2026-07-14T22:24:04Z
 ---
 
 Problem: mingo's posting requires client-side per-object signing via browserid
@@ -201,3 +201,24 @@ REMAINING (next increment — needs live-daemon verification):
       writeContent → /poster/submit when enabled (keep client-signed path as fallback).
 - [ ] VERIFY against live daemon: owner=<user> accepted for on-behalf agent write; exact
       auth_evidence format the deployed daemon expects for the delegator-issuer proof.
+
+
+## Endpoints + web toggle landed (2026-07-15, commit 1e3dc3e on feat/mingo-poster-signer)
+
+DONE (tested; branch not deployed):
+- [x] store.rs: poster_warrants + poster_pending tables (CREATE IF NOT EXISTS — no migration step) + round-trip test.
+- [x] Endpoints (session-gated, same-origin): POST /poster/enable (mint cert → external warrant request → browserid.me/warrant/request → verification_uri), POST /poster/poll (store approved warrant), GET /poster/status, POST /poster/disable, POST /poster/submit (assemble agent write → daemon /v1/submit). 4 HTTP smoke tests.
+- [x] mingo-web app.js: "📱 let mingo post for me" toggle (tap-through approve link, no window.open; background poll), writeContent routes email-rooted writes → /poster/submit when enabled, client-signed path kept as fallback.
+
+STILL TO VERIFY LIVE (before rollout — deploy mingo to test):
+- [ ] Daemon accepts owner=<user> for an on-behalf (as:) agent write (I set owner=user; if the
+      daemon wants owner=agent, adjust assemble_agent_write's owner + the submit handler).
+- [ ] /sys/dnssec freshness for the DELEGATOR issuer at submit time. The poster path omits
+      auth_evidence (daemon resolves on-chain), but in poster mode no client posts
+      /sys/dnssec/<issuer>. Options: (a) client still calls ensureDnssecFresh (key-rooted, popup-free)
+      before poster submits; (b) a server-side dnssec refresh in mingo-idp. mingo.place's own proof is
+      assumed maintained. This is the one piece that can make the first server-side post fail if stale.
+- [ ] Deploy config: set MINGO_POSTER_SECRET (or _KEY_JSON/_KEY_FILE) on the mingo dokku app.
+- [ ] Handle-identity delegation depends on the handle's identity key being available in the
+      browserid.me consent-page keystore (external-email delegation works cleanly; handle may need the
+      user to have that identity active at browserid.me first).

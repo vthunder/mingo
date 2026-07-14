@@ -24,6 +24,7 @@ use std::time::Duration as StdDuration;
 use anyhow::{anyhow, Result};
 use axum::extract::State;
 use axum::Json;
+use base64::Engine as _;
 use browserid_core::provisioning::{ExternalWarrantRequest, ProvisioningRequest, WarrantGrant};
 use browserid_core::{Certificate, KeyPair, PublicKey, Warrant};
 use chrono::Duration;
@@ -237,6 +238,97 @@ async fn post_json<T: DeserializeOwned + Send + 'static>(
     .map_err(|e| AppError::Internal(format!("http task: {e}")))?
 }
 
+/// Headroom over `needed_by` when checking DNSSEC-proof freshness — covers
+/// inclusion latency + clock skew (mirrors the client's `MARGIN`).
+const DNSSEC_MARGIN_SECS: i64 = 3600;
+
+#[derive(Deserialize)]
+struct DnssecInfo {
+    #[serde(default)]
+    needs_refresh: bool,
+    /// The freshly-captured RFC 9102 proof (base64url), present only when a
+    /// refresh is needed.
+    #[serde(default)]
+    proof_b64: Option<String>,
+}
+
+/// GET the daemon's freshness verdict for `/sys/dnssec/<domain>` (and, when
+/// stale, the fresh proof it captured for us).
+async fn get_dnssec(
+    daemon_url: &str,
+    domain: &str,
+    needed_by: i64,
+) -> Result<DnssecInfo, AppError> {
+    let url = format!(
+        "{daemon_url}/v1/dnssec?domain={}&needed_by={needed_by}&margin={DNSSEC_MARGIN_SECS}",
+        urlencoding(domain)
+    );
+    tokio::task::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(StdDuration::from_secs(20))
+            .build()
+            .map_err(|e| AppError::Internal(format!("http client: {e}")))?;
+        let resp = client
+            .get(&url)
+            .send()
+            .map_err(|e| AppError::Internal(format!("GET {url}: {e}")))?;
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        if !status.is_success() {
+            return Err(AppError::Internal(format!("dnssec check {status}: {text}")));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| AppError::Internal(format!("decode dnssec: {e}; body={text}")))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("dnssec task: {e}")))?
+}
+
+/// Ensure `/sys/dnssec/<domain>`'s on-chain proof is valid through `now +
+/// margin`, refreshing it server-side when it isn't. This is the server-side
+/// counterpart of the client's `ensureDnssecFresh`: an agent write attributes
+/// only if BOTH the agent's issuer and the delegator's issuer have a fresh
+/// on-chain proof, and in server-side mode no browser is posting them. The
+/// refresh is a **key-rooted, self-authorizing** write (the RFC 9102 proof
+/// payload proves its own authority — see `sbo_core::presets::set_dnssec`), so
+/// a throwaway key signs it; no identity is implied. Best-effort: on a check
+/// failure we proceed and let the daemon be authoritative at submit time.
+async fn ensure_dnssec_fresh(daemon_url: &str, domain: &str) -> Result<(), AppError> {
+    let now = chrono::Utc::now().timestamp();
+    let info = match get_dnssec(daemon_url, domain, now).await {
+        Ok(info) => info,
+        Err(e) => {
+            tracing::warn!(domain, error = %e, "dnssec freshness check failed; proceeding");
+            return Ok(());
+        }
+    };
+    let proof_b64 = match (info.needs_refresh, info.proof_b64) {
+        (true, Some(p)) => p,
+        _ => return Ok(()), // already fresh (or the daemon gave us nothing to post)
+    };
+    let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(proof_b64.trim())
+        .map_err(|e| AppError::Internal(format!("decode dnssec proof for {domain}: {e}")))?;
+    let ephemeral = SigningKey::generate();
+    let wire = sbo_core::presets::set_dnssec(&ephemeral, domain, &proof);
+    submit_wire(daemon_url.to_string(), wire).await?;
+    tracing::info!(domain, "refreshed on-chain /sys/dnssec proof (server-side)");
+    Ok(())
+}
+
+/// Minimal query-component percent-encoding (domains are `[a-z0-9.-]`, but be
+/// safe against anything unexpected in the issuer string).
+fn urlencoding(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 /// POST raw SBO wire bytes to the daemon's `/v1/submit`.
 async fn submit_wire(daemon_url: String, wire: Vec<u8>) -> Result<serde_json::Value, AppError> {
     let url = format!("{daemon_url}/v1/submit");
@@ -434,6 +526,24 @@ pub async fn submit(
         &w.user_email,
         Some(registrar_origin),
     )?;
+
+    // An agent write attributes only if BOTH the agent's issuer (this IdP) and
+    // the delegator's issuer have a fresh on-chain /sys/dnssec proof. The
+    // client keeps these fresh on its own writes; in server-side mode we do it
+    // here. The delegator's issuer is the warrant's embedded parent cert's
+    // `iss` (the email's own domain for a primary, the broker for a fallback).
+    let mut issuers = vec![domain.clone()];
+    if let Ok(warrant) = Warrant::parse(&w.warrant) {
+        if let Ok(parent) = Certificate::parse(&warrant.claims().parent_cert) {
+            let iss = parent.issuer().to_string();
+            if !issuers.iter().any(|d| d.eq_ignore_ascii_case(&iss)) {
+                issuers.push(iss);
+            }
+        }
+    }
+    for issuer in &issuers {
+        ensure_dnssec_fresh(&st.config.daemon_url, issuer).await?;
+    }
 
     let hlc = req
         .hlc
