@@ -359,6 +359,9 @@ async function signIn() {
 // action — the retry opens the signer inside a fresh gesture. After that the
 // signer window is reused, so it's a one-time extra tap.
 async function ensureSigningReady() {
+  // Server-side signing is on: mingo signs, so the client never opens the
+  // browserid signing dialog. Skip the whole client-signer setup.
+  if (poster.enabled) return true;
   if (localStorage.getItem("mingo_signing_ready") === "1") return true;
   const granted = await new Promise((resolve) => {
     const overlay = el(`<div class="modal-overlay">
