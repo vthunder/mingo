@@ -358,6 +358,18 @@ async function signIn() {
 // gesture and get blocked), so the caller aborts and the user repeats the
 // action — the retry opens the signer inside a fresh gesture. After that the
 // signer window is reused, so it's a one-time extra tap.
+// The gate every write goes through. If mingo already posts for you, go. Else
+// offer it (the modal — the recommended, mobile-friendly, popup-free path); if
+// declined, fall back to client-side signing. Returns true when the write may
+// proceed. Skips the offer once you've set up client signing this session, so
+// existing client-signers aren't nagged.
+async function ensureCanWrite() {
+  if (poster.enabled) return true;
+  if (localStorage.getItem("mingo_signing_ready") === "1") return ensureSigningReady();
+  if (await openPosterEnableModal()) return true;
+  return ensureSigningReady();
+}
+
 async function ensureSigningReady() {
   // Server-side signing is on: mingo signs, so the client never opens the
   // browserid signing dialog. Skip the whole client-signer setup.
@@ -751,30 +763,74 @@ function renderAuth() {
 // surfaces a tap-through approval link, then polls until the warrant lands.
 async function onPosterToggle() {
   if (poster.enabled) {
-    if (!confirm("Turn off mingo posting for you? You'll sign each post yourself again. (To fully revoke, use Manage at browserid.me.)")) return;
+    if (!confirm("Turn off mingo posting for you? You'll approve each post yourself again. (To fully revoke, use Manage at browserid.me.)")) return;
     await disablePoster();
     renderAuth();
     toast("mingo will no longer post for you.");
     return;
   }
-  try {
-    toast("Setting up…", 0);
-    const uri = await enablePoster();
-    // No popup: give the user a link to approve, and poll in the background.
-    toast("", 0);
-    const slot = $("#auth-slot");
-    slot.innerHTML = `<a class="primary" href="${esc(uri)}" target="_blank" rel="noopener" id="poster-approve">Approve at browserid.me →</a> · <span class="muted" id="poster-wait">waiting for approval…</span>`;
-    const ok = await pollPoster();
-    if (ok) {
-      toast("Done — mingo now posts for you. No more popups. 🎉");
-    } else {
-      toast("Approval didn't complete. You can try again.");
-    }
-    renderAuth();
-  } catch (e) {
-    toast(`Couldn't enable: ${e.message}`);
-    renderAuth();
-  }
+  openPosterEnableModal();
+}
+
+// A proper modal (not a hard-to-spot link) to enable server-side posting:
+// explain it, then a prominent "Approve at browserid.me" button that opens the
+// consent page and polls until the warrant lands. Resolves true once enabled.
+function openPosterEnableModal() {
+  return new Promise((resolve) => {
+    const overlay = el(`<div class="modal-overlay">
+      <div class="modal card">
+        <div class="h2">Let mingo post for you</div>
+        <p class="muted" style="margin-top:8px">Approve once and mingo signs your
+          posts, comments and votes for you — no signing pop-up every time, and it
+          works on mobile. You approve on <strong>browserid.me</strong>, and you
+          can turn this off anytime.</p>
+        <p class="status" id="pe-status" style="margin-top:8px"></p>
+        <div class="row-between" style="margin-top:12px" id="pe-actions">
+          <button id="pe-cancel">Cancel</button>
+          <button class="primary" id="pe-go">Continue</button>
+        </div>
+      </div></div>`);
+    document.body.appendChild(overlay);
+    const setStatus = (cls, msg) => {
+      const s = overlay.querySelector("#pe-status");
+      s.className = "status " + (cls || "");
+      s.textContent = msg || "";
+    };
+    const close = (val) => { overlay.remove(); resolve(val); };
+    overlay.querySelector("#pe-cancel").onclick = () => close(false);
+    overlay.querySelector("#pe-go").onclick = async () => {
+      // Open the approval tab synchronously (inside this tap) so mobile Safari
+      // allows it; we navigate it to the consent URL once the server returns it.
+      const win = window.open("about:blank", "mingo-consent");
+      const go = overlay.querySelector("#pe-go");
+      go.disabled = true;
+      setStatus("muted", "Setting up…");
+      let uri;
+      try {
+        uri = await enablePoster();
+      } catch (e) {
+        if (win) win.close();
+        go.disabled = false;
+        setStatus("err", "Couldn't start: " + e.message);
+        return;
+      }
+      if (win && !win.closed) win.location.href = uri;
+      // Swap to a prominent Approve button (reopens the tab if it was blocked).
+      overlay.querySelector("#pe-actions").innerHTML =
+        `<button id="pe-cancel2">Cancel</button>
+         <a class="primary" id="pe-approve" href="${esc(uri)}" target="mingo-consent" rel="noopener">Approve at browserid.me</a>`;
+      overlay.querySelector("#pe-cancel2").onclick = () => close(false);
+      setStatus("muted", "Approve in the browserid.me tab, then return here — waiting…");
+      const ok = await pollPoster();
+      if (ok) {
+        close(true);
+        renderAuth();
+        toast("Done — mingo now posts for you. 🎉");
+      } else {
+        setStatus("warn", "Approval didn't complete — tap Approve to try again.");
+      }
+    };
+  });
 }
 
 async function renderChrome() {
@@ -842,7 +898,7 @@ async function viewCommunity(commId) {
     <div id="posts" class="muted">loading…</div>`;
   if (session.email && member) $("#newpost").onclick = () => showCompose(c.id);
   else if (session.email) $("#join").onclick = async (e) => {
-    if (!(await ensureSigningReady())) return;
+    if (!(await ensureCanWrite())) return;
     e.target.disabled = true; e.target.textContent = "Joining…";
     try {
       await joinHub(c.id);
@@ -870,7 +926,7 @@ function showCompose(commId) {
   $("#post-submit").onclick = async () => {
     const body = $("#post-body").value.trim();
     if (!body) return;
-    if (!(await ensureSigningReady())) return;
+    if (!(await ensureCanWrite())) return;
     $("#post-submit").disabled = true;
     try {
       const id = await composePost(commId, CONFIG.space, body);
@@ -910,7 +966,7 @@ async function viewThread(commId, postId) {
     <div id="comments">${kids.length ? kids.map((c) => commentBox(c, votes)).join("") : `<div class="muted">No comments yet.</div>`}</div>`;
   $("#c-submit").onclick = async () => {
     const body = $("#c-body").value.trim(); if (!body) return;
-    if (!(await ensureSigningReady())) return;
+    if (!(await ensureCanWrite())) return;
     $("#c-submit").disabled = true;
     try {
       await addComment(commId, CONFIG.space, post.uri, body);
@@ -941,7 +997,7 @@ function wireVoteButtons() {
     b.onclick = async () => {
       const [comm, uri] = b.getAttribute("data-vote").split("|");
       if (b.dataset.voted) return; // already counted
-      if (!(await ensureSigningReady())) return;
+      if (!(await ensureCanWrite())) return;
       // Bump just this count + mark the button without re-rendering (so content
       // doesn't jump). The daemon overlay also stages the vote server-side, so
       // the bump is now backed by shared state and visible to other users.
