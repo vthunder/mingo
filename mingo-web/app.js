@@ -25,6 +25,33 @@ const CONFIG = Object.assign(
   qs.get("broker") ? { broker: qs.get("broker") } : {},
   qs.get("idp") ? { idp: qs.get("idp") } : {}
 );
+
+// --- TEMP on-screen diagnostics (enable with ?debug=1) — remove once fixed ----
+// Shows a live log at the bottom of the screen and wraps window.open so we can
+// see, on mobile, whether include.js actually attempts a popup for the grant.
+function dbg(m) {}
+if (qs.get("debug") === "1") {
+  const box = document.createElement("div");
+  box.style.cssText =
+    "position:fixed;left:0;right:0;bottom:0;max-height:45vh;overflow:auto;z-index:99999;" +
+    "background:rgba(0,0,0,.88);color:#3f6;font:11px/1.35 ui-monospace,monospace;padding:6px;white-space:pre-wrap;";
+  const mount = () => (document.body || document.documentElement).appendChild(box);
+  document.readyState === "loading" ? addEventListener("DOMContentLoaded", mount) : mount();
+  dbg = (m) => {
+    const t = new Date().toISOString().slice(11, 19);
+    box.textContent += `[${t}] ${m}\n`;
+    box.scrollTop = box.scrollHeight;
+    try { console.log("[dbg]", m); } catch (e) {}
+  };
+  const _open = window.open;
+  window.open = function () {
+    const w = _open.apply(this, arguments);
+    dbg("window.open(" + String(arguments[0] || "").slice(0, 60) + ") => " + (w ? "OK" : "NULL(blocked)"));
+    return w;
+  };
+  dbg("diagnostics ready; navigator.id=" + (typeof (window.navigator && navigator.id)) +
+      " IdentityCredential=" + ("IdentityCredential" in window));
+}
 const SBO_WASM_URL = CONFIG.sboWasm || `${CONFIG.broker}/common/js/sbo-wasm/sbo_wasm.js`;
 
 // ---------------------------------------------------------------------------
@@ -163,19 +190,27 @@ let _pendingAssertion = null;
 function requestAssertion(opts) {
   return new Promise((resolve, reject) => {
     _pendingAssertion = { resolve, reject };
+    dbg("requestAssertion: sbo=" + !!(opts && opts.sboSign) + " prov=" + ((opts && opts.provisionEmail) || "-"));
     try {
       navigator.id.request(opts || {});
+      dbg("requestAssertion: navigator.id.request returned (no throw)");
     } catch (e) {
       _pendingAssertion = null;
+      dbg("requestAssertion: THREW " + (e && e.message));
       reject(e);
+      return;
     }
+    setTimeout(() => {
+      if (_pendingAssertion && _pendingAssertion.resolve === resolve) dbg("requestAssertion: STILL PENDING after 15s (no onlogin/onlogout)");
+    }, 15000);
   });
 }
 
 navigator.id.watch({
   loggedInUser: session.email || null,
-  onready: function () {},
+  onready: function () { dbg("watch: onready"); },
   onlogin: function (assertion) {
+    dbg("watch: onlogin (len=" + (assertion && assertion.length) + ") pending=" + !!_pendingAssertion);
     if (_pendingAssertion) {
       const p = _pendingAssertion;
       _pendingAssertion = null;
@@ -185,6 +220,7 @@ navigator.id.watch({
     }
   },
   onlogout: function () {
+    dbg("watch: onlogout pending=" + !!_pendingAssertion);
     if (_pendingAssertion) {
       const p = _pendingAssertion;
       _pendingAssertion = null;
@@ -295,6 +331,7 @@ async function ensureSigningReady() {
     document.body.appendChild(overlay);
     overlay.querySelector("#s-cancel").onclick = () => { overlay.remove(); resolve(false); };
     overlay.querySelector("#s-ok").onclick = async () => {
+      dbg("enable-signing TAP");
       overlay.remove();
       try {
         const assertion = await requestAssertion({ sboSign: true, provisionEmail: session.email });
