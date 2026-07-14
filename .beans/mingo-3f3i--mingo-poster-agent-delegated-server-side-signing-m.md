@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-14T16:52:00Z
-updated_at: 2026-07-14T22:24:04Z
+updated_at: 2026-07-14T22:30:28Z
 ---
 
 Problem: mingo's posting requires client-side per-object signing via browserid
@@ -213,11 +213,10 @@ DONE (tested; branch not deployed):
 STILL TO VERIFY LIVE (before rollout — deploy mingo to test):
 - [ ] Daemon accepts owner=<user> for an on-behalf (as:) agent write (I set owner=user; if the
       daemon wants owner=agent, adjust assemble_agent_write's owner + the submit handler).
-- [ ] /sys/dnssec freshness for the DELEGATOR issuer at submit time. The poster path omits
-      auth_evidence (daemon resolves on-chain), but in poster mode no client posts
-      /sys/dnssec/<issuer>. Options: (a) client still calls ensureDnssecFresh (key-rooted, popup-free)
-      before poster submits; (b) a server-side dnssec refresh in mingo-idp. mingo.place's own proof is
-      assumed maintained. This is the one piece that can make the first server-side post fail if stale.
+- [x] /sys/dnssec freshness — DONE server-side (commit eaafd41). /poster/submit refreshes BOTH the
+      agent issuer (mingo.place) and the delegator issuer (from the warrant's parent-cert iss) before
+      assembling: GET /v1/dnssec, and on stale submit a key-rooted set_dnssec write with a throwaway
+      key. Mirrors the client's ensureDnssecFresh.
 - [ ] Deploy config: set MINGO_POSTER_SECRET (or _KEY_JSON/_KEY_FILE) on the mingo dokku app.
 - [ ] Handle-identity delegation depends on the handle's identity key being available in the
       browserid.me consent-page keystore (external-email delegation works cleanly; handle may need the

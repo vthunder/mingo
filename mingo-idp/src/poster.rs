@@ -291,27 +291,53 @@ async fn get_dnssec(
 /// on-chain proof, and in server-side mode no browser is posting them. The
 /// refresh is a **key-rooted, self-authorizing** write (the RFC 9102 proof
 /// payload proves its own authority — see `sbo_core::presets::set_dnssec`), so
-/// a throwaway key signs it; no identity is implied. Best-effort: on a check
-/// failure we proceed and let the daemon be authoritative at submit time.
+/// a throwaway key signs it; no identity is implied.
+///
+/// **Fail-closed.** If we can't confirm the proof is fresh (the check itself
+/// erroring, or the refresh write failing) we return an error rather than
+/// submit the caller's write: the check is cheap when the proof is already
+/// fresh and only does the failure-prone live-DNS capture when a refresh is
+/// needed, so a check error most likely means "stale and un-refreshable" —
+/// exactly when proceeding would submit an object the daemon then rejects for
+/// missing attribution. Better a clear, retryable error up front than a
+/// doomed submit.
 async fn ensure_dnssec_fresh(daemon_url: &str, domain: &str) -> Result<(), AppError> {
     let now = chrono::Utc::now().timestamp();
-    let info = match get_dnssec(daemon_url, domain, now).await {
-        Ok(info) => info,
-        Err(e) => {
-            tracing::warn!(domain, error = %e, "dnssec freshness check failed; proceeding");
-            return Ok(());
-        }
-    };
+    let info = get_dnssec(daemon_url, domain, now).await.map_err(|e| {
+        AppError::Internal(format!(
+            "could not confirm the DNSSEC attribution proof for '{domain}' is fresh \
+             (required before mingo can post on your behalf) — please retry: {e}"
+        ))
+    })?;
     let proof_b64 = match (info.needs_refresh, info.proof_b64) {
+        // Already fresh — nothing to do.
+        (false, _) => return Ok(()),
+        // Stale, and the daemon captured a fresh proof for us to post.
         (true, Some(p)) => p,
-        _ => return Ok(()), // already fresh (or the daemon gave us nothing to post)
+        // Stale, but the daemon returned NO proof — it needed to capture one
+        // and couldn't (live-DNS failure). The on-chain proof is not fresh and
+        // we can't make it so, so the caller's write would fail attribution.
+        // Fail-closed rather than submit a doomed object.
+        (true, None) => {
+            return Err(AppError::Internal(format!(
+                "the DNSSEC attribution proof for '{domain}' is stale and could not be \
+                 refreshed (required before mingo can post on your behalf) — please retry"
+            )));
+        }
     };
     let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(proof_b64.trim())
         .map_err(|e| AppError::Internal(format!("decode dnssec proof for {domain}: {e}")))?;
     let ephemeral = SigningKey::generate();
     let wire = sbo_core::presets::set_dnssec(&ephemeral, domain, &proof);
-    submit_wire(daemon_url.to_string(), wire).await?;
+    submit_wire(daemon_url.to_string(), wire)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "could not refresh the DNSSEC attribution proof for '{domain}' \
+                 (required before mingo can post on your behalf) — please retry: {e}"
+            ))
+        })?;
     tracing::info!(domain, "refreshed on-chain /sys/dnssec proof (server-side)");
     Ok(())
 }
