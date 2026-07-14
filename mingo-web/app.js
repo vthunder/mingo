@@ -270,13 +270,19 @@ async function enablePoster() {
 }
 
 // Poll the pickup until the warrant is stored (or the request dies). Resolves
-// true on approval.
-async function pollPoster({ tries = 60, intervalMs = 3000 } = {}) {
+// true on approval. Runs for ~6 min (60 × 6s) so there's ample time to approve
+// on the other tab. The interval must clear the registrar's per-code poll
+// throttle (5s) — and we sleep BEFORE each poll (including the first): the
+// request was just created, the user needs a moment to approve anyway, and it
+// avoids a burst that would trip the throttle. A transient poll error (e.g. a
+// rate-limit blip) is swallowed and retried, never aborting the enable.
+async function pollPoster({ tries = 60, intervalMs = 6000 } = {}) {
   for (let i = 0; i < tries; i++) {
-    const r = await idpPost("/poster/poll", {});
+    await new Promise((res) => setTimeout(res, intervalMs));
+    let r;
+    try { r = await idpPost("/poster/poll", {}); } catch { continue; }
     if (r.status === "approved") { poster.enabled = true; return true; }
     if (r.status === "denied" || r.status === "expired" || r.status === "none") return false;
-    await new Promise((res) => setTimeout(res, intervalMs));
   }
   return false;
 }

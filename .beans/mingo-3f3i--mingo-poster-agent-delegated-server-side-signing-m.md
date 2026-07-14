@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-14T16:52:00Z
-updated_at: 2026-07-14T22:47:34Z
+updated_at: 2026-07-14T22:55:13Z
 ---
 
 Problem: mingo's posting requires client-side per-object signing via browserid
@@ -231,3 +231,14 @@ pulling 4fdfa86). Fixed by bumping sbo-core's browserid-core pin to e572cda
 browserid-core. mingo now on sbo-core 6f049c0. Daemon stays at 3a6f959 (its
 sbo-core library logic is identical, so wire-compatible; e572cda agent certs are
 a superset-compatible descendant of 4fdfa86 the daemon verifies against).
+
+
+## Deploy fix #2 (2026-07-14): rocksdb/libclang out of the mingo build
+The real deploy blocker (masked under the cargo-chef panic): adding sbo-core to
+mingo-idp pulled rocksdb → librocksdb-sys → bindgen → libclang, which the mingo
+builder image lacks (and would cold-compile rocksdb on the disk-constrained
+on-host build). Fix: sbo-core a92886c gates its rocksdb-backed state store
+(state::db + indexer) behind a default-on `storage` feature; mingo disables it
+workspace-wide (default-features=false on the root sbo-core dep) since neither
+mingo-idp nor mingo-app uses the state store. Workspace tree now rocksdb-free.
+mingo on sbo-core a92886c. Daemon still 3a6f959 (unaffected).

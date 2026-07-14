@@ -238,6 +238,32 @@ async fn post_json<T: DeserializeOwned + Send + 'static>(
     .map_err(|e| AppError::Internal(format!("http task: {e}")))?
 }
 
+/// Like [`post_json`] but returns `(status, body)` without treating a non-2xx as
+/// an error — the caller decides. The poll path uses this so the registrar's
+/// 429 "polling too fast" throttle reads as "keep waiting", not a hard failure.
+async fn post_json_raw(
+    url: String,
+    body: serde_json::Value,
+) -> Result<(u16, serde_json::Value), AppError> {
+    tokio::task::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(StdDuration::from_secs(15))
+            .build()
+            .map_err(|e| AppError::Internal(format!("http client: {e}")))?;
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .map_err(|e| AppError::Internal(format!("POST {url}: {e}")))?;
+        let status = resp.status().as_u16();
+        let text = resp.text().unwrap_or_default();
+        let val = serde_json::from_str(&text).unwrap_or(serde_json::json!({ "raw": text }));
+        Ok((status, val))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("http task: {e}")))?
+}
+
 /// Headroom over `needed_by` when checking DNSSEC-proof freshness — covers
 /// inclusion latency + clock skew (mirrors the client's `MARGIN`).
 const DNSSEC_MARGIN_SECS: i64 = 3600;
@@ -444,11 +470,23 @@ pub async fn poll(
         None => return Ok(Json(serde_json::json!({ "status": "none" }))),
     };
     let registrar_origin = origin_for(&st.config.broker_domain);
-    let resp: PollResp = post_json(
+    let (http_status, body) = post_json_raw(
         format!("{registrar_origin}/warrant/poll"),
         serde_json::json!({ "code": code }),
     )
     .await?;
+    // The registrar throttles per-code polls (429 "polling too fast"). That's
+    // not a failure — the request is still pending; tell the client to wait.
+    if http_status == 429 {
+        return Ok(Json(serde_json::json!({ "status": "pending" })));
+    }
+    if !(200..300).contains(&http_status) {
+        return Err(AppError::BadRequest(format!(
+            "warrant poll -> {http_status}: {body}"
+        )));
+    }
+    let resp: PollResp = serde_json::from_value(body)
+        .map_err(|e| AppError::Internal(format!("decode warrant poll: {e}")))?;
 
     match resp.status.as_str() {
         "approved" => {
