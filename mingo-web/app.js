@@ -191,8 +191,20 @@ function requestAssertion(opts) {
   return new Promise((resolve, reject) => {
     _pendingAssertion = { resolve, reject };
     dbg("requestAssertion: sbo=" + !!(opts && opts.sboSign) + " prov=" + ((opts && opts.provisionEmail) || "-"));
+    // oncancel fires when the user closes the dialog OR the popup is blocked
+    // (include.js reports it). Without it, a blocked/cancelled request would
+    // never resolve and this promise would hang.
+    const req = Object.assign({}, opts, {
+      oncancel: function () {
+        dbg("requestAssertion: oncancel");
+        if (_pendingAssertion && _pendingAssertion.resolve === resolve) {
+          _pendingAssertion = null;
+          resolve(null);
+        }
+      },
+    });
     try {
-      navigator.id.request(opts || {});
+      navigator.id.request(req);
       dbg("requestAssertion: navigator.id.request returned (no throw)");
     } catch (e) {
       _pendingAssertion = null;
