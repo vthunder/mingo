@@ -21,6 +21,10 @@ browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "e572
 
 # SBO reference impl — server-side agent-write assembly (Message/wire) + the
 # authorize/attribution helpers. Shares the workspace rev (the deployed daemon's).
+# Pure build/verify surface only (message/wire/presets/crypto/authorize); the
+# rocksdb-backed state store is off workspace-wide (default-features = false in
+# the root manifest — no member needs it), keeping the rocksdb/bindgen/libclang
+# chain out of the build.
 sbo-core.workspace = true
 
 tokio = { version = "1", features = ["full"] }

@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-14T16:52:00Z
-updated_at: 2026-07-14T22:30:28Z
+updated_at: 2026-07-14T22:47:34Z
 ---
 
 Problem: mingo's posting requires client-side per-object signing via browserid
@@ -221,3 +221,13 @@ STILL TO VERIFY LIVE (before rollout — deploy mingo to test):
 - [ ] Handle-identity delegation depends on the handle's identity key being available in the
       browserid.me consent-page keystore (external-email delegation works cleanly; handle may need the
       user to have that identity active at browserid.me first).
+
+
+## Deploy note (2026-07-14): single browserid-core version required
+First mingo deploy failed: cargo-chef 0.1.77 panics cooking a recipe with TWO
+versions of the same git package (mingo-idp on browserid-core e572cda + sbo-core
+pulling 4fdfa86). Fixed by bumping sbo-core's browserid-core pin to e572cda
+(new sbo rev 6f049c0, additive/no-logic-change) so everything resolves to ONE
+browserid-core. mingo now on sbo-core 6f049c0. Daemon stays at 3a6f959 (its
+sbo-core library logic is identical, so wire-compatible; e572cda agent certs are
+a superset-compatible descendant of 4fdfa86 the daemon verifies against).
