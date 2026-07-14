@@ -269,7 +269,9 @@ const idpPost = async (path, body) => {
 // cert into custody without a second login.
 async function signIn() {
   try {
+    dbg("signIn: start (requesting assertion, sbo=false)");
     const assertion = await requestAssertion({ sboSign: false });
+    dbg("signIn: got assertion=" + !!assertion);
     if (!assertion) return; // cancelled
     const sess = await idpPost("/session/from-assertion", { assertion });
 
@@ -351,6 +353,7 @@ async function ensureSigningReady() {
   return false; // never ready on the same gesture that ran the grant
 }
 async function signOut() {
+  dbg("signOut");
   // Real sign-out: end the mingo.place server session + clear its cookie, not
   // just client state (a stale session could otherwise still mint certs — mingo-n153).
   try {
