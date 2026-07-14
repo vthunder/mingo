@@ -11,13 +11,16 @@
 </head>
 <body>
   <header class="topbar">
+    <button id="nav-toggle" class="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">☰</button>
     <div class="brand" data-route="#/">mingo</div>
     <div class="spacer"></div>
     <div id="auth-slot" class="auth-slot"><!-- sign in / who am i --></div>
   </header>
 
+  <div id="nav-backdrop" class="nav-backdrop"></div>
+
   <div class="layout">
-    <aside class="sidebar">
+    <aside id="sidebar" class="sidebar">
       <div class="side-section">
         <div class="side-h">Communities</div>
         <ul id="community-list" class="community-list"><li class="muted">loading…</li></ul>

@@ -866,6 +866,24 @@ async function route() {
 
 document.querySelector(".brand").onclick = () => (location.hash = "#/");
 window.addEventListener("hashchange", route);
+
+// Mobile nav drawer: hamburger toggles it; backdrop, navigation, and Escape
+// close it. (On desktop the sidebar is a normal column and none of this shows.)
+(function wireNav() {
+  const toggle = document.getElementById("nav-toggle");
+  const backdrop = document.getElementById("nav-backdrop");
+  const sidebar = document.getElementById("sidebar");
+  const setOpen = (open) => {
+    document.body.classList.toggle("nav-open", open);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  toggle.onclick = () => setOpen(!document.body.classList.contains("nav-open"));
+  backdrop.onclick = () => setOpen(false);
+  // Tapping any link inside the drawer navigates → close it.
+  sidebar.addEventListener("click", (e) => { if (e.target.closest("a")) setOpen(false); });
+  window.addEventListener("hashchange", () => setOpen(false));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
+})();
 (async function init() {
   await renderChrome();
   await route();
