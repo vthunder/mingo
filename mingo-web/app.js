@@ -77,6 +77,31 @@ if (qs.get("debug") === "1") {
     try { navigator.id.request({}); dbg("T2: request returned"); }
     catch (e) { dbg("T2: THREW " + (e && e.message)); }
   });
+  const provEmail = () => localStorage.getItem("mingo_email") || "test@mingo.place";
+  // T3: EXACT grant options, but from a plain button (no overlay).
+  mkBtn("T3 grant-plain", () => {
+    dbg("T3: navigator.id.request(sbo=true, prov=" + provEmail() + ") from plain button");
+    try { navigator.id.request({ sboSign: true, provisionEmail: provEmail() }); dbg("T3: returned"); }
+    catch (e) { dbg("T3: THREW " + (e && e.message)); }
+  });
+  // T4: same grant options, but triggered from a button INSIDE a modal overlay,
+  // replicating the real ensureSigningReady flow.
+  mkBtn("T4 grant-overlay", () => {
+    dbg("T4: show overlay");
+    const ov = document.createElement("div");
+    ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100;";
+    const b = document.createElement("button");
+    b.textContent = "T4: Enable (in overlay)";
+    b.style.cssText = "font:14px monospace;padding:14px 18px;";
+    b.addEventListener("click", () => {
+      dbg("T4: overlay-button tap → navigator.id.request(sbo=true)");
+      try { navigator.id.request({ sboSign: true, provisionEmail: provEmail() }); dbg("T4: returned"); }
+      catch (e) { dbg("T4: THREW " + (e && e.message)); }
+    });
+    ov.appendChild(b);
+    document.body.appendChild(ov);
+    ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
+  });
   const mountBar = () => (document.body || document.documentElement).appendChild(bar);
   document.readyState === "loading" ? addEventListener("DOMContentLoaded", mountBar) : mountBar();
 }
