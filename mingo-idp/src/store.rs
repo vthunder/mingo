@@ -67,6 +67,23 @@ const SCHEMA: &str = r#"
         revoked_at  INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_agent_identities_account ON agent_identities(account_id);
+    -- mingo-poster (mingo-3f3i): the user-signed warrant mingo holds to post on
+    -- the account's behalf, plus the in-flight consent code between /poster/enable
+    -- and its pickup. One row per account (the single mingo-poster grant).
+    CREATE TABLE IF NOT EXISTS poster_warrants (
+        account_id  INTEGER PRIMARY KEY,
+        user_email  TEXT NOT NULL,
+        warrant     TEXT NOT NULL,
+        audience    TEXT NOT NULL,
+        expires_at  INTEGER NOT NULL,
+        created_at  INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS poster_pending (
+        account_id  INTEGER PRIMARY KEY,
+        user_email  TEXT NOT NULL,
+        code        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+    );
 "#;
 
 impl Store {
@@ -337,6 +354,105 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // ---- mingo-poster (mingo-3f3i): consent code + stored warrant ----
+
+    /// Record the in-flight consent code for an account's `/poster/enable`
+    /// (replacing any prior pending code for that account).
+    pub fn set_poster_pending(
+        &self,
+        account_id: i64,
+        user_email: &str,
+        code: &str,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO poster_pending (account_id, user_email, code, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id) DO UPDATE SET user_email = ?2, code = ?3, created_at = ?4",
+            params![account_id, user_email, code, Self::now()],
+        )?;
+        Ok(())
+    }
+
+    /// The pending `(user_email, code)` for an account, if any.
+    pub fn get_poster_pending(
+        &self,
+        account_id: i64,
+    ) -> rusqlite::Result<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT user_email, code FROM poster_pending WHERE account_id = ?1",
+            params![account_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+    }
+
+    pub fn clear_poster_pending(&self, account_id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM poster_pending WHERE account_id = ?1",
+            params![account_id],
+        )?;
+        Ok(())
+    }
+
+    /// Store (or replace) the user-signed warrant mingo holds for an account.
+    pub fn set_poster_warrant(
+        &self,
+        account_id: i64,
+        user_email: &str,
+        warrant: &str,
+        audience: &str,
+        expires_at: i64,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO poster_warrants (account_id, user_email, warrant, audience, expires_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(account_id) DO UPDATE SET
+                 user_email = ?2, warrant = ?3, audience = ?4, expires_at = ?5, created_at = ?6",
+            params![account_id, user_email, warrant, audience, expires_at, Self::now()],
+        )?;
+        Ok(())
+    }
+
+    /// The stored warrant for an account, if mingo-poster is enabled.
+    pub fn get_poster_warrant(&self, account_id: i64) -> rusqlite::Result<Option<PosterWarrant>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT user_email, warrant, audience, expires_at FROM poster_warrants WHERE account_id = ?1",
+            params![account_id],
+            |r| {
+                Ok(PosterWarrant {
+                    user_email: r.get(0)?,
+                    warrant: r.get(1)?,
+                    audience: r.get(2)?,
+                    expires_at: r.get(3)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn delete_poster_warrant(&self, account_id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM poster_warrants WHERE account_id = ?1",
+            params![account_id],
+        )?;
+        Ok(())
+    }
+}
+
+/// A user-signed warrant mingo holds to post on an account's behalf.
+#[derive(Debug, Clone)]
+pub struct PosterWarrant {
+    pub user_email: String,
+    pub warrant: String,
+    pub audience: String,
+    pub expires_at: i64,
 }
 
 fn agent_identity_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentIdentity> {
@@ -364,6 +480,38 @@ mod tests {
     fn store() -> Store {
         // In-memory DB per test, real schema.
         Store::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn poster_warrant_and_pending_round_trip() {
+        let s = store();
+        let acct = s.find_or_create_account("dan@example.com").unwrap();
+
+        // Pending code: set, read, overwrite (upsert), clear.
+        assert!(s.get_poster_pending(acct.id).unwrap().is_none());
+        s.set_poster_pending(acct.id, "dan@example.com", "wrq_a")
+            .unwrap();
+        s.set_poster_pending(acct.id, "dan@example.com", "wrq_b")
+            .unwrap();
+        assert_eq!(
+            s.get_poster_pending(acct.id).unwrap(),
+            Some(("dan@example.com".into(), "wrq_b".into()))
+        );
+        s.clear_poster_pending(acct.id).unwrap();
+        assert!(s.get_poster_pending(acct.id).unwrap().is_none());
+
+        // Warrant: set, read, upsert-replace, delete.
+        assert!(s.get_poster_warrant(acct.id).unwrap().is_none());
+        s.set_poster_warrant(acct.id, "dan@example.com", "jws1", "sbo://mingo", 100)
+            .unwrap();
+        s.set_poster_warrant(acct.id, "dan@example.com", "jws2", "sbo://mingo", 200)
+            .unwrap();
+        let w = s.get_poster_warrant(acct.id).unwrap().unwrap();
+        assert_eq!(w.warrant, "jws2");
+        assert_eq!(w.expires_at, 200);
+        assert_eq!(w.audience, "sbo://mingo");
+        s.delete_poster_warrant(acct.id).unwrap();
+        assert!(s.get_poster_warrant(acct.id).unwrap().is_none());
     }
 
     #[test]

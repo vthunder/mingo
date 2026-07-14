@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-14T16:52:00Z
-updated_at: 2026-07-14T21:56:09Z
+updated_at: 2026-07-14T22:12:37Z
 ---
 
 Problem: mingo's posting requires client-side per-object signing via browserid
@@ -178,3 +178,26 @@ the user's email (object lives in the user's namespace; effective author resolve
 - Daemon owner-vs-effective-email check: confirm owner=<user> is accepted for an on-behalf agent write.
 - auth_evidence format the deployed daemon expects for the second (delegator) issuer proof (on-chain
   /sys/dnssec ref vs inline) — align with sbo-core attribution.rs daemon-resolved path.
+
+
+## Progress (2026-07-15) — signer core landed on branch feat/mingo-poster-signer
+
+DONE (commit a318055, tested, on branch — NOT deployed):
+- [x] Dependency bumps: mingo-idp browserid-core → e572cda; workspace sbo-core → 3a6f959
+      (daemon rev). Two browserid-core versions coexist safely (signer crosses the sbo
+      boundary only as encoded strings). mingo-app auth_warrant field fixes.
+- [x] Config: shared mingo-poster key (MINGO_POSTER_SECRET/_KEY_JSON/_KEY_FILE) +
+      MINGO_SBO_DB_AUDIENCE + MINGO_DAEMON_URL; AppState.poster_key loaded at boot.
+- [x] poster.rs signer core (pure, unit-tested): mint_poster_cert, external_warrant_request,
+      default_scopes (as:<user> → effective author = user), assemble_agent_write.
+
+REMAINING (next increment — needs live-daemon verification):
+- [ ] store.rs: poster_warrants table (account → warrant JWS + aud + scopes + exp).
+- [ ] Endpoints: POST /poster/enable (session) → build external request, POST browserid.me
+      /warrant/request, return verification_uri for redirect; poll /warrant/poll → store warrant;
+      GET /poster/status; POST /poster/submit → assemble wire, POST daemon /v1/submit.
+- [ ] auth_evidence: post/refresh on-chain /sys/dnssec for mingo.place AND each delegator issuer.
+- [ ] mingo-web app.js: "Let mingo post for me" toggle → /poster/enable redirect; route
+      writeContent → /poster/submit when enabled (keep client-signed path as fallback).
+- [ ] VERIFY against live daemon: owner=<user> accepted for on-behalf agent write; exact
+      auth_evidence format the deployed daemon expects for the delegator-issuer proof.

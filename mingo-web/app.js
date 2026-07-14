@@ -238,6 +238,68 @@ const idpPost = async (path, body) => {
   return r.json();
 };
 
+const idpGet = async (path) => {
+  const r = await fetch(`${CONFIG.idp}${path}`, { credentials: "include" });
+  if (!r.ok) throw new Error(`${path} ${r.status} ${await r.text()}`);
+  return r.json();
+};
+
+// ---------------------------------------------------------------------------
+// mingo-poster: let mingo sign SBO writes server-side (mingo-3f3i). When
+// enabled, writes go to /poster/submit instead of the client-side signing
+// popups — the fix for mobile Safari, where window.open is unreliable. Posts
+// still attribute on-chain to the user ("mingo-poster acting for you").
+// ---------------------------------------------------------------------------
+const poster = { enabled: false };
+
+// Refresh whether mingo currently holds a valid warrant for this user.
+async function refreshPosterStatus() {
+  if (!session.email) { poster.enabled = false; return; }
+  try {
+    const s = await idpGet("/poster/status");
+    poster.enabled = !!s.enabled;
+  } catch { poster.enabled = false; }
+}
+
+// Start delegation: mingo raises the consent request at the user's registrar
+// and hands back a URL to approve at. We surface it as a tap-through link (no
+// window.open — mobile-safe) and poll until the warrant lands.
+async function enablePoster() {
+  const { verification_uri } = await idpPost("/poster/enable", {});
+  return verification_uri;
+}
+
+// Poll the pickup until the warrant is stored (or the request dies). Resolves
+// true on approval.
+async function pollPoster({ tries = 60, intervalMs = 3000 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    const r = await idpPost("/poster/poll", {});
+    if (r.status === "approved") { poster.enabled = true; return true; }
+    if (r.status === "denied" || r.status === "expired" || r.status === "none") return false;
+    await new Promise((res) => setTimeout(res, intervalMs));
+  }
+  return false;
+}
+
+async function disablePoster() {
+  try { await idpPost("/poster/disable", {}); } catch {}
+  poster.enabled = false;
+}
+
+// Submit a write through the server-side signer. Mirrors the fields the
+// client-side path builds, minus the signature (mingo signs).
+async function submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType }) {
+  return idpPost("/poster/submit", {
+    path,
+    id,
+    schema,
+    content_type: contentType || "application/json",
+    payload: Array.from(payload),
+    hlc: hlc || `${Date.now()}.0`,
+    prev: prev || null,
+  });
+}
+
 // Login ≠ registration. (1) Authenticate the user's EXTERNAL identity via the
 // broker. (2) Establish a mingo.place session from that assertion. (3) New users
 // pick a handle (in-page). (4) Silently provision <handle>@mingo.place — the
@@ -503,6 +565,13 @@ function certIssuer(certJwt) {
 // signing-key match without needing attribution.
 async function writeContent({ path, id, schema, payload, hlc, prev, owner, contentType, keyRooted }) {
   if (!session.email) { signIn(); return; }
+  // Server-side signing (mingo-poster): mingo signs + submits on our behalf, so
+  // no popup. Only for email-rooted content writes — key-rooted self-authorizing
+  // writes (the /sys/dnssec refresh) sign with a throwaway key locally and must
+  // not route through the agent signer.
+  if (poster.enabled && !keyRooted) {
+    return submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType });
+  }
   const wasm = await sbo();
   const spec = {
     action: "", path, id,
@@ -657,15 +726,50 @@ function toast(msg, ms = 3000) {
 function renderAuth() {
   const slot = $("#auth-slot");
   if (session.email) {
-    slot.innerHTML = `<span class="muted">${esc(session.email)}</span> · <button class="link" id="signout">sign out</button>`;
+    const posterBtn = poster.enabled
+      ? `<button class="link" id="poster-toggle" title="mingo signs your posts — tap to turn off">📱 mingo posts: on</button>`
+      : `<button class="link" id="poster-toggle" title="Let mingo sign your posts so you don't get a popup each time (works on mobile)">📱 let mingo post for me</button>`;
+    slot.innerHTML = `<span class="muted">${esc(session.email)}</span> · ${posterBtn} · <button class="link" id="signout">sign out</button>`;
     $("#signout").onclick = signOut;
+    $("#poster-toggle").onclick = onPosterToggle;
   } else {
     slot.innerHTML = `<button class="primary" id="signin">Sign in</button>`;
     $("#signin").onclick = signIn;
   }
 }
 
+// Enable or disable server-side signing. Enable raises the consent request and
+// surfaces a tap-through approval link, then polls until the warrant lands.
+async function onPosterToggle() {
+  if (poster.enabled) {
+    if (!confirm("Turn off mingo posting for you? You'll sign each post yourself again. (To fully revoke, use Manage at browserid.me.)")) return;
+    await disablePoster();
+    renderAuth();
+    toast("mingo will no longer post for you.");
+    return;
+  }
+  try {
+    toast("Setting up…", 0);
+    const uri = await enablePoster();
+    // No popup: give the user a link to approve, and poll in the background.
+    toast("", 0);
+    const slot = $("#auth-slot");
+    slot.innerHTML = `<a class="primary" href="${esc(uri)}" target="_blank" rel="noopener" id="poster-approve">Approve at browserid.me →</a> · <span class="muted" id="poster-wait">waiting for approval…</span>`;
+    const ok = await pollPoster();
+    if (ok) {
+      toast("Done — mingo now posts for you. No more popups. 🎉");
+    } else {
+      toast("Approval didn't complete. You can try again.");
+    }
+    renderAuth();
+  } catch (e) {
+    toast(`Couldn't enable: ${e.message}`);
+    renderAuth();
+  }
+}
+
 async function renderChrome() {
+  await refreshPosterStatus();
   renderAuth();
   try {
     const comms = await getCommunities();

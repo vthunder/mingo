@@ -54,6 +54,12 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         .route("/claim_handle", post(routes::claim_handle))
         .route("/use_external", post(routes::use_external))
         .route("/cert_key", post(routes::cert_key))
+        // mingo-poster delegated signing (mingo-3f3i), same-origin + session-gated.
+        .route("/poster/enable", post(poster::enable))
+        .route("/poster/poll", post(poster::poll))
+        .route("/poster/status", get(poster::status))
+        .route("/poster/disable", post(poster::disable))
+        .route("/poster/submit", post(poster::submit))
         .route("/admin/seed", post(routes::admin_seed))
         .route("/admin/provision", post(routes::admin_provision))
         .route("/admin/delete-account", post(routes::admin_delete_account))

@@ -19,13 +19,24 @@
 //! assembles the SBO envelope. The two never meet at a type boundary — only
 //! the encoded strings cross into the [`Message`].
 
+use std::time::Duration as StdDuration;
+
 use anyhow::{anyhow, Result};
+use axum::extract::State;
+use axum::Json;
 use browserid_core::provisioning::{ExternalWarrantRequest, ProvisioningRequest, WarrantGrant};
-use browserid_core::{Certificate, KeyPair, PublicKey};
+use browserid_core::{Certificate, KeyPair, PublicKey, Warrant};
 use chrono::Duration;
 use sbo_core::crypto::{ContentHash, Signature, SigningKey};
 use sbo_core::message::{Action, Id, Message, ObjectType, Path};
 use sbo_core::wire;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use tower_cookies::Cookies;
+
+use crate::error::AppError;
+use crate::routes::{require_session, Shared};
+use crate::store::Account;
 
 /// Recommended per-user agent cert lifetime; refresh before it lapses.
 const CERT_VALIDITY_HOURS: i64 = 24;
@@ -118,14 +129,17 @@ pub struct WriteSpec<'a> {
 }
 
 /// Assemble the SBO wire bytes for [`WriteSpec`], signed by the shared poster
-/// key and carrying `auth_cert` (the per-user agent cert), `auth_warrant` (the
-/// user-signed warrant JWS), and `auth_evidence` (the DNSSEC proof reference
-/// the daemon resolves). The result is what mingo POSTs to `<daemon>/v1/submit`.
+/// key and carrying `auth_cert` (the per-user agent cert) and `auth_warrant`
+/// (the user-signed warrant JWS). `auth_evidence` is the DNSSEC proof
+/// reference; pass `None` to let the daemon resolve both issuers' proofs from
+/// their on-chain `/sys/dnssec/<issuer>` records (the same pattern the
+/// client-signed path uses — it omits inline evidence and keeps the on-chain
+/// proof fresh instead). The result is what mingo POSTs to `<daemon>/v1/submit`.
 pub fn assemble_agent_write(
     poster_key: &KeyPair,
     poster_cert: &Certificate,
     warrant_jws: &str,
-    auth_evidence: &str,
+    auth_evidence: Option<&str>,
     spec: WriteSpec<'_>,
 ) -> Result<Vec<u8>> {
     let key = SigningKey::from_bytes(poster_key.secret_bytes());
@@ -150,11 +164,300 @@ pub fn assemble_agent_write(
         hlc: spec.hlc.map(str::to_string),
         prev: spec.prev.map(str::to_string),
         auth_cert: Some(poster_cert.encoded().to_string()),
-        auth_evidence: Some(auth_evidence.to_string()),
+        auth_evidence: auth_evidence.map(str::to_string),
         auth_warrant: Some(warrant_jws.to_string()),
     };
     msg.sign(&key);
     Ok(wire::serialize(&msg))
+}
+
+// ===========================================================================
+// HTTP surface (mingo-web talks to these; all session-gated, same-origin)
+// ===========================================================================
+
+/// The public identity a user's mingo posts attribute to: their claimed
+/// `<handle>@<domain>` pseudonym when they chose one, else their external
+/// email. This is the warrant's delegator and the write's owner.
+fn public_identity(account: &Account, domain: &str) -> String {
+    match (account.identity_mode.as_deref(), &account.handle) {
+        (Some("handle"), Some(h)) => format!("{h}@{domain}"),
+        _ => account.external_email.clone(),
+    }
+}
+
+/// `scheme://host` for a domain — https, except localhost/127.* (dev).
+fn origin_for(domain: &str) -> String {
+    if domain.starts_with("localhost") || domain.starts_with("127.") {
+        format!("http://{domain}")
+    } else {
+        format!("https://{domain}")
+    }
+}
+
+#[derive(Deserialize)]
+struct WarrantRequestResp {
+    code: String,
+    verification_uri: String,
+}
+
+#[derive(Deserialize)]
+struct PollResp {
+    status: String,
+    #[serde(default)]
+    warrants: Option<Vec<String>>,
+    #[serde(default)]
+    warrant: Option<String>,
+}
+
+/// POST a JSON body to `url` and decode the JSON response (blocking reqwest on
+/// the blocking pool, matching the rest of mingo-idp).
+async fn post_json<T: DeserializeOwned + Send + 'static>(
+    url: String,
+    body: serde_json::Value,
+) -> Result<T, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(StdDuration::from_secs(15))
+            .build()
+            .map_err(|e| AppError::Internal(format!("http client: {e}")))?;
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .map_err(|e| AppError::Internal(format!("POST {url}: {e}")))?;
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        if !status.is_success() {
+            return Err(AppError::BadRequest(format!("{url} -> {status}: {text}")));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| AppError::Internal(format!("decode {url}: {e}; body={text}")))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("http task: {e}")))?
+}
+
+/// POST raw SBO wire bytes to the daemon's `/v1/submit`.
+async fn submit_wire(daemon_url: String, wire: Vec<u8>) -> Result<serde_json::Value, AppError> {
+    let url = format!("{daemon_url}/v1/submit");
+    tokio::task::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(StdDuration::from_secs(30))
+            .build()
+            .map_err(|e| AppError::Internal(format!("http client: {e}")))?;
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/octet-stream")
+            .body(wire)
+            .send()
+            .map_err(|e| AppError::Internal(format!("daemon submit: {e}")))?;
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        if !status.is_success() {
+            return Err(AppError::BadRequest(format!(
+                "daemon submit {status}: {text}"
+            )));
+        }
+        Ok(serde_json::from_str(&text).unwrap_or(serde_json::json!({ "raw": text })))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("submit task: {e}")))?
+}
+
+#[derive(Serialize)]
+pub struct EnableResp {
+    /// The registrar consent page to redirect the user to; on return they poll.
+    pub verification_uri: String,
+}
+
+/// POST /poster/enable — start delegation: mint the per-user agent cert, build
+/// the external warrant request, raise it at the user's registrar, and hand
+/// back the consent URL to redirect to. On return the client polls `/poster/poll`.
+pub async fn enable(
+    State(st): State<Shared>,
+    cookies: Cookies,
+) -> Result<Json<EnableResp>, AppError> {
+    let account_id = require_session(&st, &cookies)?;
+    let account = st
+        .store
+        .get_account(account_id)?
+        .ok_or(AppError::NotAuthenticated)?;
+    let domain = st.config.domain.clone();
+    let user_email = public_identity(&account, &domain);
+    let registrar_origin = origin_for(&st.config.broker_domain);
+
+    let cert = mint_poster_cert(
+        &st.keypair,
+        &domain,
+        &st.poster_key.public_key(),
+        &user_email,
+        Some(registrar_origin.clone()),
+    )?;
+    let bundle = external_warrant_request(
+        &st.poster_key,
+        &cert,
+        &st.config.broker_domain,
+        &user_email,
+        &st.config.sbo_db_audience,
+        default_scopes(&user_email),
+    )?;
+
+    let resp: WarrantRequestResp = post_json(
+        format!("{registrar_origin}/warrant/request"),
+        serde_json::json!({ "request_bundle": bundle }),
+    )
+    .await?;
+    st.store
+        .set_poster_pending(account_id, &user_email, &resp.code)?;
+    Ok(Json(EnableResp {
+        verification_uri: resp.verification_uri,
+    }))
+}
+
+/// POST /poster/poll — pick up the approved warrant (or report progress). On
+/// approval the warrant is stored; subsequent posts go server-side.
+pub async fn poll(
+    State(st): State<Shared>,
+    cookies: Cookies,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let account_id = require_session(&st, &cookies)?;
+    let (user_email, code) = match st.store.get_poster_pending(account_id)? {
+        Some(x) => x,
+        None => return Ok(Json(serde_json::json!({ "status": "none" }))),
+    };
+    let registrar_origin = origin_for(&st.config.broker_domain);
+    let resp: PollResp = post_json(
+        format!("{registrar_origin}/warrant/poll"),
+        serde_json::json!({ "code": code }),
+    )
+    .await?;
+
+    match resp.status.as_str() {
+        "approved" => {
+            let jws = resp
+                .warrants
+                .and_then(|w| w.into_iter().next())
+                .or(resp.warrant)
+                .ok_or_else(|| AppError::Internal("approved poll carried no warrant".into()))?;
+            let warrant = Warrant::parse(&jws).map_err(|e| {
+                AppError::Internal(format!("registrar returned a bad warrant: {e}"))
+            })?;
+            st.store.set_poster_warrant(
+                account_id,
+                &user_email,
+                &jws,
+                warrant.audience(),
+                warrant.claims().exp,
+            )?;
+            st.store.clear_poster_pending(account_id)?;
+            Ok(Json(serde_json::json!({ "status": "approved" })))
+        }
+        "pending" => Ok(Json(serde_json::json!({ "status": "pending" }))),
+        other => {
+            // denied / expired / gone — drop the dead code.
+            st.store.clear_poster_pending(account_id)?;
+            Ok(Json(serde_json::json!({ "status": other })))
+        }
+    }
+}
+
+/// GET /poster/status — whether mingo may currently post for this account.
+pub async fn status(
+    State(st): State<Shared>,
+    cookies: Cookies,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let account_id = require_session(&st, &cookies)?;
+    let now = chrono::Utc::now().timestamp();
+    let w = st.store.get_poster_warrant(account_id)?;
+    let enabled = w.as_ref().is_some_and(|w| w.expires_at > now);
+    Ok(Json(serde_json::json!({
+        "enabled": enabled,
+        "expires_at": w.map(|w| w.expires_at),
+    })))
+}
+
+/// POST /poster/disable — forget the stored warrant (the user can also revoke
+/// it at the registrar, which cuts it off on-chain; this just stops mingo from
+/// using it).
+pub async fn disable(
+    State(st): State<Shared>,
+    cookies: Cookies,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let account_id = require_session(&st, &cookies)?;
+    st.store.delete_poster_warrant(account_id)?;
+    st.store.clear_poster_pending(account_id)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct SubmitReq {
+    pub path: String,
+    pub id: String,
+    pub schema: String,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    /// The object body as a byte array (same shape the client builds).
+    pub payload: Vec<u8>,
+    #[serde(default)]
+    pub hlc: Option<String>,
+    #[serde(default)]
+    pub prev: Option<String>,
+}
+
+/// POST /poster/submit — mingo signs the write on the user's behalf (agent
+/// cert + stored warrant) and forwards the wire to the daemon. No client-side
+/// signing, so it works identically on mobile. `auth_evidence` is omitted: the
+/// daemon resolves both issuers' `/sys/dnssec` proofs on-chain (same as the
+/// client path).
+pub async fn submit(
+    State(st): State<Shared>,
+    cookies: Cookies,
+    Json(req): Json<SubmitReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let account_id = require_session(&st, &cookies)?;
+    let w = st
+        .store
+        .get_poster_warrant(account_id)?
+        .ok_or_else(|| AppError::BadRequest("mingo-poster is not enabled".into()))?;
+    let now = chrono::Utc::now().timestamp();
+    if w.expires_at <= now {
+        return Err(AppError::BadRequest(
+            "mingo-poster warrant expired — re-enable".into(),
+        ));
+    }
+    let domain = st.config.domain.clone();
+    let registrar_origin = origin_for(&st.config.broker_domain);
+    let cert = mint_poster_cert(
+        &st.keypair,
+        &domain,
+        &st.poster_key.public_key(),
+        &w.user_email,
+        Some(registrar_origin),
+    )?;
+
+    let hlc = req
+        .hlc
+        .unwrap_or_else(|| format!("{}.0", chrono::Utc::now().timestamp_millis()));
+    let wire_bytes = assemble_agent_write(
+        &st.poster_key,
+        &cert,
+        &w.warrant,
+        None,
+        WriteSpec {
+            action: Action::Post,
+            path: &req.path,
+            id: &req.id,
+            schema: &req.schema,
+            content_type: req.content_type.as_deref().unwrap_or("application/json"),
+            payload: req.payload,
+            owner: &w.user_email,
+            hlc: Some(&hlc),
+            prev: req.prev.as_deref(),
+        },
+    )?;
+
+    let result = submit_wire(st.config.daemon_url.clone(), wire_bytes).await?;
+    Ok(Json(result))
 }
 
 #[cfg(test)]
@@ -225,7 +528,7 @@ mod tests {
             &poster,
             &cert,
             warrant_jws,
-            "onchain:/sys/dnssec/mingo.place",
+            Some("onchain:/sys/dnssec/mingo.place"),
             WriteSpec {
                 action: Action::Post,
                 path: "/communities/hub/spaces/general/",
