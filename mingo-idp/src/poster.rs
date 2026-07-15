@@ -191,7 +191,7 @@ fn public_identity(account: &Account, domain: &str) -> String {
 }
 
 /// `scheme://host` for a domain — https, except localhost/127.* (dev).
-fn origin_for(domain: &str) -> String {
+pub(crate) fn origin_for(domain: &str) -> String {
     if domain.starts_with("localhost") || domain.starts_with("127.") {
         format!("http://{domain}")
     } else {

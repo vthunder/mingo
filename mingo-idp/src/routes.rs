@@ -340,6 +340,13 @@ pub struct ProvisionReq {
     pub external_email: String,
     pub handle: String,
     pub pubkey: PubKeyJson,
+    /// When set, mint an AGENT cert (`agent.parent = <this email>`) instead of
+    /// a plain identity cert — the shape `mint_poster_cert` produces, usable
+    /// only alongside a warrant signed by this delegator (mingo-b2yz seeding:
+    /// one agent cert per delegator, exactly like mingo-poster's per-user
+    /// certs). Admin-gated like the rest of this endpoint.
+    #[serde(default)]
+    pub agent_parent: Option<String>,
 }
 
 pub async fn admin_provision(
@@ -376,13 +383,24 @@ pub async fn admin_provision(
         .map_err(|e| AppError::BadRequest(format!("invalid public key: {}", e)))?;
 
     let email = format!("{}@{}", handle, st.config.domain);
-    let cert = Certificate::create(
-        &st.config.domain,
-        &email,
-        &user_pk,
-        chrono::Duration::hours(24),
-        &st.keypair,
-    )
+    let cert = match &req.agent_parent {
+        Some(parent) => Certificate::create_agent(
+            &st.config.domain,
+            &email,
+            parent,
+            &user_pk,
+            chrono::Duration::hours(24),
+            &st.keypair,
+            Some(crate::poster::origin_for(&st.config.broker_domain)),
+        ),
+        None => Certificate::create(
+            &st.config.domain,
+            &email,
+            &user_pk,
+            chrono::Duration::hours(24),
+            &st.keypair,
+        ),
+    }
     .map_err(|e| AppError::Internal(format!("cert create: {}", e)))?;
 
     Ok(Json(CertResp {

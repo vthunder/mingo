@@ -5,7 +5,7 @@ status: in-progress
 type: feature
 priority: normal
 created_at: 2026-07-15T19:57:49Z
-updated_at: 2026-07-15T20:06:47Z
+updated_at: 2026-07-15T21:26:08Z
 parent: mingo-y9gb
 ---
 
@@ -41,3 +41,15 @@ Generate a rich sample corpus so mingo looks lived in: several communities, ~15 
 - Deterministic ids (`p-/c-/r-<b36(sha256(corpus key))>`), so re-runs LWW-overwrite. Persona keys are fresh per run (owner is the email; cert re-binds).
 - Without --sys-key ages compress order-preservingly to ≤20h (knee 12h); with --sys-key (`ed25519:<hex>` export or `{"secret_key":hex}`) _config widens to 45d then restores 24h, even if a submit aborts mid-run.
 - Prod run: `MINGO_ADMIN_TOKEN=… mingo seed --sys-key ~/secure-backup/mingo-sys.key --execute` (defaults: --idp https://mingo.place --daemon https://da.sandmill.org). Aborts on first 400 with stage/reason.
+
+## Provenance variety (dan's request, follow-up pass)
+
+Corpus now exercises three receipt flavors: ~60% mingo.place author + client-signed, 3 external-identity personas (lidia.m/grubb/birchbark → @example.com, broker-fallback-certified), and 13 agent-signed items (4 posts + 9 comments incl. two 📬 digest-bot roundups) by asha/jjnguyen/grubb — grubb overlaps both flavors. 234 writes total.
+
+Decisions:
+- External emails restricted to @example.com or vthunder@gmail.com at BOTH layers (corpus validation + the broker's new /wsapi/admin/cert_key hard allowlist, env BROKER_ADMIN_MINT_ALLOWLIST; no allowlist = mint nothing; route unmounted without BROKER_ADMIN_TOKEN). The broker must never attest an address that could belong to a real third party.
+- Agent = seeder-run digest-bot@mingo.place, never the real mingo-poster. Agent certs MUST be agent-shaped (sbo attribution.rs:263-274 requires agent_cert.agent_parent == warrant.iss), so /admin/provision gained an optional agent_parent field minting mingo-poster-shaped certs (one per delegating author). Warrants signed by each author's own identity key via browserid_core::Warrant::create (90d, mingo-poster scopes, as:<author>); no status ref (the daemon doesn't require one; fabricating indices into the real status list would collide with real revocations).
+- Cross-issuer chains (external author's browserid.me parent cert + mingo.place agent cert) are accepted by the daemon per attribution.rs:311-314 (is_broker) — same shape as dan's live mingo-poster post.
+- DNSSEC freshness now covers browserid.me too when external personas exist.
+
+Execute now also needs BROKER_ADMIN_TOKEN in the env (and the broker deployed with it + BROKER_ADMIN_MINT_ALLOWLIST=example.com).

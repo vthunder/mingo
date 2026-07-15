@@ -23,3 +23,7 @@ anyhow.workspace = true
 # For the `seed` subcommand's live mode (provision + submit) — mirrors mingo-idp.
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 base64 = "0.22"
+# Agent-flavored seed writes: warrants signed by persona identity keys, agent
+# certs parsed for sanity (same pinned rev as mingo-idp).
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "e572cda" }
+chrono = { version = "0.4", features = ["serde"] }

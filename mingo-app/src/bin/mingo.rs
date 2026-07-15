@@ -105,6 +105,18 @@ enum Commands {
         /// Actually provision + submit (default is a dry-run print).
         #[arg(long)]
         execute: bool,
+        /// Broker (fallback IdP) origin — mints certs for external-identity
+        /// personas via its admin endpoint.
+        #[arg(long, default_value = "https://browserid.me")]
+        broker: String,
+        /// Env var holding the broker admin token (X-Admin-Token) for
+        /// external-identity cert mints.
+        #[arg(long, default_value = "BROKER_ADMIN_TOKEN")]
+        broker_admin_token_env: String,
+        /// Warrant audience for digest-bot agent writes — must identify the
+        /// production SBO database (mingo-idp MINGO_SBO_DB_AUDIENCE).
+        #[arg(long, default_value = "sbo+raw://avail:turing:506/")]
+        audience: String,
         /// Env var holding the IdP admin token (X-Admin-Token).
         #[arg(long, default_value = "MINGO_ADMIN_TOKEN")]
         admin_token_env: String,
@@ -295,14 +307,20 @@ fn main() -> Result<()> {
             sys_key,
             execute,
             admin_token_env,
+            broker,
+            broker_admin_token_env,
+            audience,
         } => {
             mingo_app::seed::run(&mingo_app::seed::SeedArgs {
                 idp,
                 daemon,
+                broker,
+                audience,
                 corpus,
                 sys_key,
                 execute,
                 admin_token_env,
+                broker_admin_token_env,
             })?;
         }
     }
