@@ -697,11 +697,15 @@ pub fn build_plan(corpus: &Corpus, domain: &str, now_ms: i64, clamp: bool) -> Re
     }
     let mut badges = Vec::new();
     for b in &corpus.badges {
+        // The daemon's attestation-type grammar ([a-z0-9]+(:[a-z0-9-]+)*)
+        // allows '-' only inside a ':'-separated segment, so a slug like
+        // founding-member ships as badge:founding-member; the object id
+        // stays the bare slug.
         badges.push(attestation(
             ItemKind::Badge,
             &b.from,
             &b.to,
-            &b.type_,
+            &format!("badge:{}", b.type_),
             b.type_.clone(),
             b.age_hours,
             format!("badge {} {} → {}", b.type_, b.from, b.to),

@@ -1,11 +1,11 @@
 ---
 # mingo-o7pd
 title: 'Provenance panel: per-post cryptographic receipt'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-15T19:57:49Z
-updated_at: 2026-07-15T20:50:46Z
+updated_at: 2026-07-15T21:51:01Z
 parent: mingo-y9gb
 ---
 
@@ -41,3 +41,7 @@ New drawer structure (validated by running the real app.js functions against bot
 - Record (renamed from On-chain): full path+id (mono), schema, authored time, object hash, and 'inclusion proof computed against the current state root … (block M) — Merkle proof ↗' linking to the ?proof=1 URL. Also DNSSEC/'Merkle proof' links open the daemon's raw JSON (.rlink style added).
 
 Key fact discovered: the warrant payload carries the AUTHOR's cert as the `parent-cert` claim (JWS; payload iss/principal.email/public-key.publicKey/iat/exp) — that's what lets the Author section show its own vouching line on agent-signed posts. Verified live: p-mrmgtqy5's parent-cert iss=browserid.me for vthunder@gmail.com (fallback path), top cert iss=mingo.place for mingo-poster (primary path).
+
+## Summary of Changes
+
+Shipped receipt v1 then v2 (identity-centric per dan's review): status without 'on chain', Author with own-key + voucher (primary vs fallback wording, DNSSEC link), Posted-by with directional warrant grant, per-party 'Who did what' ledger, Record with path/schema/authored time/Merkle-proof link. Validated against live client-signed, poster-signed, external-author, and digest-bot objects.

@@ -1,11 +1,11 @@
 ---
 # mingo-b2yz
 title: 'Seed data: lived-in demo corpus (mingo-seed)'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-15T19:57:49Z
-updated_at: 2026-07-15T21:26:08Z
+updated_at: 2026-07-15T21:51:01Z
 parent: mingo-y9gb
 ---
 
@@ -55,3 +55,7 @@ Decisions:
 Execute now also needs BROKER_ADMIN_TOKEN in the env (and the broker deployed with it + BROKER_ADMIN_MINT_ALLOWLIST=example.com).
 
 - Prod run 2026-07-15 aborted mid-seed: daemon 500 wrapping TurboDA "429 Too Many Requests" (error 1015); fix: submit() now retries the same wire on 429 / rate-limit-smelling 5xx with 2/4/8/16/32/64s backoff (pacing 75ms→250ms; restore path uses the same retrying submit); NOTE: woodworking+homelab _config still widened at 3888000s on prod (cooks restored) — the re-run's restore step will fix them.
+
+## Summary of Changes
+
+Fully seeded prod (2026-07-15): 21 posts / 67 comments / 89 reactions across cooks-woodworking-homelab, 14 vouches + 5 badges (types shipped as badge:<slug> — daemon grammar allows hyphens only after a colon), memberships, 15 personas (12 mingo.place, 3 @example.com fallback-certified), 13 agent-signed items via digest-bot warrants. Ages spread ~30d via sys-key _config widen/restore (all restored to 86400). TurboDA 429s fixed with backoff+250ms pacing. All three provenance flavors verified on-chain via receipts.
