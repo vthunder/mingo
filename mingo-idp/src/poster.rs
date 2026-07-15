@@ -177,12 +177,16 @@ pub fn assemble_agent_write(
 // ===========================================================================
 
 /// The public identity a user's mingo posts attribute to: their claimed
-/// `<handle>@<domain>` pseudonym when they chose one, else their external
-/// email. This is the warrant's delegator and the write's owner.
+/// `<handle>@<domain>` pseudonym when they have one, else their external email.
+/// This is the warrant's delegator and the write's owner, so it MUST match the
+/// identity the SPA authors as — which is `handle ? <handle>@<domain> : email`
+/// (a claimed handle always wins, regardless of `identity_mode`). If this
+/// disagrees, the warrant delegates for a different identity than the one the
+/// user is a community member as, and every post is denied "No matching grant".
 fn public_identity(account: &Account, domain: &str) -> String {
-    match (account.identity_mode.as_deref(), &account.handle) {
-        (Some("handle"), Some(h)) => format!("{h}@{domain}"),
-        _ => account.external_email.clone(),
+    match &account.handle {
+        Some(h) => format!("{h}@{domain}"),
+        None => account.external_email.clone(),
     }
 }
 
