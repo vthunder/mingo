@@ -969,6 +969,7 @@ async function viewHub() {
   rows.sort((a, b) => (votes.get(b.uri) || 0) - (votes.get(a.uri) || 0) || (b.hlc || "").localeCompare(a.hlc || ""));
   $("#feed").outerHTML = `<div id="feed">${rows.length ? rows.map((p) => feedRow(p, votes)).join("") : `<div class="card muted">No posts yet. Sign in and create the first one.</div>`}</div>`;
   wireVoteButtons();
+  wireReceiptButtons();
 }
 
 function feedRow(p, votes, showComm = true) {
@@ -976,7 +977,7 @@ function feedRow(p, votes, showComm = true) {
   return `<div class="card feed-row${pending ? " pending" : ""}">
     <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
     <div style="flex:1">
-      <div class="post-meta">${showComm ? `c/${esc(p.comm)} · ` : ""}${esc(p.author)}${timeAgo(p.ts)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
+      <div class="post-meta">${showComm ? `c/${esc(p.comm)} · ` : ""}${esc(p.author)}${timeAgo(p.ts)}${pending ? ` · <span class="muted">pending…</span>` : ""}${receiptLink(p)}</div>
       <div class="post-title"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
     </div></div>`;
 }
@@ -1016,6 +1017,7 @@ async function viewCommunity(commId) {
   posts.sort((a, b) => (votes.get(b.uri) || 0) - (votes.get(a.uri) || 0) || (b.hlc || "").localeCompare(a.hlc || ""));
   $("#posts").outerHTML = `<div id="posts">${posts.length ? posts.map((p) => feedRow({ ...p, comm: c.id }, votes, false)).join("") : `<div class="card muted">No posts yet.</div>`}</div>`;
   wireVoteButtons();
+  wireReceiptButtons();
 }
 
 function showCompose(commId) {
@@ -1058,7 +1060,7 @@ async function viewThread(commId, postId) {
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
-    <div class="card"><div class="post-meta">${esc(post.author)}${timeAgo(post.ts)}</div>
+    <div class="card"><div class="post-meta">${esc(post.author)}${timeAgo(post.ts)}${receiptLink(post)}</div>
       <div class="post-body">${esc(post.body)}</div>
       <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · <span data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div>
     </div>
@@ -1089,9 +1091,10 @@ async function viewThread(commId, postId) {
     finally { $("#c-submit").disabled = false; }
   };
   wireVoteButtons();
+  wireReceiptButtons();
 }
 function commentBox(c, votes) {
-  return `<div class="comment"><div class="post-meta">${esc(c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲</div><div>${esc(c.body)}</div></div>`;
+  return `<div class="comment"><div class="post-meta">${esc(c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${receiptLink(c)}</div><div>${esc(c.body)}</div></div>`;
 }
 
 function wireVoteButtons() {
@@ -1113,6 +1116,158 @@ function wireVoteButtons() {
         delete b.dataset.voted; b.classList.remove("voted");
         toast("vote failed: " + e.message);
       }
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// provenance receipt — per-post cryptographic receipt drawer (mingo-o7pd).
+// The 🧾 in a post-meta line opens a drawer showing who signed the object, the
+// cert that binds the signing key to an identity, the delegation warrant when
+// it was posted via mingo-poster, and where it sits on-chain. All of it comes
+// from ONE request: /v1/object?…&proof=1, whose `sboq` text embeds the full
+// original signed wire (headers incl. Auth-Cert/Auth-Warrant) plus the trie
+// proof against the CURRENT head state root.
+// ---------------------------------------------------------------------------
+
+// Feed rows are rendered as HTML strings, so stash each row's item here and let
+// the click handler look it up by uri (same pattern as data-vote, richer data).
+const receiptItems = new Map();
+function receiptLink(p) {
+  receiptItems.set(p.uri, p);
+  return ` · <button class="link receipt" data-receipt="${esc(p.uri)}" title="cryptographic receipt">🧾</button>`;
+}
+function wireReceiptButtons() {
+  document.querySelectorAll("[data-receipt]").forEach((b) => {
+    b.onclick = () => {
+      const item = receiptItems.get(b.getAttribute("data-receipt"));
+      if (item) openReceipt(item);
+    };
+  });
+}
+
+// Parse the SBOQ proof document (sbo-core proof/sboq.rs): RFC-822-ish headers,
+// a blank line, ONE line of trie-proof JSON (its serializer escapes newlines,
+// so the array never wraps), then the raw embedded SBO wire object — itself
+// headers + blank line + payload. We only need header values from both layers,
+// so this stays a tolerant line parser; unknown headers are ignored.
+function parseSboq(text) {
+  const sep = text.indexOf("\n\n");
+  if (sep < 0) throw new Error("malformed proof document");
+  const proof = parseHeaderLines(text.slice(0, sep));
+  const rest = text.slice(sep + 2);
+  const nl = rest.indexOf("\n"); // end of the single-line proof JSON
+  const wireText = nl >= 0 ? rest.slice(nl + 1) : "";
+  const wireEnd = wireText.indexOf("\n\n");
+  const wire = parseHeaderLines(wireEnd >= 0 ? wireText.slice(0, wireEnd) : wireText);
+  return { proof, wire };
+}
+function parseHeaderLines(block) {
+  const h = {};
+  for (const line of block.split("\n")) {
+    const i = line.indexOf(":");
+    if (i > 0) h[line.slice(0, i)] = line.slice(i + 1).trim();
+  }
+  return h;
+}
+
+// Decode a JWS payload for display (no verification — this is a rendering of
+// what the daemon serves; the chain itself already validated the envelope).
+function jwsPayload(token) {
+  try {
+    return JSON.parse(new TextDecoder().decode(b64urlToBytes(token.split(".")[1])));
+  } catch { return null; }
+}
+
+// Long hex/JWS values stay behind middle-truncation; tap copies the full value.
+const truncMid = (s, head = 12, tail = 6) =>
+  s && s.length > head + tail + 1 ? s.slice(0, head) + "…" + s.slice(-tail) : s || "";
+const copyable = (full, head, tail) =>
+  `<span class="mono copy" data-copy="${esc(full)}" title="tap to copy">${esc(truncMid(full, head, tail))}</span>`;
+const rDate = (sec) => (sec ? new Date(sec * 1000).toLocaleString() : "unknown");
+const rSection = (label, html) =>
+  `<div class="receipt-section"><div class="side-h">${esc(label)}</div>${html}</div>`;
+
+function openReceipt(item) {
+  const overlay = el(`<div class="modal-overlay">
+    <div class="modal card receipt-modal">
+      <div class="row-between"><div class="h2" style="margin:0">🧾 Receipt</div>
+        <button class="link" id="r-close" aria-label="Close">✕</button></div>
+      <div id="r-body" class="muted" style="margin-top:8px">loading…</div>
+    </div></div>`);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#r-close").onclick = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  const body = overlay.querySelector("#r-body");
+  renderReceipt(item, body).catch((e) => {
+    body.className = "";
+    body.innerHTML = `<div class="error">couldn't load receipt: ${esc(e.message)}</div>`;
+  });
+}
+
+async function renderReceipt(item, body) {
+  // A pending object lives only in the daemon's mempool overlay — no trie
+  // proof exists yet, so show what the list row already knows and say so.
+  if (item.confirmed === false) {
+    body.className = "";
+    body.innerHTML =
+      rSection("Status", `<div>⏳ pending confirmation — full receipt available once on-chain</div>`) +
+      rSection("Author", `<div>${esc(item.authorRef || item.author)}</div>`) +
+      rSection("Written", `<div>${esc(item.ts ? new Date(item.ts).toLocaleString() : "unknown")}</div>`);
+    return;
+  }
+
+  const view = await getObject(item.path, item.id, true);
+  let proof = {}, wire = {};
+  if (view.sboq) ({ proof, wire } = parseSboq(view.sboq));
+  // The wire spec calls this header Public-Key (wire/serializer.rs); accept
+  // Signing-Key too in case an older node still emits the pre-rename name.
+  const key = wire["Public-Key"] || wire["Signing-Key"] || "";
+  const cert = wire["Auth-Cert"] ? jwsPayload(wire["Auth-Cert"]) : null;
+  const warrant = wire["Auth-Warrant"] ? jwsPayload(wire["Auth-Warrant"]) : null;
+
+  const parts = [];
+  parts.push(rSection("Status", `<div><span class="confirmed">✓ confirmed on-chain</span></div>`));
+
+  parts.push(rSection("Author",
+    `<div>${esc(view.owner_ref || view.creator || "unknown")}</div>` +
+    (key ? `<div>signing key ${copyable(key, 16, 6)}</div>` : "")));
+
+  if (cert) {
+    const certEmail = cert.principal?.email || "unknown";
+    parts.push(rSection("Certified by",
+      `<div>${esc(cert.iss || "unknown issuer")}</div>
+       <div class="tiny muted">${esc(cert.iss || "?")} certified this key speaks for ${esc(certEmail)}</div>
+       <div class="tiny muted">issued ${esc(rDate(cert.iat))} · expires ${esc(rDate(cert.exp))}</div>`));
+  }
+
+  if (warrant) {
+    const scopes = Array.isArray(warrant.scopes) ? warrant.scopes : [];
+    parts.push(rSection("Posted via agent",
+      `<div>signed by <strong>${esc(warrant.agent || "?")}</strong> on behalf of <strong>${esc(warrant.iss || "?")}</strong></div>
+       <div class="tiny muted">audience ${esc(warrant.aud || "?")} · warrant expires ${esc(rDate(warrant.exp))}</div>
+       ${scopes.length ? `<div style="margin-top:4px">${scopes.map((s) => `<span class="scope">${esc(String(s))}</span>`).join("")}</div>` : ""}`));
+  }
+
+  // Honesty note: the daemon proves inclusion against the CURRENT head state
+  // root (sboq Block/State-Root), not the block that first confirmed the
+  // object (view.block) — say exactly that instead of implying otherwise.
+  const onchain =
+    `<div>confirmed in block ${esc(String(view.block ?? "?"))}</div>` +
+    (view.object_hash ? `<div>object hash ${copyable(view.object_hash, 12, 6)}</div>` : "") +
+    (proof["State-Root"]
+      ? `<div class="tiny muted">proven in state root ${copyable(proof["State-Root"], 10, 6)} at block ${esc(proof["Block"] || "?")} (current head)</div>`
+      : `<div class="tiny muted">no inclusion proof available from this daemon</div>`);
+  parts.push(rSection("On-chain", onchain));
+
+  body.className = "";
+  body.innerHTML = parts.join("");
+  body.querySelectorAll("[data-copy]").forEach((n) => {
+    n.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(n.getAttribute("data-copy"));
+        toast("copied");
+      } catch { toast("copy failed"); }
     };
   });
 }

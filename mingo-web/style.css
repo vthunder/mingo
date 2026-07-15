@@ -77,6 +77,20 @@ textarea { min-height: 90px; resize: vertical; }
 .modal { width: 360px; max-width: 90vw; margin: 0; }
 .error { color: #c0392b; }
 
+/* Provenance receipt drawer (mingo-o7pd) */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; word-break: break-all; }
+button.link.receipt { color: var(--muted); font-size: 12px; }
+button.link.receipt:hover { color: var(--accent); }
+.modal.receipt-modal { width: 460px; max-height: 85vh; overflow-y: auto; }
+.receipt-section { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+.receipt-section:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+.receipt-section .side-h { margin-bottom: 4px; }
+.copy { cursor: pointer; }
+.copy:hover { color: var(--accent); }
+.scope { display: inline-block; font-size: 11px; background: #eef2ff; color: var(--accent);
+  border-radius: 999px; padding: 1px 8px; margin: 2px 4px 0 0; }
+
 /* Pending (optimistic) post placeholder + voted state */
 .feed-row.pending { opacity: .6; }
 .feed-row.pending .post-title { font-style: italic; }
