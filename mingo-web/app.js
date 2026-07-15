@@ -786,9 +786,20 @@ async function onPosterToggle() {
   openPosterEnableModal();
 }
 
-// A proper modal (not a hard-to-spot link) to enable server-side posting:
-// explain it, then a prominent "Approve at browserid.me" button that opens the
-// consent page and polls until the warrant lands. Resolves true once enabled.
+// The open poster modal's close(), so pickupPoster can complete a same-tab
+// approval round-trip that left the modal (and its awaiting caller) behind.
+let posterModalClose = null;
+
+// A proper modal (not a hard-to-spot link) to enable server-side posting.
+// The consent request is raised as soon as the modal opens (the IdP reuses an
+// outstanding request, so reopening costs nothing) and Continue is a REAL LINK
+// to the consent page: a same-tab navigation no popup blocker can eat. This is
+// the fix for mingo-hlka — Arc mobile blocks window.open AND named-target
+// anchors, with per-tab block state that survives reloads, so any popup-shaped
+// flow silently dead-ends. Where popups ARE allowed, Continue's click opens a
+// new tab instead (keeping this page alive) and we poll for approval in place;
+// on the same-tab path the pickup happens at next load (pickupPoster).
+// Resolves true once enabled.
 function openPosterEnableModal() {
   return new Promise((resolve) => {
     const overlay = el(`<div class="modal-overlay">
@@ -799,9 +810,9 @@ function openPosterEnableModal() {
           works on mobile. You approve on <strong>browserid.me</strong>, and you
           can turn this off anytime.</p>
         <p class="status" id="pe-status" style="margin-top:8px"></p>
-        <div class="row-between" style="margin-top:12px" id="pe-actions">
+        <div class="row-between" style="margin-top:12px">
           <button id="pe-cancel">Cancel</button>
-          <button class="primary" id="pe-go">Continue</button>
+          <a class="primary" id="pe-go" aria-disabled="true">Continue</a>
         </div>
       </div></div>`);
     document.body.appendChild(overlay);
@@ -810,41 +821,104 @@ function openPosterEnableModal() {
       s.className = "status " + (cls || "");
       s.textContent = msg || "";
     };
-    const close = (val) => { overlay.remove(); resolve(val); };
+    const close = (val) => {
+      posterModalClose = null;
+      overlay.remove();
+      resolve(val);
+    };
+    posterModalClose = close;
     overlay.querySelector("#pe-cancel").onclick = () => close(false);
-    overlay.querySelector("#pe-go").onclick = async () => {
-      // Open the approval tab synchronously (inside this tap) so mobile Safari
-      // allows it; we navigate it to the consent URL once the server returns it.
-      const win = window.open("about:blank", "mingo-consent");
-      const go = overlay.querySelector("#pe-go");
-      go.disabled = true;
-      setStatus("muted", "Setting up…");
-      let uri;
-      try {
-        uri = await enablePoster();
-      } catch (e) {
-        if (win) win.close();
-        go.disabled = false;
-        setStatus("err", "Couldn't start: " + e.message);
-        return;
-      }
-      if (win && !win.closed) win.location.href = uri;
-      // Swap to a prominent Approve button (reopens the tab if it was blocked).
-      overlay.querySelector("#pe-actions").innerHTML =
-        `<button id="pe-cancel2">Cancel</button>
-         <a class="primary" id="pe-approve" href="${esc(uri)}" target="mingo-consent" rel="noopener">Approve at browserid.me</a>`;
-      overlay.querySelector("#pe-cancel2").onclick = () => close(false);
-      setStatus("muted", "Approve in the browserid.me tab, then return here — waiting…");
-      const ok = await pollPoster();
-      if (ok) {
-        close(true);
+    const go = overlay.querySelector("#pe-go");
+    setStatus("muted", "Setting up…");
+    let waiting = false;
+    enablePoster().then((uri) => {
+      go.href = uri;
+      go.removeAttribute("aria-disabled");
+      setStatus("", "");
+      go.onclick = (e) => {
+        // Try a new tab first — it keeps this page (and any draft) alive so we
+        // can poll for the approval right here. A blocked window.open returns
+        // null, and then we DON'T preventDefault: the anchor's default same-tab
+        // navigation proceeds, which nothing can block. Stash the draft so it
+        // survives that round-trip.
+        const win = window.open(uri, "_blank");
+        if (!win) return stashDraft();
+        e.preventDefault();
+        setStatus("muted", "Approve in the browserid.me tab, then return here — waiting…");
+        if (waiting) return; // re-tap just reopens the tab; one poller is enough
+        waiting = true;
+        pollPoster().then((ok) => {
+          waiting = false;
+          if (ok) {
+            close(true);
+            renderAuth();
+            toast("Done — mingo now posts for you. 🎉");
+          } else {
+            setStatus("warn", "Approval didn't complete — tap Continue to try again.");
+          }
+        });
+      };
+    }).catch((e) => {
+      setStatus("err", "Couldn't start: " + e.message);
+      toast("Couldn't set up mingo posting: " + e.message);
+    });
+  });
+}
+
+// Pick up an approval after a same-tab consent round-trip (mingo-hlka): the
+// in-modal poll dies when the page navigates to browserid.me, so on load (and
+// on bfcache restore) check whether a pending request was approved while we
+// were away. Poll immediately — the user likely just approved — then briefly;
+// "none" means nothing was pending and we stop right away.
+let posterPickupRunning = false;
+async function pickupPoster() {
+  if (posterPickupRunning || poster.enabled || !session.email) return;
+  posterPickupRunning = true;
+  try {
+    for (let i = 0; i < 5; i++) {
+      let r;
+      try { r = await idpPost("/poster/poll", {}); } catch { return; }
+      if (r.status === "approved") {
+        poster.enabled = true;
         renderAuth();
         toast("Done — mingo now posts for you. 🎉");
-      } else {
-        setStatus("warn", "Approval didn't complete — tap Approve to try again.");
+        // A bfcache-restored page may still show the modal whose caller is
+        // awaiting it (e.g. the Post tap) — resolve it so the write proceeds.
+        if (posterModalClose) posterModalClose(true);
+        return;
       }
-    };
-  });
+      if (r.status !== "pending") return; // none / denied / expired
+      await new Promise((res) => setTimeout(res, 6000));
+    }
+  } finally { posterPickupRunning = false; }
+}
+
+// Draft preservation across the same-tab consent hop: bfcache usually restores
+// the page (textarea included), but a real reload would eat the draft.
+function stashDraft() {
+  const post = $("#post-body");
+  const comment = $("#c-body");
+  const d = post?.value.trim()
+    ? { kind: "post", body: post.value, hash: location.hash }
+    : comment?.value.trim()
+      ? { kind: "comment", body: comment.value, hash: location.hash }
+      : null;
+  if (d) sessionStorage.setItem("mingo_draft", JSON.stringify(d));
+}
+function restoreDraft() {
+  const raw = sessionStorage.getItem("mingo_draft");
+  if (!raw) return;
+  sessionStorage.removeItem("mingo_draft");
+  let d;
+  try { d = JSON.parse(raw); } catch { return; }
+  if (d.hash !== location.hash) return; // stale — user landed somewhere else
+  if (d.kind === "post") {
+    const parts = location.hash.slice(2).split("/");
+    if (parts[0] !== "c" || !parts[1] || parts[2]) return;
+    showCompose(parts[1]); // reopen the compose box the draft came from
+  }
+  const ta = $(d.kind === "post" ? "#post-body" : "#c-body");
+  if (ta) ta.value = d.body;
 }
 
 async function renderChrome() {
@@ -1082,7 +1156,18 @@ window.addEventListener("hashchange", route);
   window.addEventListener("hashchange", () => setOpen(false));
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
 })();
+// A bfcache restore brings the page back exactly as it was — textarea content
+// included, so drop the stash (it would go stale) — but any in-modal poll loop
+// is long dead, so check whether the consent hop we left for was approved.
+window.addEventListener("pageshow", (e) => {
+  if (!e.persisted) return;
+  sessionStorage.removeItem("mingo_draft");
+  pickupPoster();
+});
+
 (async function init() {
   await renderChrome();
   await route();
+  restoreDraft(); // after route(): the view the draft belongs to must exist
+  pickupPoster(); // catch an approval made during a same-tab consent hop
 })();

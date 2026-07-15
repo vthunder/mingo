@@ -203,6 +203,10 @@ fn origin_for(domain: &str) -> String {
 struct WarrantRequestResp {
     code: String,
     verification_uri: String,
+    /// Registrar request TTL. Defaults to 0 if absent, which makes the stored
+    /// pending row immediately non-reusable — safe, just no dedup.
+    #[serde(default)]
+    expires_in: i64,
 }
 
 #[derive(Deserialize)]
@@ -421,6 +425,11 @@ pub struct EnableResp {
 /// POST /poster/enable — start delegation: mint the per-user agent cert, build
 /// the external warrant request, raise it at the user's registrar, and hand
 /// back the consent URL to redirect to. On return the client polls `/poster/poll`.
+///
+/// Idempotent while a request is outstanding (mingo-hlka): the web app raises
+/// the request as soon as its enable dialog opens, so a retry or reopened
+/// dialog would otherwise park a fresh pending request each time and trip the
+/// registrar's per-delegator pending cap (5 within the request's 15-min TTL).
 pub async fn enable(
     State(st): State<Shared>,
     cookies: Cookies,
@@ -433,6 +442,21 @@ pub async fn enable(
     let domain = st.config.domain.clone();
     let user_email = public_identity(&account, &domain);
     let registrar_origin = origin_for(&st.config.broker_domain);
+
+    // Reuse the outstanding request if it's still live at the registrar. The
+    // minute of headroom avoids handing back a URI about to lapse mid-approval.
+    // A changed public identity (e.g. a freshly claimed handle) must NOT reuse:
+    // the old request delegates for the wrong identity.
+    let now = chrono::Utc::now().timestamp();
+    if let Some(p) = st.store.get_poster_pending(account_id)? {
+        if let Some(uri) = p.verification_uri {
+            if p.user_email == user_email && p.expires_at > now + 60 {
+                return Ok(Json(EnableResp {
+                    verification_uri: uri,
+                }));
+            }
+        }
+    }
 
     let cert = mint_poster_cert(
         &st.keypair,
@@ -455,8 +479,13 @@ pub async fn enable(
         serde_json::json!({ "request_bundle": bundle }),
     )
     .await?;
-    st.store
-        .set_poster_pending(account_id, &user_email, &resp.code)?;
+    st.store.set_poster_pending(
+        account_id,
+        &user_email,
+        &resp.code,
+        &resp.verification_uri,
+        now + resp.expires_in,
+    )?;
     Ok(Json(EnableResp {
         verification_uri: resp.verification_uri,
     }))
@@ -470,7 +499,7 @@ pub async fn poll(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let account_id = require_session(&st, &cookies)?;
     let (user_email, code) = match st.store.get_poster_pending(account_id)? {
-        Some(x) => x,
+        Some(p) => (p.user_email, p.code),
         None => return Ok(Json(serde_json::json!({ "status": "none" }))),
     };
     let registrar_origin = origin_for(&st.config.broker_domain);

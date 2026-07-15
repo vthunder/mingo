@@ -79,10 +79,12 @@ const SCHEMA: &str = r#"
         created_at  INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS poster_pending (
-        account_id  INTEGER PRIMARY KEY,
-        user_email  TEXT NOT NULL,
-        code        TEXT NOT NULL,
-        created_at  INTEGER NOT NULL
+        account_id        INTEGER PRIMARY KEY,
+        user_email        TEXT NOT NULL,
+        code              TEXT NOT NULL,
+        verification_uri  TEXT,
+        expires_at        INTEGER,
+        created_at        INTEGER NOT NULL
     );
 "#;
 
@@ -96,6 +98,14 @@ impl Store {
         // Migration for pre-existing DBs: add identity_mode if absent. SQLite
         // has no ADD COLUMN IF NOT EXISTS, so add-and-ignore the dup error.
         let _ = conn.execute("ALTER TABLE accounts ADD COLUMN identity_mode TEXT", []);
+        // mingo-hlka: /poster/enable reuses an outstanding consent request, so
+        // the pending row now carries its consent URL + expiry. Pre-migration
+        // rows read back NULL → never reused (a fresh request replaces them).
+        let _ = conn.execute(
+            "ALTER TABLE poster_pending ADD COLUMN verification_uri TEXT",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE poster_pending ADD COLUMN expires_at INTEGER", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -357,34 +367,54 @@ impl Store {
 
     // ---- mingo-poster (mingo-3f3i): consent code + stored warrant ----
 
-    /// Record the in-flight consent code for an account's `/poster/enable`
-    /// (replacing any prior pending code for that account).
+    /// Record the in-flight consent request for an account's `/poster/enable`
+    /// (replacing any prior pending one for that account). `expires_at` is when
+    /// the registrar lets the request lapse — `/poster/enable` reuses the row's
+    /// `verification_uri` until then instead of raising a new request.
     pub fn set_poster_pending(
         &self,
         account_id: i64,
         user_email: &str,
         code: &str,
+        verification_uri: &str,
+        expires_at: i64,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO poster_pending (account_id, user_email, code, created_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(account_id) DO UPDATE SET user_email = ?2, code = ?3, created_at = ?4",
-            params![account_id, user_email, code, Self::now()],
+            "INSERT INTO poster_pending (account_id, user_email, code, verification_uri, expires_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(account_id) DO UPDATE SET
+                 user_email = ?2, code = ?3, verification_uri = ?4, expires_at = ?5, created_at = ?6",
+            params![
+                account_id,
+                user_email,
+                code,
+                verification_uri,
+                expires_at,
+                Self::now()
+            ],
         )?;
         Ok(())
     }
 
-    /// The pending `(user_email, code)` for an account, if any.
+    /// The pending consent request for an account, if any.
     pub fn get_poster_pending(
         &self,
         account_id: i64,
-    ) -> rusqlite::Result<Option<(String, String)>> {
+    ) -> rusqlite::Result<Option<PosterPending>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT user_email, code FROM poster_pending WHERE account_id = ?1",
+            "SELECT user_email, code, verification_uri, expires_at
+             FROM poster_pending WHERE account_id = ?1",
             params![account_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| {
+                Ok(PosterPending {
+                    user_email: r.get(0)?,
+                    code: r.get(1)?,
+                    verification_uri: r.get(2)?,
+                    expires_at: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                })
+            },
         )
         .optional()
     }
@@ -455,6 +485,18 @@ pub struct PosterWarrant {
     pub expires_at: i64,
 }
 
+/// An in-flight `/poster/enable` consent request awaiting approval pickup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PosterPending {
+    pub user_email: String,
+    pub code: String,
+    /// The registrar consent page for this request. `None` only for rows
+    /// written before the mingo-hlka migration — treated as not reusable.
+    pub verification_uri: Option<String>,
+    /// When the registrar lets the request lapse (0 for pre-migration rows).
+    pub expires_at: i64,
+}
+
 fn agent_identity_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentIdentity> {
     Ok(AgentIdentity {
         name: r.get(0)?,
@@ -487,15 +529,20 @@ mod tests {
         let s = store();
         let acct = s.find_or_create_account("dan@example.com").unwrap();
 
-        // Pending code: set, read, overwrite (upsert), clear.
+        // Pending request: set, read, overwrite (upsert), clear.
         assert!(s.get_poster_pending(acct.id).unwrap().is_none());
-        s.set_poster_pending(acct.id, "dan@example.com", "wrq_a")
+        s.set_poster_pending(acct.id, "dan@example.com", "wrq_a", "https://reg/consent/wrq_a", 100)
             .unwrap();
-        s.set_poster_pending(acct.id, "dan@example.com", "wrq_b")
+        s.set_poster_pending(acct.id, "dan@example.com", "wrq_b", "https://reg/consent/wrq_b", 200)
             .unwrap();
         assert_eq!(
             s.get_poster_pending(acct.id).unwrap(),
-            Some(("dan@example.com".into(), "wrq_b".into()))
+            Some(PosterPending {
+                user_email: "dan@example.com".into(),
+                code: "wrq_b".into(),
+                verification_uri: Some("https://reg/consent/wrq_b".into()),
+                expires_at: 200,
+            })
         );
         s.clear_poster_pending(acct.id).unwrap();
         assert!(s.get_poster_pending(acct.id).unwrap().is_none());

@@ -48,6 +48,14 @@ button { font: inherit; padding: 8px 14px; border-radius: 9px; border: 1px solid
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 button.primary:disabled { opacity: .5; cursor: default; }
 button.link { border: none; background: none; color: var(--accent); padding: 0; }
+/* Link styled as a primary button — for actions that must be real navigations
+   (popup blockers can't eat an <a href>; see the poster-enable modal). */
+a.primary { display: inline-block; padding: 8px 14px; border-radius: 9px;
+  background: var(--accent); color: #fff; border: 1px solid var(--accent);
+  text-align: center; }
+a.primary[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+.status.err { color: #c0392b; font-weight: 600; }
+.status.warn { color: #b7791f; }
 
 input[type=text], textarea, input[type=email] { width: 100%; font: inherit; padding: 8px 10px;
   border: 1px solid var(--line); border-radius: 9px; background: #fff; }
