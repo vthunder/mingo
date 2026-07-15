@@ -5,24 +5,36 @@ ID: mingo.place
 Type: object
 Content-Type: application/jwt
 Content-Length: 310
-Content-Hash: sha256:676bd782f092e6a04ab20d4bd20d1efd4b671eda593700e66991beb6a2fb75d0
+Content-Hash: sha256:3a9ba6c6af509c9d1625e3c6d713883a55c902c4996da36b0445d4e31f3a8108
 Content-Schema: domain.v1
 Public-Key: ed25519:8ef0381e356a7f10e48ab8be637862586e8c8088f39b7c672a16cbb2f0503ad2
-Signature: 3985f6eb8ff63793712ea337b574218c1e0e7d4ad39759858e3423fa08717db1509abb98a69692732683c79087e5971895b35ea8d16abafe5f636eb841ae7f0c
+Signature: 6856a7d2ae19f0230a7efeaa3f4d4fc90ad195192a885e4cec6b6cba9106958c355179c863bffa799862c51632ce7b731c461c074b5f35270e56bb9cb0374909
 
-eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzZWxmIiwic3ViIjoibWluZ28ucGxhY2UiLCJwdWJsaWNfa2V5IjoiZWQyNTUxOTo4ZWYwMzgxZTM1NmE3ZjEwZTQ4YWI4YmU2Mzc4NjI1ODZlOGM4MDg4ZjM5YjdjNjcyYTE2Y2JiMmYwNTAzYWQyIiwiaWF0IjoxNzgyNjgwNDQyfQ.cSDI8tnJccxwYnCd3X4vcHHmUK-5PUPbfNVBNqtUnKCRN0cM-s__tZWdi7FF2QSiMYkeSP-5u60tBzDIsYnNCASBO-Version: 0.5
+eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzZWxmIiwic3ViIjoibWluZ28ucGxhY2UiLCJwdWJsaWNfa2V5IjoiZWQyNTUxOTo4ZWYwMzgxZTM1NmE3ZjEwZTQ4YWI4YmU2Mzc4NjI1ODZlOGM4MDg4ZjM5YjdjNjcyYTE2Y2JiMmYwNTAzYWQyIiwiaWF0IjoxNzg0MTU0MTE0fQ.H1NS80vneOjlUJ4fpV-9NcHfmtU24mMvcFtZgKL1o0OiEsJpRbWDTukyi3QgiUFosnWVH-2l_ENIeCsoBk4mBQSBO-Version: 0.5
 Action: post
 Path: /sys/names/
 ID: sys
 Type: object
 Content-Type: application/jwt
 Content-Length: 334
-Content-Hash: sha256:28d3929f065a7afe7ba904dc4263ee7a0db4c1f01fa8472ca9ded5d8ba356488
+Content-Hash: sha256:70542d690aa1fd0301000d4c5428cb7b80818e690b38134bc34506f750c80444
 Content-Schema: identity.v1
 Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
-Signature: de55067a6ae4e2872912389f1302bd4ef27572ef3b4f1465dd83e6a721bf67869400b00cec83eac96317018219d85c909f044d67eb4561512c51ca221537b007
+Signature: 3a7fa81591a81828adcc4591813c871500d934ec3b6d4825abd1e54e009c47ba56f2d886c59d59879a154d9cc10e08dab3b00227cb0c5fa6b822b26003045d0c
 
-eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJkb21haW46bWluZ28ucGxhY2UiLCJzdWIiOiJzeXNAbWluZ28ucGxhY2UiLCJwdWJsaWNfa2V5IjoiZWQyNTUxOTo1NjRhYWZlNDY5NGRlMzExYzg1ZjhmYWVkNTJiMjk0MzMzNjY3ODAxOGY5ZTFkZGQyNTk0YzEwN2M1Y2NmNGJkIiwiaWF0IjoxNzgyNjgwNDQyfQ.ye3AxzBFvtYf3dcKdHgClmj8sdTEPiwfEBX3u8q7iisbXPRVzGDfwNG9uyUnHmzZxxKzyOhrUA1-ZvkTejVoBASBO-Version: 0.5
+eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJkb21haW46bWluZ28ucGxhY2UiLCJzdWIiOiJzeXNAbWluZ28ucGxhY2UiLCJwdWJsaWNfa2V5IjoiZWQyNTUxOTo1NjRhYWZlNDY5NGRlMzExYzg1ZjhmYWVkNTJiMjk0MzMzNjY3ODAxOGY5ZTFkZGQyNTk0YzEwN2M1Y2NmNGJkIiwiaWF0IjoxNzg0MTU0MTE0fQ.1ncnkFPAIpMvh2v6BFW2BjchRNa1mcM71Mv8fdaiiTaieDdcipeGp1S9aQucaQ2E83sNMVd04cxYp7EpRJZyBASBO-Version: 0.5
+Action: post
+Path: /sys/names/
+ID: sys-checkpointer
+Type: object
+Content-Type: application/jwt
+Content-Length: 316
+Content-Hash: sha256:64a060ba2beddca45d1a91b74cb03afd65d138dc797fbd661a52d56602d5ca80
+Content-Schema: identity.v1
+Public-Key: ed25519:937fc1e8073a1d3939bb59fa744e4fd2d7ff365c2cd573ca8a931b47e7949c00
+Signature: 9cfbf42350ee883d0f2aead39e96fd69d1fa04b81ba70dc2ae4f0991d49a7ef91c11f89a929b61531863a2e159de4aa185af3ea0a6a55430afbf3e39f3a2460d
+
+eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzZWxmIiwic3ViIjoic3lzLWNoZWNrcG9pbnRlciIsInB1YmxpY19rZXkiOiJlZDI1NTE5OjkzN2ZjMWU4MDczYTFkMzkzOWJiNTlmYTc0NGU0ZmQyZDdmZjM2NWMyY2Q1NzNjYThhOTMxYjQ3ZTc5NDljMDAiLCJpYXQiOjE3ODQxNTQxMTR9.uOxTj9_c8Hn4CAJIgC3zPPU8W841XlQH6SJJ9fG9_Ma0FZPAwr92n9oGdj8GJSyq7VxG1wkPF7h0PpsAgZG_BwSBO-Version: 0.5
 Action: post
 Path: /sys/trust/
 ID: brokers
@@ -41,12 +53,12 @@ ID: community
 Type: object
 Content-Type: application/json
 Content-Length: 171
-Content-Hash: sha256:081af137f6a84ff7510d3a28a01359923f274654f560cd557ddaeb9bb47348b1
+Content-Hash: sha256:a5da2918613523ee737280e13474de0039731a6dbe077701c1d4c5696a059f97
 Content-Schema: community.v1
 Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
-Signature: d0ffd3db55e0cc94f5a1a14919a18aa49e42147497e33d089578afda189255ae9bcc74041deb5a79759c86774f3286c3164e44403a6d790016b2fb671eb2b10c
+Signature: 93388cbade0910401ab938a3570d870eb5be87a3336779f5498b1eb61981bce8f5e6cc46161ce87133dcdb235b405736639c6935f8b643f34e78f3ef33e0eb02
 
-{"created_at":1782680442,"description":"Home cooks swapping recipes and technique.","issuer":"cooks@mingo.place","name":"Cooks","open":true,"policy":"/communities/cooks/"}SBO-Version: 0.5
+{"created_at":1784154114,"description":"Home cooks swapping recipes and technique.","issuer":"cooks@mingo.place","name":"Cooks","open":true,"policy":"/communities/cooks/"}SBO-Version: 0.5
 Action: post
 Path: /communities/cooks/
 ID: root
@@ -77,12 +89,12 @@ ID: community
 Type: object
 Content-Type: application/json
 Content-Length: 178
-Content-Hash: sha256:1b04893ddec7aef0c96291f9ac8d268c2f2acc24eb8ab487bc3d44878075ac53
+Content-Hash: sha256:15f9fd227ad91f3665e30e407d29b9eed56236ecca3d6f2a9cc7142a1e7b3140
 Content-Schema: community.v1
 Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
-Signature: 2538137677f095c103589503e4e0a9c9443f62375c7220f16c7a27deb47cef4e5109cace1b07596698edf49dddae5c109f68f75d2497db68311da1c8c1b25204
+Signature: ba949a9eec369098aedb697d0b16b9c33c2699e865eca6720e35ad032653f0608702b82064efffdb49ab2cbf13e558255114b03f3180ba7d1a3392b99ac6fb04
 
-{"created_at":1782680442,"description":"Makers, joinery, and finishing.","issuer":"woodworking@mingo.place","name":"Woodworking","open":true,"policy":"/communities/woodworking/"}SBO-Version: 0.5
+{"created_at":1784154114,"description":"Makers, joinery, and finishing.","issuer":"woodworking@mingo.place","name":"Woodworking","open":true,"policy":"/communities/woodworking/"}SBO-Version: 0.5
 Action: post
 Path: /communities/woodworking/
 ID: root
@@ -113,12 +125,12 @@ ID: community
 Type: object
 Content-Type: application/json
 Content-Length: 172
-Content-Hash: sha256:fd3883244139387a7f36921a35ba5392fab98ac4bd85d466d6853f64053cbb92
+Content-Hash: sha256:06c7b9f2c33c099e0c98a10fc6123df75f2dcf9562f6d0a543d534e64ac504bc
 Content-Schema: community.v1
 Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
-Signature: 619e7c62470071c1c3341701c1c9af6399596c51f204e3d4de43965a40522298419f2d926c2ae27bd7424af94358c81e7bbe38c717f475f3d7f5feedf460000e
+Signature: e9b73cc1316780a420094b9d90c347f19b248796c786df06d6ca1f66b83c9f72667da1e7033163491ed939e90204808f22dbc2f3f507ab9cf79b91b212c2560e
 
-{"created_at":1782680442,"description":"Self-hosters and home infrastructure.","issuer":"homelab@mingo.place","name":"Homelab","open":true,"policy":"/communities/homelab/"}SBO-Version: 0.5
+{"created_at":1784154114,"description":"Self-hosters and home infrastructure.","issuer":"homelab@mingo.place","name":"Homelab","open":true,"policy":"/communities/homelab/"}SBO-Version: 0.5
 Action: post
 Path: /communities/homelab/
 ID: root
@@ -148,10 +160,10 @@ Path: /sys/policies/
 ID: root
 Type: object
 Content-Type: application/json
-Content-Length: 357
-Content-Hash: sha256:214cd5831123b9cf63ccebb90dfbdfea9a7edfa31269c740c964b7f3bffa8d79
+Content-Length: 746
+Content-Hash: sha256:c635b15c216d160555714c82e259ec31d2cf6ee1ae840d7506e6f88f8dcceadf
 Content-Schema: policy.v2
 Public-Key: ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd
-Signature: 30cb484f0f06821025573655e1e97c9c8c58df1fe7ef8da62bcf12ba706284de98973589fa89e05b84ab80722f23f70dbdc7a676880c0e0ce334858bec984a0e
+Signature: af7cdbebedfceaab824ec04cde8bdbe71c91dabca329b6d51de7573376db82c384b770b0a11a1fb90cc338f606a5c0b9101557c1b9bf00e5c89565161a9ef401
 
-{"grants":[{"can":["create"],"on":"/sys/names/*","to":"*"},{"can":["update","delete"],"on":"/sys/names/*","to":"owner"},{"can":["*"],"on":"/u/$owner/**","to":"owner"},{"can":["post","transfer","delete"],"on":"/**","to":{"role":"admin"}}],"restrictions":[{"on":"/communities/*/spaces/**","require":{"not_attested":{"type":"ban"}}}],"roles":{"admin":["sys"]}}
+{"grants":[{"can":["create"],"on":"/sys/names/*","to":"*"},{"can":["update","delete"],"on":"/sys/names/*","to":"owner"},{"can":["*"],"on":"/u/$owner/**","to":"owner"},{"can":["create","update"],"on":"/sys/dnssec/**","to":"*"},{"can":["create"],"on":"/sys/checkpoints/**","to":{"key":"ed25519:937fc1e8073a1d3939bb59fa744e4fd2d7ff365c2cd573ca8a931b47e7949c00"}},{"can":["post","transfer","delete"],"on":"/**","to":{"role":"admin"}}],"restrictions":[{"on":"/communities/*/spaces/**","require":{"not_attested":{"type":"ban"}}},{"on":"/sys/dnssec/**","require":{"content_type":"application/octet-stream","dnssec_proof":true,"schema":"dnssec.v1"}}],"roles":{"admin":[{"key":"ed25519:564aafe4694de311c85f8faed52b2943336678018f9e1ddd2594c107c5ccf4bd"}]}}
