@@ -1,11 +1,11 @@
 ---
 # mingo-hlka
 title: Poster-enable silently fails once 5 abandoned warrant requests are pending (cap + swallowed error)
-status: in-progress
+status: completed
 type: bug
 priority: normal
 created_at: 2026-07-15T13:10:56Z
-updated_at: 2026-07-15T16:12:56Z
+updated_at: 2026-07-15T18:49:39Z
 ---
 
 Report (mobile): header "let mingo post for me" → Continue opens browserid fine. Going through New post → Post → same dialog → Continue does NOT open browserid; after that the header path stops working too. User closes all tabs and reloads between tests, so it is not client state.
@@ -40,7 +40,11 @@ User tests on **Arc mobile**, whose popup blocker (a) blocks `window.open` from 
 - [x] mingo-web polish: stash the drafted post body in sessionStorage before the same-tab hop; restore on return.
 - [x] browserid-ng consent.html: after approve/deny, show "Return to the app" via history.back() when history.length > 1, else "You can close this tab". No return_to param (avoids open-redirect validation).
 - [x] mingo-web: still surface enable errors loudly (the silent "Couldn't start" swallow made this undiagnosable).
-- [ ] Re-test in Arc mobile: repeated attempts from both entry points, same tab, must navigate to consent every time; approve → return → poster enabled without re-tapping.
+- [x] Re-test in Arc mobile: repeated attempts from both entry points, same tab, must navigate to consent every time; approve → return → poster enabled without re-tapping.
+
+## Summary of Changes
+
+Shipped and verified end-to-end on Arc mobile (dan, 2026-07-15). mingo faf11ee/d99ce7e: consent request raised at dialog-open (idempotent /poster/enable reusing the pending request), Continue as a real anchor with new-tab-then-same-tab fallback, pickupPoster on load/bfcache-restore, draft stash/restore, loud errors. browserid-ng d1468b8+e895629: consent-page return affordance (history.back) — plus the CSP inline-script hash update the first deploy missed (page bricked at 'Checking your session…' until e895629). Follow-up polish tracked separately.
 
 ## Still-real secondary issue (was the original theory)
 

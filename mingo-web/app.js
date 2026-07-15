@@ -786,9 +786,12 @@ async function onPosterToggle() {
   openPosterEnableModal();
 }
 
-// The open poster modal's close(), so pickupPoster can complete a same-tab
-// approval round-trip that left the modal (and its awaiting caller) behind.
-let posterModalClose = null;
+// The open poster modal's controls, so the same-tab consent round-trip can
+// drive it from outside its closure: pickupPoster close()s it on approval, and
+// the pageshow handler freeze()s it while that check runs (a still-active
+// Continue would bounce a stray tap right back to browserid). thaw() re-arms
+// Continue when the pickup comes back without an approval.
+let posterModal = null;
 
 // A proper modal (not a hard-to-spot link) to enable server-side posting.
 // The consent request is raised as soon as the modal opens (the IdP reuses an
@@ -822,13 +825,23 @@ function openPosterEnableModal() {
       s.textContent = msg || "";
     };
     const close = (val) => {
-      posterModalClose = null;
+      posterModal = null;
       overlay.remove();
       resolve(val);
     };
-    posterModalClose = close;
     overlay.querySelector("#pe-cancel").onclick = () => close(false);
     const go = overlay.querySelector("#pe-go");
+    posterModal = {
+      close,
+      freeze() {
+        go.setAttribute("aria-disabled", "true");
+        setStatus("muted", "Checking whether your approval landed…");
+      },
+      thaw() {
+        if (go.href) go.removeAttribute("aria-disabled");
+        setStatus("warn", "Approval didn't complete — tap Continue to try again.");
+      },
+    };
     setStatus("muted", "Setting up…");
     let waiting = false;
     enablePoster().then((uri) => {
@@ -877,19 +890,20 @@ async function pickupPoster() {
   try {
     for (let i = 0; i < 5; i++) {
       let r;
-      try { r = await idpPost("/poster/poll", {}); } catch { return; }
+      try { r = await idpPost("/poster/poll", {}); } catch { posterModal?.thaw(); return; }
       if (r.status === "approved") {
         poster.enabled = true;
         renderAuth();
         toast("Done — mingo now posts for you. 🎉");
         // A bfcache-restored page may still show the modal whose caller is
         // awaiting it (e.g. the Post tap) — resolve it so the write proceeds.
-        if (posterModalClose) posterModalClose(true);
+        if (posterModal) posterModal.close(true);
         return;
       }
-      if (r.status !== "pending") return; // none / denied / expired
+      if (r.status !== "pending") { posterModal?.thaw(); return; } // none / denied / expired
       await new Promise((res) => setTimeout(res, 6000));
     }
+    posterModal?.thaw(); // gave up while still pending — let the user retry
   } finally { posterPickupRunning = false; }
 }
 
@@ -1162,6 +1176,7 @@ window.addEventListener("hashchange", route);
 window.addEventListener("pageshow", (e) => {
   if (!e.persisted) return;
   sessionStorage.removeItem("mingo_draft");
+  posterModal?.freeze(); // don't let a stray Continue tap bounce back to browserid
   pickupPoster();
 });
 
