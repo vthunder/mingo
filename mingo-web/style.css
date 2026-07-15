@@ -90,6 +90,7 @@ button.link.receipt:hover { color: var(--accent); }
 .copy:hover { color: var(--accent); }
 .scope { display: inline-block; font-size: 11px; background: #eef2ff; color: var(--accent);
   border-radius: 999px; padding: 1px 8px; margin: 2px 4px 0 0; }
+.rlink { color: var(--accent); text-decoration: underline; }
 
 /* Pending (optimistic) post placeholder + voted state */
 .feed-row.pending { opacity: .6; }

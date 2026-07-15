@@ -1205,13 +1205,32 @@ function openReceipt(item) {
   });
 }
 
+// "Who vouches for this identity" line: an identity certified by its own email
+// domain has a primary IdP; any other issuer is a fallback certifier vouching
+// because the domain doesn't run one (that's the only way a foreign issuer is
+// accepted — the daemon checks it against /sys/trust/brokers).
+function vouchLine(certPayload, email) {
+  const iss = certPayload?.iss || "unknown issuer";
+  const domain = (email || "").split("@")[1] || "?";
+  return iss === domain
+    ? `<strong>${esc(iss)}</strong> — the identity's own provider — certified this key speaks for ${esc(email)}`
+    : `<strong>${esc(iss)}</strong> — a fallback certifier — vouched for ${esc(email)}, whose domain ${esc(domain)} doesn't run its own identity provider`;
+}
+// The certifying issuer's key is anchored in DNS; the DNSSEC proof is a public
+// record the daemon validates against — link straight to it.
+function anchorLine(iss) {
+  if (!iss) return "";
+  const href = `${CONFIG.daemon}/v1/object?path=${encodeURIComponent("/sys/dnssec/")}&id=${encodeURIComponent(iss)}`;
+  return `<div class="tiny muted">${esc(iss)}'s certifying key is anchored in DNS — <a href="${esc(href)}" target="_blank" rel="noopener" class="rlink">DNSSEC proof ↗</a></div>`;
+}
+
 async function renderReceipt(item, body) {
   // A pending object lives only in the daemon's mempool overlay — no trie
   // proof exists yet, so show what the list row already knows and say so.
   if (item.confirmed === false) {
     body.className = "";
     body.innerHTML =
-      rSection("Status", `<div>⏳ pending confirmation — full receipt available once on-chain</div>`) +
+      rSection("Status", `<div>⏳ pending confirmation — full receipt available once confirmed</div>`) +
       rSection("Author", `<div>${esc(item.authorRef || item.author)}</div>`) +
       rSection("Written", `<div>${esc(item.ts ? new Date(item.ts).toLocaleString() : "unknown")}</div>`);
     return;
@@ -1222,43 +1241,78 @@ async function renderReceipt(item, body) {
   if (view.sboq) ({ proof, wire } = parseSboq(view.sboq));
   // The wire spec calls this header Public-Key (wire/serializer.rs); accept
   // Signing-Key too in case an older node still emits the pre-rename name.
-  const key = wire["Public-Key"] || wire["Signing-Key"] || "";
+  const wireKey = wire["Public-Key"] || wire["Signing-Key"] || "";
   const cert = wire["Auth-Cert"] ? jwsPayload(wire["Auth-Cert"]) : null;
   const warrant = wire["Auth-Warrant"] ? jwsPayload(wire["Auth-Warrant"]) : null;
+  // Agent path: the top-level cert certifies the AGENT; the author's own cert
+  // rides inside the warrant as `parent-cert` (the author signed the warrant
+  // with the key that cert binds). Client path: the top-level cert IS the
+  // author's, and the wire signing key is the author's key.
+  const authorCert = warrant ? jwsPayload(warrant["parent-cert"] || "") : cert;
+  const author = view.owner_ref || view.creator || "unknown";
 
   const parts = [];
-  parts.push(rSection("Status", `<div><span class="confirmed">✓ confirmed on-chain</span></div>`));
+  parts.push(rSection("Status",
+    `<div><span class="confirmed">✓ verified</span> · confirmed in block ${esc(String(view.block ?? "?"))}</div>`));
 
+  // -- Author: the identity this post belongs to, and who vouches for it.
+  const authorKey = warrant
+    ? authorCert?.["public-key"]?.publicKey || ""
+    : wireKey;
   parts.push(rSection("Author",
-    `<div>${esc(view.owner_ref || view.creator || "unknown")}</div>` +
-    (key ? `<div>signing key ${copyable(key, 16, 6)}</div>` : "")));
+    `<div><strong>${esc(author)}</strong></div>` +
+    (authorKey ? `<div class="tiny">identity key ${copyable(authorKey, 16, 6)}</div>` : "") +
+    (authorCert
+      ? `<div class="tiny muted">${vouchLine(authorCert, authorCert.principal?.email || author)}</div>
+         <div class="tiny muted">certified ${esc(rDate(authorCert.iat))} · expires ${esc(rDate(authorCert.exp))}</div>`
+      : `<div class="tiny muted">no certificate present</div>`) +
+    anchorLine(authorCert?.iss) +
+    (warrant ? "" : `<div class="tiny muted" style="margin-top:4px">posted directly by the author from their own browser</div>`)));
 
-  if (cert) {
-    const certEmail = cert.principal?.email || "unknown";
-    parts.push(rSection("Certified by",
-      `<div>${esc(cert.iss || "unknown issuer")}</div>
-       <div class="tiny muted">${esc(cert.iss || "?")} certified this key speaks for ${esc(certEmail)}</div>
-       <div class="tiny muted">issued ${esc(rDate(cert.iat))} · expires ${esc(rDate(cert.exp))}</div>`));
-  }
-
+  // -- Posted by: only when an agent signed; the warrant is the author→agent link.
   if (warrant) {
+    const agentEmail = warrant.agent || cert?.principal?.email || "?";
     const scopes = Array.isArray(warrant.scopes) ? warrant.scopes : [];
-    parts.push(rSection("Posted via agent",
-      `<div>signed by <strong>${esc(warrant.agent || "?")}</strong> on behalf of <strong>${esc(warrant.iss || "?")}</strong></div>
-       <div class="tiny muted">audience ${esc(warrant.aud || "?")} · warrant expires ${esc(rDate(warrant.exp))}</div>
-       ${scopes.length ? `<div style="margin-top:4px">${scopes.map((s) => `<span class="scope">${esc(String(s))}</span>`).join("")}</div>` : ""}`));
+    parts.push(rSection("Posted by",
+      `<div><strong>${esc(agentEmail)}</strong> <span class="tiny muted">(an agent, not the author)</span></div>` +
+      (wireKey ? `<div class="tiny">agent signing key ${copyable(wireKey, 16, 6)}</div>` : "") +
+      (cert ? `<div class="tiny muted">${vouchLine(cert, cert.principal?.email || agentEmail)}</div>` : "") +
+      `<div style="margin-top:6px"><span class="side-h" style="display:inline">authorized by the author</span></div>
+       <div class="tiny">${esc(warrant.iss || author)} signed a warrant with their own identity key allowing ${esc(agentEmail)} to post for them</div>
+       <div class="tiny muted">valid until ${esc(rDate(warrant.exp))} · only at ${esc(warrant.aud || "?")}</div>` +
+      (scopes.length ? `<div style="margin-top:4px">${scopes.map((s) => `<span class="scope">${esc(String(s))}</span>`).join("")}</div>` : "")));
   }
 
-  // Honesty note: the daemon proves inclusion against the CURRENT head state
-  // root (sboq Block/State-Root), not the block that first confirmed the
-  // object (view.block) — say exactly that instead of implying otherwise.
-  const onchain =
-    `<div>confirmed in block ${esc(String(view.block ?? "?"))}</div>` +
-    (view.object_hash ? `<div>object hash ${copyable(view.object_hash, 12, 6)}</div>` : "") +
+  // -- Every party's contribution to THIS object, one plain sentence each.
+  const who = [];
+  if (authorCert) {
+    const iss = authorCert.iss || "?";
+    const primary = iss === (author.split("@")[1] || "");
+    who.push(`<strong>${esc(iss)}</strong> ${primary ? "(identity provider) certified" : "(fallback certifier) vouched for"} the author's identity`);
+  }
+  if (warrant) {
+    if (cert?.iss) who.push(`<strong>${esc(cert.iss)}</strong> (identity provider) certified the posting agent ${esc(warrant.agent || "?")}`);
+    who.push(`<strong>${esc(warrant.iss || author)}</strong> (the author) signed the warrant that authorizes the agent`);
+    who.push(`<strong>mingo</strong> (the app) operates the agent and submitted this write`);
+  } else {
+    who.push(`<strong>${esc(author)}</strong> (the author) signed this post themselves`);
+  }
+  who.push(`the <strong>data layer</strong> recorded it in block ${esc(String(view.block ?? "?"))} and serves the inclusion proof`);
+  parts.push(rSection("Who did what",
+    who.map((w) => `<div class="tiny">· ${w}</div>`).join("")));
+
+  // -- Record: what and where, plus the proof itself. Honesty note: the daemon
+  // proves inclusion against the CURRENT head state root (sboq Block/
+  // State-Root), not the block that first confirmed the object (view.block).
+  const proofHref = `${CONFIG.daemon}/v1/object?path=${encodeURIComponent(item.path)}&id=${encodeURIComponent(item.id)}&proof=1`;
+  const record =
+    `<div class="mono tiny" style="word-break:break-all">${esc(item.path + item.id)}</div>` +
+    `<div class="tiny muted">${esc(view.content_schema || "?")} · written ${esc(item.ts ? new Date(item.ts).toLocaleString() : rDate(null))}</div>` +
+    (view.object_hash ? `<div class="tiny">object hash ${copyable(view.object_hash, 12, 6)}</div>` : "") +
     (proof["State-Root"]
-      ? `<div class="tiny muted">proven in state root ${copyable(proof["State-Root"], 10, 6)} at block ${esc(proof["Block"] || "?")} (current head)</div>`
+      ? `<div class="tiny muted">inclusion proof computed against the current state root ${copyable(proof["State-Root"], 10, 6)} (block ${esc(proof["Block"] || "?")}) — <a href="${esc(proofHref)}" target="_blank" rel="noopener" class="rlink">Merkle proof ↗</a></div>`
       : `<div class="tiny muted">no inclusion proof available from this daemon</div>`);
-  parts.push(rSection("On-chain", onchain));
+  parts.push(rSection("Record", record));
 
   body.className = "";
   body.innerHTML = parts.join("");
