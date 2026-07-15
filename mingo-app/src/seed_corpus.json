@@ -1,0 +1,428 @@
+{
+  "personas": [
+    { "handle": "marisol" },
+    { "handle": "tomas.b" },
+    { "handle": "lidia.m" },
+    { "handle": "noor-f" },
+    { "handle": "asha" },
+    { "handle": "petra" },
+    { "handle": "sawdust.dan" },
+    { "handle": "birchbark" },
+    { "handle": "helena-k" },
+    { "handle": "tessellate" },
+    { "handle": "rvw" },
+    { "handle": "kelvin0" },
+    { "handle": "grubb" },
+    { "handle": "oskar" },
+    { "handle": "jjnguyen" }
+  ],
+  "communities": [
+    {
+      "id": "cooks",
+      "posts": [
+        {
+          "slug": "dutch-oven-bread",
+          "author": "marisol",
+          "age_hours": 712,
+          "body": "Three months of daily no-knead sourdough in a dutch oven — everything I wish someone had told me on day one.\n\n1) Hydration numbers online assume American bread flour. My local flour wanted 68%, not 75% — I made sticky frisbees for two weeks before I figured that out.\n2) Preheat the dutch oven for a full 45 minutes. A cheap oven thermometer on the lid changed my life.\n3) A cold overnight retard in the fridge does more for flavor than any starter feeding schedule.\n4) Score deeper than feels reasonable. A shallow score doesn't open, it tears.\n\nHappy to share my spreadsheet of bakes if anyone wants it — 84 loaves with weights, temps, and outcomes.",
+          "comments": [
+            { "author": "tomas.b", "age_hours": 705, "body": "The lid thermometer tip is so real. Mine reads 30C under the dial setting until it's been in there half an hour. Everyone blames their starter when they should blame their oven." },
+            { "author": "helena-k", "age_hours": 698, "body": "Would love the spreadsheet. I keep notes on paper and can never find the bake I'm trying to reproduce." },
+            { "author": "lidia.m", "age_hours": 690, "body": "68% checks out for the flour around here too. I'd add: weigh your salt. A 'pinch' cost me a very sad week of bland loaves." },
+            { "author": "asha", "age_hours": 640, "body": "Does the 45-minute preheat still hold if I'm doing a 30% rye? Mine browns way faster and I can't tell if the pot is just too hot for rye sugars." }
+          ],
+          "upvotes": [
+            { "by": "tomas.b", "age_hours": 706 },
+            { "by": "helena-k", "age_hours": 700 },
+            { "by": "lidia.m", "age_hours": 688 },
+            { "by": "asha", "age_hours": 636 },
+            { "by": "noor-f", "age_hours": 500 },
+            { "by": "jjnguyen", "age_hours": 302 },
+            { "by": "petra", "age_hours": 220 }
+          ]
+        },
+        {
+          "slug": "knife-sharpening",
+          "author": "tomas.b",
+          "age_hours": 655,
+          "body": "Whetstone progression check: am I wasting my time with the 8000 grit?\n\nI cook daily, sharpen monthly on a 1000/3000 combo stone, and finish on an 8000. Honest question: past the 3000 I can't feel a difference on tomatoes or onions. Is the 8000 doing anything besides making the bevel shiny? Do any of you strop instead?",
+          "comments": [
+            { "author": "marisol", "age_hours": 650, "body": "I stopped at 3000 two years ago and my tomatoes have not filed a complaint. The 8000 mattered when I did sushi prep professionally; for home cooking it's jewelry." },
+            { "author": "noor-f", "age_hours": 644, "body": "Strop with green compound on cardboard after the 3000. Thirty seconds, costs nothing, and the edge lasts noticeably longer between sessions." },
+            { "author": "sawdust.dan", "age_hours": 620, "body": "Woodworker wandering in: the 8000 matters for chisels because end grain shows every scratch. For onions? 3000 plus a strop is plenty. Same steel, different judge." }
+          ],
+          "upvotes": [
+            { "by": "marisol", "age_hours": 648 },
+            { "by": "noor-f", "age_hours": 640 },
+            { "by": "lidia.m", "age_hours": 601 }
+          ]
+        },
+        {
+          "slug": "preserved-lemons",
+          "author": "lidia.m",
+          "age_hours": 530,
+          "body": "Preserved lemons in two weeks flat: the quartered-and-pressed method, tested against the classic month-long jar.\n\nSide by side with my grandmother's whole-lemon method: quarter them, salt aggressively (10% by weight), press under a fermentation weight, keep at room temperature. Ready in 14 days.\n\nBlind-tasted both batches in a chicken tagine — nobody could pick the fast one. The rind softens the same; the brine ends up saltier, so rinse before using.",
+          "comments": [
+            { "author": "asha", "age_hours": 520, "body": "Is the 10% salt against just the fruit weight, or fruit plus the juice you top up with? Mine came out borderline inedible last time and I suspect I double-counted." },
+            { "author": "marisol", "age_hours": 490, "body": "Made these the day you posted. Two weeks exactly and they're going into everything — the pressed method is a keeper. The rinse tip matters, don't skip it." }
+          ],
+          "upvotes": [
+            { "by": "asha", "age_hours": 519 },
+            { "by": "marisol", "age_hours": 488 },
+            { "by": "noor-f", "age_hours": 300 },
+            { "by": "tomas.b", "age_hours": 210 }
+          ]
+        },
+        {
+          "slug": "wok-hei-electric",
+          "author": "jjnguyen",
+          "age_hours": 340,
+          "body": "Getting actual wok hei on an induction hob: a torch, a steel wok, and three failed attempts before it clicked.\n\nAttempt 1: round-bottom carbon steel on max induction — a hot spot the size of a coin.\nAttempt 2: flat-bottom wok, searing in small batches — fine food, no smoky edge.\nAttempt 3: finish each batch with a ten-second pass of a plumbing torch while tossing. That's it. That's the trick. The Cantonese place down my street laughed and said everyone does this now.\n\nFried rice has never been the same. Use a high smoke point oil — the flash matters.",
+          "comments": [
+            { "author": "tomas.b", "age_hours": 332, "body": "Which torch head are you using? The pencil-flame ones seem like they'd scorch a stripe instead of kissing the whole surface." },
+            { "author": "kelvin0", "age_hours": 310, "body": "I tried this once with the heat gun from my electronics bench. Do not do this. Everything tasted faintly of solder flux and regret." },
+            { "author": "marisol", "age_hours": 288, "body": "Batch size is the other half of this: anything more than two portions and the wok temperature collapses no matter what you finish with." },
+            { "author": "noor-f", "age_hours": 190, "body": "Try a splash of fish sauce right as the torch hits. The caramelized edge it leaves is unreasonable." }
+          ],
+          "upvotes": [
+            { "by": "tomas.b", "age_hours": 330 },
+            { "by": "marisol", "age_hours": 286 },
+            { "by": "noor-f", "age_hours": 188 },
+            { "by": "lidia.m", "age_hours": 150 },
+            { "by": "asha", "age_hours": 100 },
+            { "by": "rvw", "age_hours": 95 }
+          ]
+        },
+        {
+          "slug": "stock-scraps",
+          "author": "asha",
+          "age_hours": 195,
+          "body": "A month of keeping a scrap bag in the freezer: which vegetable trimmings actually make stock better, and which ruin it.\n\nWinners: onion skins (color!), leek tops, parsley stems, mushroom stems, corn cobs.\nLosers: brassicas of any kind (one broccoli stem made a whole pot taste like a swamp), anything beet, bell pepper cores (bitter).\nControversial: fennel fronds — great in fish stock, weird in chicken.\n\nThe rule I've settled on: nothing from the cabbage family, nothing that stains, nothing waxed.",
+          "comments": [
+            { "author": "lidia.m", "age_hours": 180, "body": "Add ginger peels to the winners list if you ever make congee — a handful transforms the pot. Learned it from my neighbor and never went back." },
+            { "author": "marisol", "age_hours": 172, "body": "Parmesan rinds live in my scrap bag too. Technically not a vegetable, spiritually essential." },
+            { "author": "tomas.b", "age_hours": 120, "body": "Rotate the bag monthly even if it isn't full. I found a three-month-old bag at the bottom of my freezer and the resulting stock tasted like the freezer smelled." }
+          ],
+          "upvotes": [
+            { "by": "lidia.m", "age_hours": 178 },
+            { "by": "marisol", "age_hours": 170 },
+            { "by": "jjnguyen", "age_hours": 90 }
+          ]
+        },
+        {
+          "slug": "fish-sauce-caramel",
+          "author": "noor-f",
+          "age_hours": 86,
+          "body": "Fish sauce caramel is the mother sauce nobody told me about — five dinners this week prove it.\n\nEqual parts sugar and fish sauce, a knob of ginger, simmer until it coats a spoon. This week it made: glazed salmon, brussels sprouts that vanished in minutes, chicken wings, a dipping sauce for dumplings, and — don't knock it — vanilla ice cream with roasted peanuts.\n\nIf you keep one jar of anything in your fridge this month, make it this.",
+          "comments": [
+            { "author": "jjnguyen", "age_hours": 78, "body": "This is basically a lazy cousin of nuoc mau and I mean that as the highest compliment. Try it with black pepper cranked way past reasonable." },
+            { "author": "asha", "age_hours": 60, "body": "Can confirm the sprouts. Made a double batch, there were no leftovers, my family has questions about where this sauce has been all their lives." },
+            { "author": "marisol", "age_hours": 30, "body": "I came here to say the ice cream idea was a step too far. I made it anyway. I owe you an apology." }
+          ],
+          "upvotes": [
+            { "by": "jjnguyen", "age_hours": 76 },
+            { "by": "asha", "age_hours": 58 },
+            { "by": "lidia.m", "age_hours": 40 },
+            { "by": "marisol", "age_hours": 28 },
+            { "by": "tomas.b", "age_hours": 12 }
+          ]
+        },
+        {
+          "slug": "starter-neglect",
+          "author": "marisol",
+          "age_hours": 9,
+          "body": "Left my starter unfed in the fridge for three weeks — here's the revival protocol that actually worked, and the two that didn't.\n\nDidn't work: feeding it in place (the hooch just kept coming back), and doubling the flour ratio 'to give it more food'.\nWorked: pour off everything except a tablespoon from the bottom of the jar, feed 1:5:5 twice a day for two days, and keep it at 26C — on top of the router in my office.\n\nBy day three it doubled in four hours. The router thing is not a joke; it's the most temperature-stable spot in my flat.",
+          "comments": [
+            { "author": "rvw", "age_hours": 4, "body": "Using your router as a proofing box is the most homelab-adjacent baking move I have ever seen. Enterprise-grade fermentation. I'm telling my rack about this." },
+            { "author": "lidia.m", "age_hours": 2.5, "body": "The pour-off is the part people resist — it feels wasteful — but a tablespoon of the dense bottom sludge has everything you need. Glad it pulled through." }
+          ],
+          "upvotes": [
+            { "by": "rvw", "age_hours": 3.5 },
+            { "by": "lidia.m", "age_hours": 2 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "woodworking",
+      "posts": [
+        {
+          "slug": "workbench-build",
+          "author": "sawdust.dan",
+          "age_hours": 690,
+          "body": "Finished my split-top roubo after 11 months of weekends — full build notes, mistakes included.\n\nSouthern yellow pine from the big box store, laminated 4x tops, 8/4 legs. Total cost was about a third of the hardware-store bench I almost bought instead.\n\nMistakes, so future-you doesn't repeat them:\n- I flattened the top before cutting the leg joinery. Do the joinery first; the flattening moved.\n- My gap stop is 3mm too narrow for my holdfasts. Measure your holdfasts, not the plans.\n- Do not glue up a 90kg top alone. Just don't.\n\nThe leg vise with a crisscross is the single best thing in my shop now.",
+          "comments": [
+            { "author": "petra", "age_hours": 680, "body": "How fussy was the crisscross install? Every writeup makes it sound like either a ten-minute job or an afternoon of cursing, with nothing in between." },
+            { "author": "birchbark", "age_hours": 672, "body": "How long did you let the SYP acclimate? Mine came from the same store reading 19% on the meter — it sat in the shop for two months before it stopped moving." },
+            { "author": "helena-k", "age_hours": 650, "body": "The joinery-before-flattening lesson is universal and nobody believes it until it happens to them. Winding sticks after every glue-up, it's cheaper than optimism." },
+            { "author": "tessellate", "age_hours": 610, "body": "What did you finish it with, or did you leave it bare? Mine's bare and every glue drip peels off nicely, but the coffee rings are becoming a topographic map." },
+            { "author": "rvw", "age_hours": 300, "body": "I did not know what a roubo was twenty minutes ago and I just read this whole thing twice. Incredible writeup." }
+          ],
+          "upvotes": [
+            { "by": "petra", "age_hours": 678 },
+            { "by": "birchbark", "age_hours": 670 },
+            { "by": "helena-k", "age_hours": 648 },
+            { "by": "tessellate", "age_hours": 608 },
+            { "by": "noor-f", "age_hours": 400 },
+            { "by": "rvw", "age_hours": 298 },
+            { "by": "oskar", "age_hours": 200 },
+            { "by": "marisol", "age_hours": 180 }
+          ]
+        },
+        {
+          "slug": "japanese-pull-saws",
+          "author": "petra",
+          "age_hours": 555,
+          "body": "A month of cutting all my joinery with pull saws: what a ryoba actually buys you over a western backsaw.\n\nWhat it buys: the kerf is half the width, the cut starts exactly where you set it, and my shoulder stopped aching after long sessions. What it doesn't: speed in thick hardwood rips, and the impulse-hardened teeth aren't sharpenable at home — you buy replacement blades and make peace with it.\n\nWhere I've landed: dozuki for dovetails, ryoba for everything else. My western saws are now wall art.",
+          "comments": [
+            { "author": "sawdust.dan", "age_hours": 540, "body": "Where are you sourcing replacement blades? The local price for a ryoba blade is most of the cost of a whole new saw, which feels like a printer-ink business model." },
+            { "author": "helena-k", "age_hours": 500, "body": "The tip that fixed my wandering cuts: watch the reflection of the board in the saw plate. When the reflection lines up straight, you're square. Works on pull saws beautifully." },
+            { "author": "noor-f", "age_hours": 480, "body": "As someone one month into woodworking — would you start a beginner on a ryoba, or is the learning curve going to teach me bad habits?" }
+          ],
+          "upvotes": [
+            { "by": "sawdust.dan", "age_hours": 542 },
+            { "by": "helena-k", "age_hours": 498 },
+            { "by": "noor-f", "age_hours": 470 },
+            { "by": "birchbark", "age_hours": 430 }
+          ]
+        },
+        {
+          "slug": "shellac-vs-poly",
+          "author": "birchbark",
+          "age_hours": 420,
+          "body": "I refinished the same oak table twice — shellac, then wipe-on poly — so you don't have to.\n\nSix months with shellac: it glows like nothing else, repairs invisibly, and picked up a water ring from one careless glass. Stripped it (fast — that's shellac's one mercy) and did three coats of wipe-on poly: bulletproof, but it looks like a photograph of the table instead of the table.\n\nVerdict: shellac for anything that doesn't meet liquids, poly for kitchen tables owned by people who treat coasters as decorative.",
+          "comments": [
+            { "author": "helena-k", "age_hours": 410, "body": "Where does hard wax oil land for you? It's become my default for exactly this dilemma — most of shellac's glow, most of poly's don't-care factor, and spot repairs are trivial." },
+            { "author": "petra", "age_hours": 380, "body": "The old cabinetmaker's compromise: dewaxed shellac for the glow, then poly over it as armor. Best of both, and the shellac seals any funny business in the wood first." },
+            { "author": "sawdust.dan", "age_hours": 350, "body": "The 'photograph of the table' line is the truest thing written about polyurethane. My dining table is very durable and looks laminated." },
+            { "author": "lidia.m", "age_hours": 260, "body": "The coaster-as-decoration household feels seen. (Our oak table has a full constellation of rings and honestly we've started calling it patina.)" }
+          ],
+          "upvotes": [
+            { "by": "helena-k", "age_hours": 408 },
+            { "by": "petra", "age_hours": 378 },
+            { "by": "sawdust.dan", "age_hours": 348 },
+            { "by": "lidia.m", "age_hours": 258 },
+            { "by": "tessellate", "age_hours": 250 }
+          ]
+        },
+        {
+          "slug": "mortise-chisel-technique",
+          "author": "helena-k",
+          "age_hours": 290,
+          "body": "Chopping mortises by hand finally clicked when I stopped trying to hold the chisel vertical by eye.\n\nThe trick nobody quite says out loud: work from the middle of the mortise outward, lever toward the center, and check plumb against a small square stood next to the mortise — not by feel. Twelve mortises for a bookshelf this weekend; by the last few, under four minutes each with tight straight walls.\n\nAlso: a 40-year-old flea-market pigsticker holds an edge better than my modern bench chisels. Buy old iron.",
+          "comments": [
+            { "author": "petra", "age_hours": 280, "body": "The standing square is such a simple fix. I clamp a speed square to the workpiece so it can't wander — same idea, one less thing to knock over." },
+            { "author": "sawdust.dan", "age_hours": 240, "body": "Old pigstickers are the best kept non-secret in hand tools. The steel is thick enough to steer and the oval handle tells your hand where vertical is." },
+            { "author": "birchbark", "age_hours": 170, "body": "Middle-out was the piece I was missing — I'd been starting at the ends and wondering why the walls bruised. Twelve in a weekend is moving." }
+          ],
+          "upvotes": [
+            { "by": "petra", "age_hours": 278 },
+            { "by": "sawdust.dan", "age_hours": 238 },
+            { "by": "birchbark", "age_hours": 168 },
+            { "by": "tessellate", "age_hours": 120 }
+          ]
+        },
+        {
+          "slug": "shop-dust-collection",
+          "author": "tessellate",
+          "age_hours": 150,
+          "body": "Cyclone separator ahead of a shop vac: I measured the difference with a manometer, and it's not subtle.\n\nNumbers for a printed 30-liter drum cyclone: suction at the tool drops about 8% with the cyclone inline — but the vac filter stayed clean through a full sheet of MDF, versus choking to half flow in twenty minutes without it. Filter cleaning went from weekly to quarterly.\n\nIf you own a 3D printer and a shop vac, this is the highest-value print in woodworking.",
+          "comments": [
+            { "author": "oskar", "age_hours": 140, "body": "Which cyclone model did you print? I've had two crack at the inlet weld line — wondering if you went thicker walls or just better geometry." },
+            { "author": "sawdust.dan", "age_hours": 130, "body": "The quarterly filter number matches my experience with a commercial cyclone. 8% suction for 10x filter life is the easiest trade in the shop." },
+            { "author": "kelvin0", "age_hours": 96, "body": "Manometer data in a woodworking post. My people. Next you'll be graphing filter pressure drop over time and I will subscribe to that newsletter." }
+          ],
+          "upvotes": [
+            { "by": "oskar", "age_hours": 138 },
+            { "by": "sawdust.dan", "age_hours": 128 },
+            { "by": "petra", "age_hours": 100 },
+            { "by": "kelvin0", "age_hours": 94 },
+            { "by": "rvw", "age_hours": 60 }
+          ]
+        },
+        {
+          "slug": "spoon-carving-green-wood",
+          "author": "noor-f",
+          "age_hours": 48,
+          "body": "Carved my first six spoons from a storm-felled birch — green wood carving is the gateway drug of woodworking.\n\nNo workbench, no machines: an axe, a sloyd knife, a hook knife, and a log that was firewood a week ago. Green birch cuts like cold butter. Spoons one through three went back to being firewood. Spoon four is lumpy but mine. Spoons five and six actually get used for cooking.\n\nDry them slowly in a paper bag or they crack — that's how I lost spoon five's twin.",
+          "comments": [
+            { "author": "helena-k", "age_hours": 40, "body": "Six spoons in and you've already internalized the paper bag lesson — that usually costs people a whole batch. The lumpy one will be your favorite in a year, guaranteed." },
+            { "author": "birchbark", "age_hours": 36, "body": "If you want to slow the drying even more, bury the finished spoon in its own shavings inside the bag. Free, and I haven't cracked one since." },
+            { "author": "marisol", "age_hours": 20, "body": "Cook here: which oil are you finishing the kitchen ones with? I've read walnut oil polymerizes but I'm nervous about the nut-allergy angle for guests." }
+          ],
+          "upvotes": [
+            { "by": "helena-k", "age_hours": 38 },
+            { "by": "birchbark", "age_hours": 34 },
+            { "by": "petra", "age_hours": 30 },
+            { "by": "sawdust.dan", "age_hours": 26 },
+            { "by": "marisol", "age_hours": 18 }
+          ]
+        },
+        {
+          "slug": "sharpening-station",
+          "author": "petra",
+          "age_hours": 5,
+          "body": "Built a dedicated sharpening station out of offcuts, and my grinding-avoidance problem is gone.\n\nEverything within arm's reach: stones in a pond, strop screwed flat to the bench, angle jigs hanging on a french cleat. The whole thing took one afternoon of scraps. Sharpening now happens the moment an edge feels dull, instead of 'after this cut, promise'.\n\nThe best sharpening setup is the one you don't have to set up.",
+          "comments": [
+            { "author": "tomas.b", "age_hours": 2, "body": "Following you here from the kitchen-knife thread — does the pond design work for waterstones that want a long soak, or is it splash-and-go only?" }
+          ],
+          "upvotes": [
+            { "by": "sawdust.dan", "age_hours": 3 },
+            { "by": "helena-k", "age_hours": 2.5 },
+            { "by": "tomas.b", "age_hours": 1.5 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "homelab",
+      "posts": [
+        {
+          "slug": "rack-in-closet",
+          "author": "rvw",
+          "age_hours": 718,
+          "body": "Moved the homelab into a ventilated hallway closet: noise numbers, heat numbers, and one melted cable tie later.\n\n38dB at the couch before, 22dB after — effectively inaudible. The trick was a temperature-controlled exhaust fan into the attic plus acoustic foam on the door only; foam on the walls did nothing measurable.\n\nHeat: 31C closet ambient at idle, 38C under sustained load. The melted cable tie was resting on the exhaust duct at 60C — route your power runs away from the exhaust path, learn from me.",
+          "comments": [
+            { "author": "kelvin0", "age_hours": 710, "body": "The foam-on-door-only result is fascinating and matches physics: the door was your weakest panel, the walls were already mass. Great instinct to measure instead of carpeting the whole closet." },
+            { "author": "grubb", "age_hours": 700, "body": "What's driving the temperature-controlled fan? I've been meaning to do this and keep bikeshedding between a cheap thermostat plug and overengineering it with a microcontroller." },
+            { "author": "oskar", "age_hours": 640, "body": "22dB at the couch is the dream. My rack lives in my office and my noise floor is 'jet preparing for departure' every time the scrub runs." },
+            { "author": "jjnguyen", "age_hours": 600, "body": "Check your closet's return-air situation too — mine went fine until winter when the furnace made the hallway negative pressure and started pulling hot exhaust back under the door." },
+            { "author": "tessellate", "age_hours": 400, "body": "The cable tie detail is why I read these writeups. Nobody posts the 60C duct surprise in the glamour shots." }
+          ],
+          "upvotes": [
+            { "by": "kelvin0", "age_hours": 708 },
+            { "by": "grubb", "age_hours": 698 },
+            { "by": "oskar", "age_hours": 638 },
+            { "by": "jjnguyen", "age_hours": 598 },
+            { "by": "tessellate", "age_hours": 398 },
+            { "by": "asha", "age_hours": 250 },
+            { "by": "sawdust.dan", "age_hours": 150 }
+          ]
+        },
+        {
+          "slug": "opnsense-migration",
+          "author": "kelvin0",
+          "age_hours": 600,
+          "body": "Migrated from a consumer router to OPNsense on a fanless N100 box — two evenings, one self-inflicted outage, zero regrets.\n\nThe outage: I copied my old DHCP range but forgot the static leases, so every device got a new IP and my 'smart' bulbs held a grudge for hours.\n\nWhat's actually better: per-device DNS logs, real VLANs for the IoT junk, WireGuard at line speed, and updates that don't require a prayer beforehand. The box idles at 9 watts.",
+          "comments": [
+            { "author": "rvw", "age_hours": 590, "body": "The static-lease migration bites everyone exactly once. I now export the lease table to a text file before any router change, a ritual written in the blood of my past self." },
+            { "author": "grubb", "age_hours": 560, "body": "How are you handling the IoT VLAN's mDNS? That's the part that always turns my clean segmentation into a weekend of avahi-reflector archaeology." },
+            { "author": "jjnguyen", "age_hours": 480, "body": "Seconding the per-device DNS logs as the sleeper feature. Found a TV doing something every 30 seconds that had no business happening at all." },
+            { "author": "oskar", "age_hours": 380, "body": "9W idle for a full firewall is wild. My old router-plus-AP combo pulled more than that to deliver a fraction of the features." }
+          ],
+          "upvotes": [
+            { "by": "rvw", "age_hours": 588 },
+            { "by": "grubb", "age_hours": 558 },
+            { "by": "jjnguyen", "age_hours": 478 },
+            { "by": "oskar", "age_hours": 378 }
+          ]
+        },
+        {
+          "slug": "zfs-scrub-errors",
+          "author": "grubb",
+          "age_hours": 460,
+          "body": "ZFS scrub found 3 checksum errors; a week of forensics later, the culprit was a SATA cable that cost less than a coffee.\n\nTimeline: errors appear on two disks in the same pool → mild panic → smartctl spotless on both → memtest overnight, clean → swap SATA cables as a shrug → four scrubs clean since.\n\nThe lesson that stuck: checksum errors on multiple disks at once are almost never the disks. It's the shared path — cables, backplane, controller, PSU. Start with the cheapest link.",
+          "comments": [
+            { "author": "rvw", "age_hours": 450, "body": "Two disks erroring together pointing at the shared path is such a good diagnostic prior. Filing 'start cheap' next to 'it's always DNS' in the pantheon." },
+            { "author": "oskar", "age_hours": 430, "body": "Adjacent tip: label your SATA cables with flag tape when you swap them. I once 'replaced' the same suspect cable twice and lost a weekend to it." },
+            { "author": "kelvin0", "age_hours": 400, "body": "PSU deserves its spot on that list too — a sagging 12V rail gave me phantom checksum errors for months, always under scrub load, never at idle." }
+          ],
+          "upvotes": [
+            { "by": "rvw", "age_hours": 448 },
+            { "by": "oskar", "age_hours": 428 },
+            { "by": "kelvin0", "age_hours": 398 },
+            { "by": "jjnguyen", "age_hours": 350 },
+            { "by": "tessellate", "age_hours": 280 }
+          ]
+        },
+        {
+          "slug": "self-hosted-photos",
+          "author": "asha",
+          "age_hours": 310,
+          "body": "Six months self-hosting the family photo library: what finally got my partner to stop using the cloud thing.\n\nIt wasn't the privacy argument and it wasn't the subscription math. It was face search working instantly on our kid's photos, on our hardware — and the offline cache working on the train with no signal.\n\nSetup notes: mirrored pair for storage, nightly encrypted restic to an offsite box, and a restore drill on the first Sunday of every month. If you don't test restores, you don't have backups — you have hope.",
+          "comments": [
+            { "author": "jjnguyen", "age_hours": 300, "body": "The 'it was face search' detail rings true — adoption never comes from the argument you prepared. It comes from the one feature that's visibly better than the incumbent." },
+            { "author": "rvw", "age_hours": 280, "body": "First-Sunday restore drills should be a community bylaw. Put it in the sidebar. Print it on mugs." },
+            { "author": "grubb", "age_hours": 250, "body": "Deep respect for actually running the drill monthly. Everyone claims 3-2-1; almost nobody rehearses the 1. What's your restore target — a scratch VM or the real box?" },
+            { "author": "oskar", "age_hours": 190, "body": "How's the memory footprint of the ML pipeline treating you? Face search on mine is magic but it eats a very real slice of a small node." }
+          ],
+          "upvotes": [
+            { "by": "jjnguyen", "age_hours": 298 },
+            { "by": "rvw", "age_hours": 278 },
+            { "by": "grubb", "age_hours": 248 },
+            { "by": "oskar", "age_hours": 188 },
+            { "by": "kelvin0", "age_hours": 160 },
+            { "by": "marisol", "age_hours": 120 }
+          ]
+        },
+        {
+          "slug": "mini-pc-cluster",
+          "author": "oskar",
+          "age_hours": 220,
+          "body": "Three used mini PCs beat my old tower server on every axis I care about: watts, noise, and blast radius.\n\nBought three off-lease tiny PCs for the price of one new mid-tower. Lightweight k8s across them; 18W total at idle where the tower idled at 70. When one node dies, the other two shrug and reschedule — I live-migrated everything off a node and rebuilt it during dinner.\n\nThe tower is now a shelf. A very heavy, very quiet shelf.",
+          "comments": [
+            { "author": "kelvin0", "age_hours": 210, "body": "The blast radius argument is underrated. One box dying used to mean an evening of triage; now it means a hardware errand for next weekend, whenever." },
+            { "author": "grubb", "age_hours": 180, "body": "What's your storage story across the three? Local-path and pray, or did you do longhorn/ceph? That's the decision paralyzing my own migration." },
+            { "author": "rvw", "age_hours": 96, "body": "off-lease tiny PCs are the best value in computing right now and I will die on this hill next to you. The enterprise depreciation cycle is our friend." }
+          ],
+          "upvotes": [
+            { "by": "kelvin0", "age_hours": 208 },
+            { "by": "grubb", "age_hours": 178 },
+            { "by": "jjnguyen", "age_hours": 140 },
+            { "by": "rvw", "age_hours": 94 }
+          ]
+        },
+        {
+          "slug": "dns-split-horizon",
+          "author": "jjnguyen",
+          "age_hours": 96,
+          "body": "Split-horizon DNS finally fixed my 'works at home, breaks on VPN' problem — here's the config nobody writes down.\n\nSymptom: internal services resolve to LAN addresses at home, but roaming devices on WireGuard got the public IP — hairpinning through the WAN, slow and fragile.\n\nFix: a view on the VPN interface serving the same internal zone with tunnel-reachable addresses, plus a short TTL so devices flip cleanly as they roam. Wrote it up with the actual config blocks, because every guide I found stopped at 'just use views'.",
+          "comments": [
+            { "author": "kelvin0", "age_hours": 88, "body": "'Every guide stops at just use views' is the entire self-hosting documentation experience in one sentence. Thank you for posting the actual blocks." },
+            { "author": "rvw", "age_hours": 70, "body": "The short TTL is the unsung half of this fix. I ran split horizon for a year with a 1h TTL and blamed WireGuard for what was just cache inertia." },
+            { "author": "grubb", "age_hours": 40, "body": "Bookmarking this for the next person who asks why their setup 'works at home but not on VPN' — which historically is me, every eight months." }
+          ],
+          "upvotes": [
+            { "by": "kelvin0", "age_hours": 86 },
+            { "by": "rvw", "age_hours": 68 },
+            { "by": "oskar", "age_hours": 55 },
+            { "by": "grubb", "age_hours": 38 }
+          ]
+        },
+        {
+          "slug": "ups-sizing",
+          "author": "tessellate",
+          "age_hours": 2.2,
+          "body": "UPS sizing math for a small rack — or: why my 'oversized' UPS gives me nine minutes, not ninety.\n\nThe mistake: sizing off the VA number on the sticker. What matters is watts (VA times power factor) and the battery's usable watt-hours at your real load. My 1500VA/900W unit holds about 460Wh usable; at my measured 210W that's two hours on paper — and nine minutes at full load once inverter losses and battery age collect their tax.\n\nRule of thumb that survives contact with reality: measured watts × desired minutes ÷ 0.8, then buy the next size up anyway.",
+          "comments": [],
+          "upvotes": [
+            { "by": "rvw", "age_hours": 1 }
+          ]
+        }
+      ]
+    }
+  ],
+  "vouches": [
+    { "from": "tomas.b", "to": "marisol", "age_hours": 690 },
+    { "from": "grubb", "to": "rvw", "age_hours": 688 },
+    { "from": "petra", "to": "sawdust.dan", "age_hours": 660 },
+    { "from": "helena-k", "to": "sawdust.dan", "age_hours": 640 },
+    { "from": "rvw", "to": "kelvin0", "age_hours": 580 },
+    { "from": "sawdust.dan", "to": "petra", "age_hours": 530 },
+    { "from": "marisol", "to": "lidia.m", "age_hours": 470 },
+    { "from": "petra", "to": "helena-k", "age_hours": 400 },
+    { "from": "jjnguyen", "to": "asha", "age_hours": 290 },
+    { "from": "birchbark", "to": "helena-k", "age_hours": 260 },
+    { "from": "lidia.m", "to": "asha", "age_hours": 160 },
+    { "from": "oskar", "to": "tessellate", "age_hours": 130 },
+    { "from": "kelvin0", "to": "jjnguyen", "age_hours": 90 },
+    { "from": "noor-f", "to": "marisol", "age_hours": 80 }
+  ],
+  "badges": [
+    { "from": "petra", "to": "sawdust.dan", "type": "founding-member", "age_hours": 685 },
+    { "from": "sawdust.dan", "to": "helena-k", "type": "helper", "age_hours": 620 },
+    { "from": "marisol", "to": "lidia.m", "type": "recipe-tested", "age_hours": 450 },
+    { "from": "rvw", "to": "grubb", "type": "helper", "age_hours": 440 },
+    { "from": "kelvin0", "to": "oskar", "type": "trusted-reviewer", "age_hours": 200 }
+  ]
+}

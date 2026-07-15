@@ -79,6 +79,36 @@ enum Commands {
         #[arg(long, default_value = "policy.wire")]
         out: String,
     },
+
+    /// Seed a lived-in demo corpus (personas, memberships, posts/comments/
+    /// upvotes with staggered ages, cross-persona vouches/badges) into a live
+    /// daemon. Dry-run by default — prints the full write plan; pass --execute
+    /// to provision personas at the IdP and submit.
+    Seed {
+        /// IdP origin (its host is the identity domain, e.g. mingo.place).
+        #[arg(long, default_value = "https://mingo.place")]
+        idp: String,
+        /// SBO daemon origin to submit to.
+        #[arg(long, default_value = "https://da.sandmill.org")]
+        daemon: String,
+        /// Corpus JSON file (defaults to the embedded corpus).
+        #[arg(long)]
+        corpus: Option<String>,
+        /// Sys key file (`ed25519:<hex>` keyring export, e.g.
+        /// ~/secure-backup/mingo-sys.key, or JSON {"secret_key": <hex>}).
+        /// When given, each community's spaces/general `_config` is temporarily
+        /// widened to a 45-day authoring lag so true corpus ages (~30d) land,
+        /// then restored to the genesis 24h. Without it, ages are compressed
+        /// to fit under 20h.
+        #[arg(long)]
+        sys_key: Option<String>,
+        /// Actually provision + submit (default is a dry-run print).
+        #[arg(long)]
+        execute: bool,
+        /// Env var holding the IdP admin token (X-Admin-Token).
+        #[arg(long, default_value = "MINGO_ADMIN_TOKEN")]
+        admin_token_env: String,
+    },
 }
 
 /// Load a transient domain signing key from `{"secret_key":"<hex 32-byte seed>"}`
@@ -257,6 +287,23 @@ fn main() -> Result<()> {
                 "\nSubmit: curl --data-binary @{} -H 'Content-Type: application/octet-stream' <daemon>/v1/submit",
                 out
             );
+        }
+        Commands::Seed {
+            idp,
+            daemon,
+            corpus,
+            sys_key,
+            execute,
+            admin_token_env,
+        } => {
+            mingo_app::seed::run(&mingo_app::seed::SeedArgs {
+                idp,
+                daemon,
+                corpus,
+                sys_key,
+                execute,
+                admin_token_env,
+            })?;
         }
     }
 

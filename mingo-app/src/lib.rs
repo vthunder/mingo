@@ -10,6 +10,9 @@
 //! - [`community`] — the `community.v1` descriptor schema (parse/validate).
 //! - [`genesis`] — the community/policy builders and the aggregated Mingo
 //!   genesis batch.
+//! - [`seed`] — the demo-corpus seeder behind `mingo seed` (personas, posts,
+//!   vouches — a lived-in starting state for a fresh deployment).
 
 pub mod community;
 pub mod genesis;
+pub mod seed;

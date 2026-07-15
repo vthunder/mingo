@@ -163,7 +163,6 @@ pub struct MingoCommunity<'a> {
 /// change, and each `community.v1`'s `policy` pointer names that same object.
 /// All signing for sys-owned objects uses `sys_signing_key`.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub fn mingo_genesis(
     domain_signing_key: &SigningKey,
     sys_signing_key: &SigningKey,
