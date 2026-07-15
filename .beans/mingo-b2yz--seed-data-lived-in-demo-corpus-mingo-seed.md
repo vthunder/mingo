@@ -53,3 +53,5 @@ Decisions:
 - DNSSEC freshness now covers browserid.me too when external personas exist.
 
 Execute now also needs BROKER_ADMIN_TOKEN in the env (and the broker deployed with it + BROKER_ADMIN_MINT_ALLOWLIST=example.com).
+
+- Prod run 2026-07-15 aborted mid-seed: daemon 500 wrapping TurboDA "429 Too Many Requests" (error 1015); fix: submit() now retries the same wire on 429 / rate-limit-smelling 5xx with 2/4/8/16/32/64s backoff (pacing 75ms→250ms; restore path uses the same retrying submit); NOTE: woodworking+homelab _config still widened at 3888000s on prod (cooks restored) — the re-run's restore step will fix them.

@@ -62,8 +62,14 @@ pub const CLAMP_CAP_HOURS: f64 = 20.0;
 /// (45d minus a 3-day inclusion/clock margin).
 pub const MAX_CORPUS_AGE_HOURS: f64 = 42.0 * 24.0;
 
-/// Delay between submits — don't hammer prod.
-const SUBMIT_PACING_MS: u64 = 75;
+/// Delay between submits — don't hammer prod (TurboDA rate-limits; see
+/// `RETRY_BACKOFF_S` for what happens when we still trip it).
+const SUBMIT_PACING_MS: u64 = 250;
+
+/// Backoff schedule when the DA layer rate-limits (429, possibly wrapped in a
+/// daemon 500): retry the SAME wire after each sleep, aborting only after the
+/// whole schedule is exhausted.
+const RETRY_BACKOFF_S: [u64; 6] = [2, 4, 8, 16, 32, 64];
 
 // ===========================================================================
 // Corpus (embedded JSON, overridable with --corpus)
@@ -1194,27 +1200,49 @@ fn submit_items(
     Ok(())
 }
 
+/// Is a failed submit worth retrying? Direct 429s, and 5xx whose body smells
+/// like a proxied rate limit (the daemon wraps TurboDA's "429 Too Many
+/// Requests" in an HTTP 500), are transient; everything else (validation 4xx)
+/// is fatal. Pure so it's unit-testable.
+fn submit_retryable(status: u16, body: &str) -> bool {
+    status == 429
+        || ((500..=599).contains(&status)
+            && (body.contains("429") || body.contains("Too Many Requests")))
+}
+
 /// POST wire bytes to `<daemon>/v1/submit`. A 400 carries `{stage}: {reason}`
 /// in the body — surface it with the failing item and stop (the caller aborts
-/// rather than spraying more errors into prod).
+/// rather than spraying more errors into prod). Rate-limit responses (see
+/// `submit_retryable`) retry the same wire on the `RETRY_BACKOFF_S` schedule
+/// before aborting — safe because the run is idempotent (LWW).
 fn submit(
     client: &reqwest::blocking::Client,
     daemon: &str,
     wire_bytes: &[u8],
     label: &str,
 ) -> Result<()> {
-    let resp = client
-        .post(format!("{}/v1/submit", daemon.trim_end_matches('/')))
-        .header("Content-Type", "application/octet-stream")
-        .body(wire_bytes.to_vec())
-        .send()
-        .with_context(|| format!("submitting {label}"))?;
-    let status = resp.status();
-    if !status.is_success() {
+    let mut backoff = RETRY_BACKOFF_S.iter();
+    loop {
+        let resp = client
+            .post(format!("{}/v1/submit", daemon.trim_end_matches('/')))
+            .header("Content-Type", "application/octet-stream")
+            .body(wire_bytes.to_vec())
+            .send()
+            .with_context(|| format!("submitting {label}"))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
         let body = resp.text().unwrap_or_default();
+        if submit_retryable(status.as_u16(), &body) {
+            if let Some(&sleep_s) = backoff.next() {
+                println!("  ⏳ rate limited, retrying in {sleep_s}s…");
+                std::thread::sleep(std::time::Duration::from_secs(sleep_s));
+                continue;
+            }
+        }
         bail!("ABORT — submit failed for [{label}]: HTTP {status}: {body}");
     }
-    Ok(())
 }
 
 /// Mirror the SPA's `ensureDnssecFresh`: ask the daemon whether the on-chain
@@ -1408,6 +1436,29 @@ mod tests {
 
     fn default_corpus() -> Corpus {
         Corpus::parse(DEFAULT_CORPUS).expect("embedded corpus parses and validates")
+    }
+
+    #[test]
+    fn submit_retryable_classifies_rate_limits_vs_fatal() {
+        // Direct 429 from the daemon, regardless of body.
+        assert!(submit_retryable(429, ""));
+        assert!(submit_retryable(429, "slow down"));
+        // The observed prod abort: daemon 500 wrapping TurboDA's 429.
+        assert!(submit_retryable(
+            500,
+            r#"{"error":"TurboDA error: Submission failed (429 Too Many Requests): error code: 1015"}"#
+        ));
+        assert!(submit_retryable(502, "upstream said Too Many Requests"));
+        assert!(submit_retryable(503, "got 429 from DA"));
+        // Plain 5xx without a rate-limit smell: fatal.
+        assert!(!submit_retryable(500, "internal error"));
+        assert!(!submit_retryable(500, ""));
+        // Validation 4xx: fatal, always.
+        assert!(!submit_retryable(400, "hlc: authoring lag exceeded"));
+        assert!(!submit_retryable(400, "429")); // 4xx body never rescues
+        assert!(!submit_retryable(403, "Too Many Requests"));
+        // Success-ish codes never reach the classifier, but be strict anyway.
+        assert!(!submit_retryable(200, "429"));
     }
 
     #[test]
