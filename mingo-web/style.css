@@ -309,6 +309,10 @@ button.link.receipt:hover { color: var(--ok); border-color: color-mix(in srgb, v
 .votes .up.voted, button.up.voted { color: var(--up); font-weight: 700; }
 .votes .up.voted { background: var(--up-weak); }
 
+/* inline edit (mingo-e6kq) — reuses the compose textarea styling */
+.edit-box textarea.edit-ta { min-height: 68px; }
+.post-meta .edited { font-style: italic; }
+
 /* ---------------- mobile: off-canvas drawer ---------------- */
 @media (max-width: 720px) {
   .topbar { z-index: 70; padding: 10px 15px; }

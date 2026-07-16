@@ -98,12 +98,21 @@ function toItem(o) {
     uri: o.path + o.id,
     id: o.id,
     path: o.path,
+    schema: o.content_schema,
     author: shortAuthor(o.owner_ref || o.creator),
     authorRef: o.owner_ref || o.creator,
     body: o.value?.body ?? o.payload_text,
     parent: o.value?.parent,
     block: o.block,
     hlc: o.hlc,
+    // Current head object hash — an edit rewrites the same (path,id) with this as
+    // its `prev`, chaining the new version onto the head (bean mingo-e6kq).
+    objectHash: o.object_hash,
+    // `prev` is null for a fresh post and set once the object has been edited
+    // (the daemon omits the field when null — serde skip). Drives the "· edited"
+    // indicator. NOTE: showing PRIOR versions needs daemon history (HEAD-only
+    // reads today), so the version-chain viewer in the bean is out of scope here.
+    prev: o.prev ?? null,
     // Authoring time in Unix ms, parsed from the HLC physical component
     // (wire form `<physical>.<counter>`, physical = Unix ms).
     ts: hlcMs(o.hlc),
@@ -730,6 +739,28 @@ async function addComment(commId, space, parentUri, body) {
     path: `/communities/${commId}/spaces/${space}/`, id, schema: "comment.v1", payload,
   });
 }
+// Edit an existing post/comment: a `post` write to the SAME (path,id) is treated
+// by the daemon as an UPDATE, which the object's owner may always do. We rebuild
+// the payload with the SAME builders composePost/addComment use and set `prev` to
+// the item's current head object_hash so the new version chains onto the head
+// (LWW-by-HLC resolves it as the new head). Routes through writeContent → poster
+// or client signing exactly like a fresh post (bean mingo-e6kq).
+async function editContent(item, body) {
+  const wasm = await sbo();
+  const isComment = item.schema === "comment.v1";
+  const payload = isComment
+    ? wasm.payloadComment(body, item.parent, BigInt(Date.now()))
+    : wasm.payloadPost(body, undefined, BigInt(Date.now()));
+  return writeContent({
+    path: item.path,
+    id: item.id,
+    schema: isComment ? "comment.v1" : "post.v1",
+    payload,
+    contentType: "application/json",
+    prev: item.objectHash, // chain onto the current head → daemon sees an update
+  });
+}
+
 async function upvote(commId, space, targetUri) {
   const wasm = await sbo();
   const payload = wasm.payloadReaction(targetUri, "upvote", true);
@@ -1049,6 +1080,8 @@ async function viewHub() {
   $("#feed").outerHTML = `<div id="feed">${rows.length ? rows.map((p) => feedRow(p, votes)).join("") : `<div class="card muted">No posts yet. Sign in and create the first one.</div>`}</div>`;
   wireVoteButtons();
   wireReceiptButtons();
+  wireEditButtons();
+  startLivePoll(() => pollFeed("hub"));
 }
 
 function feedRow(p, votes, showComm = true) {
@@ -1056,8 +1089,8 @@ function feedRow(p, votes, showComm = true) {
   return `<div class="card feed-row${pending ? " pending" : ""}">
     <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
     <div style="flex:1">
-      <div class="post-meta">${showComm ? `${boardTag(p.comm)} ` : ""}${authorLink(p.authorRef, p.author)}${timeAgo(p.ts)}${pending ? ` · <span class="muted">pending…</span>` : ""}${receiptLink(p)}</div>
-      <div class="post-title"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
+      <div class="post-meta">${showComm ? `${boardTag(p.comm)} ` : ""}${authorLink(p.authorRef, p.author)}${timeAgo(p.ts)}${editedTag(p)}${pending ? ` · <span class="muted">pending…</span>` : ""}${receiptLink(p)}${editLink(p)}</div>
+      <div class="post-title" data-body="${esc(p.uri)}"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
     </div></div>`;
 }
 
@@ -1097,6 +1130,8 @@ async function viewCommunity(commId) {
   $("#posts").outerHTML = `<div id="posts">${posts.length ? posts.map((p) => feedRow({ ...p, comm: c.id }, votes, false)).join("") : `<div class="card muted">No posts yet.</div>`}</div>`;
   wireVoteButtons();
   wireReceiptButtons();
+  wireEditButtons();
+  startLivePoll(() => pollFeed("community", c.id));
 }
 
 function showCompose(commId) {
@@ -1139,8 +1174,8 @@ async function viewThread(commId, postId) {
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
-    <div class="card"><div class="post-meta">${authorLink(post.authorRef, post.author, 22)}${timeAgo(post.ts)}${receiptLink(post)}</div>
-      <div class="post-body">${esc(post.body)}</div>
+    <div class="card"><div class="post-meta">${authorLink(post.authorRef, post.author, 22)}${timeAgo(post.ts)}${editedTag(post)}${receiptLink(post)}${editLink(post)}</div>
+      <div class="post-body" data-body="${esc(post.uri)}">${esc(post.body)}</div>
       <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · <span data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div>
     </div>
     <div class="h2">Comments</div>
@@ -1171,9 +1206,11 @@ async function viewThread(commId, postId) {
   };
   wireVoteButtons();
   wireReceiptButtons();
+  wireEditButtons();
+  startLivePoll(() => pollThread(commId, post));
 }
 function commentBox(c, votes) {
-  return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${receiptLink(c)}</div><div>${esc(c.body)}</div></div>`;
+  return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${editedTag(c)}${receiptLink(c)}${editLink(c)}</div><div data-body="${esc(c.uri)}">${esc(c.body)}</div></div>`;
 }
 
 function wireVoteButtons() {
@@ -1223,6 +1260,66 @@ function wireReceiptButtons() {
       if (item) openReceipt(item);
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// edit affordance (bean mingo-e6kq). Only the owner sees "edit" (session email
+// === the item's authorRef); non-owners never get the affordance. Editing opens
+// an inline textarea prefilled with the FULL body (display truncation aside) and
+// re-writes the same (path,id) via editContent. Items are registered in
+// receiptItems by receiptLink already; we register here too so an edit button
+// can appear even where receiptLink isn't rendered.
+// ---------------------------------------------------------------------------
+function ownItem(item) {
+  return !!session.email && session.email === item.authorRef;
+}
+// A subtle "· edited" marker, shown once an object carries a non-null prev.
+function editedTag(item) {
+  return item && item.prev ? ` · <span class="muted edited" title="this was edited">edited</span>` : "";
+}
+// The "edit" button (owner-only). Registers the item so beginEdit can look it up.
+function editLink(item) {
+  if (!ownItem(item)) return "";
+  receiptItems.set(item.uri, item);
+  return ` · <button class="link edit-btn" data-edit="${esc(item.uri)}" title="edit">edit</button>`;
+}
+function wireEditButtons() {
+  document.querySelectorAll("[data-edit]").forEach((b) => {
+    b.onclick = () => beginEdit(b.getAttribute("data-edit"));
+  });
+}
+// Swap the item's body element (marked data-body="<uri>") for an inline editor.
+// Cancel restores the saved markup; Save re-writes and re-renders (the daemon
+// overlay serves the updated head immediately, like showCompose post-submit).
+function beginEdit(uri) {
+  const item = receiptItems.get(uri);
+  if (!item) return;
+  const bodyEl = document.querySelector(`[data-body="${CSS.escape(uri)}"]`);
+  if (!bodyEl || bodyEl.querySelector(".edit-box")) return; // already editing
+  const saved = bodyEl.innerHTML;
+  bodyEl.innerHTML = `<div class="edit-box"><textarea class="edit-ta"></textarea>
+    <div class="row-between" style="margin-top:8px"><span class="muted tiny">editing</span>
+    <span><button class="edit-cancel">Cancel</button> <button class="primary edit-save">Save</button></span></div></div>`;
+  const ta = bodyEl.querySelector(".edit-ta");
+  ta.value = item.body || "";
+  ta.focus();
+  bodyEl.querySelector(".edit-cancel").onclick = () => { bodyEl.innerHTML = saved; };
+  bodyEl.querySelector(".edit-save").onclick = async () => {
+    const body = ta.value.trim();
+    if (!body) return;
+    if (!(await ensureCanWrite())) return;
+    const btn = bodyEl.querySelector(".edit-save");
+    btn.disabled = true; btn.textContent = "Saving…";
+    try {
+      await editContent(item, body);
+      toast("edit saved — pending confirmation…");
+      await new Promise((r) => setTimeout(r, 1200));
+      route(); // overlay serves the new head; re-render shows it (with "· edited")
+    } catch (e) {
+      toast("edit failed: " + e.message);
+      btn.disabled = false; btn.textContent = "Save";
+    }
+  };
 }
 
 // Parse the SBOQ proof document (sbo-core proof/sboq.rs): RFC-822-ish headers,
@@ -1458,9 +1555,85 @@ async function viewPassport(subject) {
 }
 
 // ---------------------------------------------------------------------------
+// live updates (bean mingo-cu0q). The daemon has no change feed/SSE, so we POLL
+// the current view's list on a single module-level interval. route() clears it
+// on every navigation (so only the active view polls) and each view restarts it.
+// The poll DIFFS-AND-APPENDS rather than replacing innerHTML, so it never clobbers
+// a compose box the user is typing in or an open inline edit textarea. Dedup is
+// by uri via the data-receipt attribute every rendered item carries, so it can't
+// double-insert the optimistic row the local user just posted, and it coexists
+// with the per-action confirm-poll loops in showCompose/viewThread.
+// ---------------------------------------------------------------------------
+let livePoll = null, livePollBusy = false;
+function stopLivePoll() {
+  if (livePoll) { clearInterval(livePoll); livePoll = null; }
+}
+function startLivePoll(fn) {
+  stopLivePoll();
+  livePoll = setInterval(async () => {
+    if (livePollBusy) return; // don't overlap a slow poll with the next tick
+    livePollBusy = true;
+    try { await fn(); } catch {} finally { livePollBusy = false; }
+  }, 4000);
+}
+// Refresh vote counts in place. Skips any target the local user just voted on
+// (its button carries .voted) so the optimistic bump isn't flickered back down.
+function liveApplyVotes(votes) {
+  const voted = new Set();
+  document.querySelectorAll("[data-vote].voted").forEach((b) =>
+    voted.add(b.getAttribute("data-vote").split("|")[1]));
+  document.querySelectorAll("[data-count]").forEach((span) => {
+    const uri = span.getAttribute("data-count");
+    if (voted.has(uri) || !votes.has(uri)) return;
+    span.textContent = String(votes.get(uri) || 0);
+  });
+}
+const shown = (container, uri) => !!container.querySelector(`[data-receipt="${CSS.escape(uri)}"]`);
+// Append rows/comments not already in the DOM. Clears a placeholder ("No posts
+// yet.") the first time a real item lands. Re-wires only after a change.
+function liveAppend(container, items, render) {
+  if (!container) return;
+  let added = false;
+  for (const it of items) {
+    if (shown(container, it.uri)) continue;
+    if (!container.querySelector("[data-receipt]")) container.innerHTML = ""; // drop placeholder
+    container.appendChild(el(render(it)));
+    added = true;
+  }
+  if (added) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); }
+}
+async function pollFeed(kind, commId) {
+  const votes = await getVoteCounts();
+  liveApplyVotes(votes);
+  const container = document.getElementById(kind === "hub" ? "feed" : "posts");
+  if (!container) return;
+  let rows = [];
+  if (kind === "hub") {
+    const comms = window.__comms || (await getCommunities());
+    for (const c of comms) {
+      const { posts } = await getSpaceItems(c.id, CONFIG.space);
+      for (const p of posts) rows.push({ ...p, comm: c.id });
+    }
+  } else {
+    const { posts } = await getSpaceItems(commId, CONFIG.space);
+    rows = posts.map((p) => ({ ...p, comm: commId }));
+  }
+  liveAppend(container, rows, (p) => feedRow(p, votes, kind === "hub"));
+}
+async function pollThread(commId, post) {
+  const [{ comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
+  liveApplyVotes(votes);
+  const container = document.getElementById("comments");
+  if (!container) return;
+  const kids = comments.filter((c) => c.parent === post.uri);
+  liveAppend(container, kids, (c) => commentBox(c, votes));
+}
+
+// ---------------------------------------------------------------------------
 // router
 // ---------------------------------------------------------------------------
 async function route() {
+  stopLivePoll(); // leaving the current view — kill its poller before rendering
   const h = location.hash || "#/";
   const parts = h.slice(2).split("/"); // after "#/"
   try {
