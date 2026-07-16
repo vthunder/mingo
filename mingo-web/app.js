@@ -719,6 +719,55 @@ const $ = (sel) => document.querySelector(sel);
 const el = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// ---------------------------------------------------------------------------
+// identity visuals — deterministic, offline. An identicon + per-board color is
+// derived purely from the identity/board string (no requests, no libs), so the
+// same author/board always looks the same across every surface.
+// ---------------------------------------------------------------------------
+// FNV-1a → 32-bit unsigned. Stable across sessions/machines.
+function hashStr(s) {
+  let h = 2166136261 >>> 0;
+  s = String(s || "?");
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h >>> 0;
+}
+// A blocky 5×5 symmetric identicon (GitHub-style), rendered inline as SVG so it
+// tints to the seed's hue and needs no network. `seed` should be the stable
+// identity ref (email/handle/key) — display text is handled separately.
+function identicon(seed, size = 18) {
+  const h = hashStr("id:" + (seed || "?"));
+  const hue = h % 360;
+  const bg = `hsl(${hue} 62% 96%)`;
+  const fg = `hsl(${hue} 58% 46%)`;
+  let r = h || 1; // xorshift PRNG seeded by the hash
+  const bit = () => { r ^= r << 13; r ^= r >>> 17; r ^= r << 5; r >>>= 0; return r & 1; };
+  const g = 20, cells = [];
+  for (let x = 0; x < 3; x++) for (let y = 0; y < 5; y++) {
+    if (bit()) {
+      cells.push(`<rect x="${x * g}" y="${y * g}" width="${g}" height="${g}"/>`);
+      if (x < 2) cells.push(`<rect x="${(4 - x) * g}" y="${y * g}" width="${g}" height="${g}"/>`);
+    }
+  }
+  const s = g * 5;
+  return `<svg class="idt" width="${size}" height="${size}" viewBox="-4 -4 ${s + 8} ${s + 8}" aria-hidden="true">` +
+    `<rect x="-4" y="-4" width="${s + 8}" height="${s + 8}" fill="${bg}"/><g fill="${fg}">${cells.join("")}</g></svg>`;
+}
+// An author byline: identicon + short display name.
+function avatarName(ref, name, size = 18) {
+  return `<span class="byline">${identicon(ref, size)}${esc(name)}</span>`;
+}
+// Stable hue for a board id — used by its sidebar dot and its c/<board> tag.
+const boardHue = (id) => hashStr("board:" + (id || "?")) % 360;
+// The colored c/<board> tag pill.
+function boardTag(id) {
+  return `<a class="ctag" href="#/c/${esc(id)}" style="--ch:${boardHue(id)}" data-c="${esc(id)}">c/${esc(id)}</a>`;
+}
+
+// Inline "verified seal" glyph for the receipt affordance — replaces the bare
+// 🧾 emoji, which renders as tofu in some environments.
+const RECEIPT_ICON =
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5l7.5 3.2v5.6c0 4.6-3.2 7.7-7.5 9.2-4.3-1.5-7.5-4.6-7.5-9.2V5.7L12 2.5z"/><path d="M8.7 12l2.3 2.3 4.3-4.4"/></svg>`;
+
 // HLC physical component → Unix ms (wire form `<physical>.<counter>`).
 function hlcMs(hlc) {
   if (!hlc) return null;
@@ -933,7 +982,7 @@ async function renderChrome() {
     const comms = await getCommunities();
     window.__comms = comms;
     const ul = $("#community-list");
-    ul.innerHTML = comms.map((c) => `<li><a href="#/c/${esc(c.id)}" data-c="${esc(c.id)}">${esc(c.name)} ${c.open ? "✓" : ""}</a></li>`).join("") || `<li class="muted">none</li>`;
+    ul.innerHTML = comms.map((c) => `<li><a href="#/c/${esc(c.id)}" data-c="${esc(c.id)}"><span class="cdot" style="--ch:${boardHue(c.id)}"></span>${esc(c.name)} ${c.open ? "✓" : ""}</a></li>`).join("") || `<li class="muted">none</li>`;
   } catch (e) {
     $("#community-list").innerHTML = `<li class="muted">daemon offline</li>`;
   }
@@ -968,7 +1017,7 @@ function feedRow(p, votes, showComm = true) {
   return `<div class="card feed-row${pending ? " pending" : ""}">
     <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
     <div style="flex:1">
-      <div class="post-meta">${showComm ? `c/${esc(p.comm)} · ` : ""}${esc(p.author)}${timeAgo(p.ts)}${pending ? ` · <span class="muted">pending…</span>` : ""}${receiptLink(p)}</div>
+      <div class="post-meta">${showComm ? `${boardTag(p.comm)} ` : ""}${avatarName(p.authorRef, p.author)}${timeAgo(p.ts)}${pending ? ` · <span class="muted">pending…</span>` : ""}${receiptLink(p)}</div>
       <div class="post-title"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
     </div></div>`;
 }
@@ -1051,7 +1100,7 @@ async function viewThread(commId, postId) {
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
-    <div class="card"><div class="post-meta">${esc(post.author)}${timeAgo(post.ts)}${receiptLink(post)}</div>
+    <div class="card"><div class="post-meta">${avatarName(post.authorRef, post.author, 22)}${timeAgo(post.ts)}${receiptLink(post)}</div>
       <div class="post-body">${esc(post.body)}</div>
       <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · <span data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div>
     </div>
@@ -1085,7 +1134,7 @@ async function viewThread(commId, postId) {
   wireReceiptButtons();
 }
 function commentBox(c, votes) {
-  return `<div class="comment"><div class="post-meta">${esc(c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${receiptLink(c)}</div><div>${esc(c.body)}</div></div>`;
+  return `<div class="comment"><div class="post-meta">${avatarName(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${receiptLink(c)}</div><div>${esc(c.body)}</div></div>`;
 }
 
 function wireVoteButtons() {
@@ -1126,7 +1175,7 @@ function wireVoteButtons() {
 const receiptItems = new Map();
 function receiptLink(p) {
   receiptItems.set(p.uri, p);
-  return ` · <button class="link receipt" data-receipt="${esc(p.uri)}" title="cryptographic receipt">🧾</button>`;
+  return ` · <button class="link receipt" data-receipt="${esc(p.uri)}" title="cryptographic receipt" aria-label="cryptographic receipt">${RECEIPT_ICON}<span class="rlbl">receipt</span></button>`;
 }
 function wireReceiptButtons() {
   document.querySelectorAll("[data-receipt]").forEach((b) => {
@@ -1182,7 +1231,7 @@ const rSection = (label, html) =>
 function openReceipt(item) {
   const overlay = el(`<div class="modal-overlay">
     <div class="modal card receipt-modal">
-      <div class="row-between"><div class="h2" style="margin:0">🧾 Receipt</div>
+      <div class="row-between"><div class="h2" style="margin:0">${RECEIPT_ICON} Receipt</div>
         <button class="link" id="r-close" aria-label="Close">✕</button></div>
       <div id="r-body" class="muted" style="margin-top:8px">loading…</div>
     </div></div>`);
@@ -1321,7 +1370,7 @@ async function viewPassport(subject) {
   const main = $("#main");
   subject = subject || session.email;
   if (!subject) { main.innerHTML = `<div class="card">Sign in to see your passport.</div>`; return; }
-  main.innerHTML = `<div class="h1">🎖 ${esc(subject)}</div><div id="pp" class="muted">loading…</div>`;
+  main.innerHTML = `<div class="pp-head avatar-lg">${identicon(subject, 46)}<div class="h1">${esc(shortAuthor(subject))}</div></div><div id="pp" class="muted">loading…</div>`;
   const atts = await getPassport(subject);
   const roles = atts.filter((a) => a.type !== "vouch" && a.type !== "ban");
   const vouches = atts.filter((a) => a.type === "vouch");
