@@ -109,8 +109,15 @@ pub fn community_policy_open(
     let membership_type = format!("membership:{community_id}");
     let payload = serde_json::to_vec(&serde_json::json!({
         "roles": { "member": [{ "attested": { "type": membership_type } }] },
+        // Members may CREATE content; only the object's OWNER may UPDATE it.
+        // Under global (path,id) uniqueness a space slot is shared across
+        // authors, so a broad `post` (=create+update) grant would let any member
+        // overwrite another member's post/comment/reaction. Splitting create
+        // (members) from update (owner) closes that while keeping self-edits and
+        // vote-toggles working for the author (sbo-qv95 follow-up).
         "grants": [
-            { "to": { "role": "member" }, "can": ["post"], "on": spaces }
+            { "to": { "role": "member" }, "can": ["create"], "on": spaces },
+            { "to": "owner", "can": ["update"], "on": spaces }
         ],
         "restrictions": [
             { "on": spaces, "require": { "not_attested": { "type": "ban", "by": issuer } } }

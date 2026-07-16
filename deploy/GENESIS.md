@@ -74,3 +74,6 @@ sbo key import mingo-domain ~/secure-backup/mingo-domain.key
 mingo genesis --domain mingo.place --broker browserid.me --key sys --domain-key mingo-domain --out genesis.wire
 # genesis.wire must hash to a3f28de0…; re-seed a daemon at head=3545906 to rebuild from B.
 ```
+
+## Post-genesis policy update (v4, 2026-07-16)
+The three community root policies were updated in place (sys-signed) to split the space grant into `member: create` + `owner: update` (was `member: post`), closing a same-slot overwrite vector exposed by global (path,id) uniqueness — sbo-qv95. Submission ids: cooks 6a0d7587, woodworking cf8ea037, homelab af09c969. `mingo-app/src/genesis.rs::community_policy_open` carries the same split, so a future re-genesis is born with it (the committed genesis.wire @3c614c5d predates the split and matches the live anchor; do not rebuild it).
