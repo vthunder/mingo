@@ -722,10 +722,21 @@ async function vouchFor(subject) {
   return true;
 }
 
+// Collision-safe object id: time-ordered prefix + random suffix. Under the SBO
+// global (path,id) uniqueness rule (sbo-qv95), a shared space path is written by
+// many authors, so a wall-clock-only id would let two same-millisecond posts
+// collide and one would be dropped (first-valid-write-wins). The random suffix
+// makes each author's id unique by construction.
+function freshId(prefix) {
+  const rnd = crypto.getRandomValues(new Uint8Array(6));
+  const suffix = [...rnd].map((b) => b.toString(36).padStart(2, "0")).join("");
+  return `${prefix}-${Date.now().toString(36)}-${suffix}`;
+}
+
 async function composePost(commId, space, body) {
   const wasm = await sbo();
   const payload = wasm.payloadPost(body, undefined, BigInt(Date.now()));
-  const id = "p-" + Date.now().toString(36);
+  const id = freshId("p");
   await writeContent({
     path: `/communities/${commId}/spaces/${space}/`, id, schema: "post.v1", payload,
   });
@@ -734,7 +745,7 @@ async function composePost(commId, space, body) {
 async function addComment(commId, space, parentUri, body) {
   const wasm = await sbo();
   const payload = wasm.payloadComment(body, parentUri, BigInt(Date.now()));
-  const id = "c-" + Date.now().toString(36);
+  const id = freshId("c");
   return writeContent({
     path: `/communities/${commId}/spaces/${space}/`, id, schema: "comment.v1", payload,
   });
@@ -764,7 +775,7 @@ async function editContent(item, body) {
 async function upvote(commId, space, targetUri) {
   const wasm = await sbo();
   const payload = wasm.payloadReaction(targetUri, "upvote", true);
-  const id = "r-" + Date.now().toString(36);
+  const id = freshId("r");
   return writeContent({
     path: `/communities/${commId}/spaces/${space}/`, id, schema: "reaction.v1", payload,
   });
