@@ -273,6 +273,171 @@ pub async fn cert_key(
 }
 
 // --------------------------------------------------------------------------
+// GET /provision_return?email=&pubkey=&state=&return_to=
+//
+// Same-tab (first-party) provisioning handshake (mingo-ytrs). The old path minted
+// handle certs inside a HIDDEN cross-site `/provision` iframe embedded in the
+// broker; mobile Safari ITP blocks our `SameSite=None` session cookie in that
+// third-party context, so nothing was ever deposited into the broker keystore and
+// a handle user could never sign a warrant on a fresh mobile device.
+//
+// Here the broker's consent page instead generates a NON-EXTRACTABLE keypair and
+// navigates the TOP frame to this endpoint, so our session cookie is FIRST-PARTY
+// and works. We mint the `<handle>@<domain>` cert for the handle THIS SESSION owns
+// and 302 back to the broker with the cert in the URL FRAGMENT (never sent to any
+// server, never logged, never leaked via Referer).
+//
+// Pseudonymity (mingo-ytrs, dan): the session is keyed to the account's external
+// login email, but the cert principal is ONLY the handle. The external email is
+// never read into, and never appears in, the minted cert / URL / anything the
+// broker sees. We derive the handle from the session and require the broker's
+// requested email to equal it — a session can only provision the pseudonym it owns.
+// --------------------------------------------------------------------------
+#[derive(Deserialize)]
+pub struct ProvReturnQuery {
+    /// The `<handle>@<domain>` identity the broker wants a cert for. Cross-checked
+    /// against the session's own handle; never trusted as an input beyond that.
+    pub email: String,
+    /// base64url (no pad) Ed25519 public key the broker generated (JWK `x`).
+    pub pubkey: String,
+    /// Opaque broker nonce, echoed back verbatim so the broker can bind the
+    /// returned cert to the pending keypair it generated. Constrained to
+    /// base64url so it can't inject extra fragment params.
+    pub state: String,
+    /// Where to hand the cert back. MUST be an exact broker origin (allowlist).
+    pub return_to: String,
+}
+
+/// Reject any `return_to` that is not an exact broker origin. This endpoint is the
+/// sole delivery point of a freshly-minted cert, so an open redirect here would be
+/// a cert-exfiltration primitive. Requires `https://<broker_domain>/…` (the trailing
+/// slash pins the host exactly, defeating `browser­id.me.evil.com` /
+/// `browserid.me@evil.com` tricks) and forbids a caller-supplied fragment (we append
+/// our own). In dev (`allow_http_verify`) `http://` is also accepted.
+fn validate_return_to(raw: &str, broker_domain: &str, dev_insecure: bool) -> Result<(), AppError> {
+    if raw.contains('#') {
+        return Err(AppError::BadRequest("return_to must not contain a fragment".into()));
+    }
+    // Reject control chars (esp. a %0D%0A-decoded CR/LF): they pass the origin
+    // allowlist below but then make the redirect's HeaderValue construction fail.
+    if raw.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err(AppError::BadRequest("return_to contains control characters".into()));
+    }
+    let mut allowed = vec![
+        format!("https://{}/", broker_domain),
+        format!("https://{}", broker_domain),
+    ];
+    if dev_insecure {
+        allowed.push(format!("http://{}/", broker_domain));
+        allowed.push(format!("http://{}", broker_domain));
+    }
+    // Exact-origin match: either the bare origin, or the origin followed by a path.
+    let ok = allowed.iter().any(|base| {
+        if base.ends_with('/') {
+            raw.starts_with(base)
+        } else {
+            raw == base
+        }
+    });
+    if ok {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden)
+    }
+}
+
+/// `state` must be pure base64url so it can't smuggle extra `&`/`#` fragment params
+/// into the redirect we build.
+fn is_base64url(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+pub async fn provision_return(
+    State(st): State<Shared>,
+    cookies: Cookies,
+    axum::extract::Query(q): axum::extract::Query<ProvReturnQuery>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::response::IntoResponse;
+
+    // 1. Allowlist the return target BEFORE doing anything else.
+    validate_return_to(&q.return_to, &st.config.broker_domain, st.config.allow_http_verify)?;
+    if !is_base64url(&q.state) {
+        return Err(AppError::BadRequest("invalid state".into()));
+    }
+
+    // 2. First-party session required. Without one we must not mint (and must not
+    //    reveal whether the handle exists) — show a minimal sign-in prompt.
+    let account_id = match require_session(&st, &cookies) {
+        Ok(id) => id,
+        Err(_) => return Ok(sign_in_first_page(&st.config.app_origin)),
+    };
+
+    // 3. Resolve the session to ITS handle; mint ONLY for that pseudonym. The
+    //    external login email is never read into the cert.
+    let account = st
+        .store
+        .get_account(account_id)?
+        .ok_or(AppError::Forbidden)?;
+    let handle = account.handle.ok_or(AppError::Forbidden)?;
+    let handle_email = format!("{}@{}", handle, st.config.domain);
+    if !q.email.eq_ignore_ascii_case(&handle_email) {
+        // The session doesn't own the requested handle.
+        return Err(AppError::Forbidden);
+    }
+
+    // 4. Mint — identical to /cert_key (24h, our issuer key), principal = handle.
+    let user_pk = PublicKey::from_base64(&q.pubkey)
+        .map_err(|e| AppError::BadRequest(format!("invalid public key: {}", e)))?;
+    let cert = Certificate::create(
+        &st.config.domain,
+        &handle_email,
+        &user_pk,
+        chrono::Duration::hours(24),
+        &st.keypair,
+    )
+    .map_err(|e| AppError::Internal(format!("cert create: {}", e)))?;
+
+    // 5. Hand the cert back in the FRAGMENT. Both the JWS and `state` are base64url,
+    //    so no percent-encoding is needed and nothing can break out of the fragment.
+    let location = format!(
+        "{}#prov_cert={}&state={}",
+        q.return_to,
+        cert.encoded(),
+        q.state
+    );
+    Ok(axum::response::Redirect::to(&location).into_response())
+}
+
+/// Minimal first-party page shown when `/provision_return` is hit without a mingo
+/// session (shouldn't happen coming from an in-app flow, but handled). No cert is
+/// minted and the handle is never named.
+fn sign_in_first_page(app_origin: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let html = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<title>mingo.place — sign in</title></head>\
+<body style=\"font:16px/1.6 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1.25rem\">\
+<h1>Sign in to mingo.place</h1>\
+<p>To set up signing on this device, sign in to mingo.place first, then return to the approval page.</p>\
+<p><a href=\"{}\">Open mingo.place</a></p></body></html>",
+        html_escape_attr(app_origin)
+    );
+    (axum::http::StatusCode::OK, axum::response::Html(html)).into_response()
+}
+
+/// Minimal attribute-safe escaping for the one interpolated URL above.
+fn html_escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+// --------------------------------------------------------------------------
 // POST /admin/seed  (X-Admin-Token)  { external_email, handle }  ->  { email }
 // Demo seeding: bind a handle to an external identity without the live flow.
 // --------------------------------------------------------------------------

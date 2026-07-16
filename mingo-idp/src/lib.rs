@@ -54,6 +54,10 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         .route("/claim_handle", post(routes::claim_handle))
         .route("/use_external", post(routes::use_external))
         .route("/cert_key", post(routes::cert_key))
+        // Same-tab (first-party) provisioning return (mingo-ytrs): the broker
+        // navigates the TOP frame here to mint a handle cert under a first-party
+        // session (works where the hidden cross-site /provision iframe is ITP-blocked).
+        .route("/provision_return", get(routes::provision_return))
         // mingo-poster delegated signing (mingo-3f3i), same-origin + session-gated.
         .route("/poster/enable", post(poster::enable))
         .route("/poster/poll", post(poster::poll))
