@@ -1207,6 +1207,11 @@ function wireCardMenus() {
   document.querySelectorAll(".kebab").forEach((b) => {
     const pop = b.nextElementSibling;
     b.onclick = (e) => { e.stopPropagation(); toggleMenu(b, pop); };
+    // Selecting any item closes the menu first — captured so it runs before the
+    // item's own handler (which may swap out this markup, e.g. beginEdit/beginDelete).
+    pop.addEventListener("click", (e) => {
+      if (e.target.closest(".menu-item")) closeAllMenus();
+    }, true);
   });
 }
 
