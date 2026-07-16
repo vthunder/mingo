@@ -1,11 +1,11 @@
 ---
 # mingo-ytrs
 title: 'Handle delegation to mingo-poster: consent-page provisioning fails on mobile'
-status: in-progress
+status: completed
 type: bug
 priority: normal
 created_at: 2026-07-15T07:26:41Z
-updated_at: 2026-07-15T23:56:46Z
+updated_at: 2026-07-16T00:16:09Z
 ---
 
 A mingo HANDLE user (e.g. dan@mingo.place) can't enable mingo-poster: the browserid.me consent page needs the handle's identity key to sign the warrant, but it's not in that browser's keystore on a fresh device, and provisioning it there fails.
@@ -57,3 +57,7 @@ Security checks: state nonce (reject mismatch), cert in FRAGMENT not query, retu
 Verified: cargo test green (broker/registrar/mingo-idp), CSP hash test green, node --check on consent inline + keystore.js, curl exercise of provision_return validation (session-less->sign-in page; bad host/subdomain->403; fragment/bad-state->400).
 
 REMAINS: real mobile-Safari device test (dan@mingo.place enabling mingo-poster end-to-end). Cert signature-over-cert not verified in-page (deferred to downstream warrant verifiers, by design). set_parent/subordinate link not recorded on this path (deferred follow-up).
+
+## Resolved (2026-07-16)
+
+Same-tab navigation provisioning shipped and verified on-device by dan — a handle user enables mingo-poster on mobile end to end (consent → same-tab hop to mingo /provision_return → first-party cert mint → redirect back with cert in fragment → keystore deposit → Approve signs the warrant). The dead hidden-iframe provisioning is gone. Handles now DEFAULT for all users; the ?handles=1 gate (HANDLES_ENABLED) is removed. Deferred follow-up: set_parent/subordinate-link recording on the consent path (external email kept off it).

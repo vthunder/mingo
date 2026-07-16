@@ -28,11 +28,6 @@ const CONFIG = Object.assign(
 
 const SBO_WASM_URL = CONFIG.sboWasm || `${CONFIG.broker}/common/js/sbo-wasm/sbo_wasm.js`;
 
-// Handle (pseudonym) sign-up is gated behind a debug flag (?handles=1) while
-// handle delegation to mingo-poster is still being sorted out on the consent
-// page. Off by default → new users use their external email. Existing handle
-// accounts keep working; this only suppresses the new-user chooser.
-const HANDLES_ENABLED = qs.get("handles") === "1";
 
 // ---------------------------------------------------------------------------
 // daemon read/submit API
@@ -330,15 +325,11 @@ async function signIn() {
       email = `${sess.handle}@${CONFIG.domain}`;
     } else if (sess.identity_mode === "email") {
       email = sess.email;
-    } else if (!HANDLES_ENABLED) {
-      // Handles are off for general users (re-enable with ?handles=1): a new
-      // user just uses their external email — the proven mingo-poster path.
-      // Handle provisioning on the browserid.me consent page is still being
-      // worked out (an IdP-issued handle's key must be mintable there), so we
-      // don't hand out handles that can't yet delegate cleanly.
-      await idpPost("/use_external", {});
-      email = sess.email;
     } else {
+      // A new user picks how to appear: their external email, or a pseudonymous
+      // <handle>@mingo.place. Handle delegation to mingo-poster works on mobile
+      // now (the consent page mints the handle cert via a same-tab handshake —
+      // mingo-ytrs), so handles are offered to everyone.
       const choice = await promptIdentity(sess.email);
       if (!choice) return; // cancelled registration
       if (choice.mode === "email") {
