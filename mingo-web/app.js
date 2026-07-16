@@ -686,6 +686,33 @@ async function joinHub(commId) {
   return true;
 }
 
+// Vouch for another identity — a portable, pseudonymous reputation signal that
+// travels with the subject across every board. Mirrors joinHub EXACTLY (a
+// self-issued attestation.v1 in the issuer's namespace): the object id is
+// deterministic (`vouch-<subject-slug>`) so re-vouching overwrites rather than
+// piling up, and the payload shape matches the seeder's vouch attestation.
+async function vouchFor(subject) {
+  if (!session.email) { signIn(); return false; }
+  const slug = String(subject).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const att = {
+    subject,
+    type: "vouch",
+    value: { via: "mingo-web" },
+    issued_at: Math.floor(Date.now() / 1000),
+    expires: null,
+    issuer: session.email,
+  };
+  const payload = new TextEncoder().encode(JSON.stringify(att));
+  await writeContent({
+    path: `/u/${session.email}/attestations/${subject}/`,
+    id: `vouch-${slug}`,
+    schema: "attestation.v1",
+    contentType: "application/json",
+    payload,
+  });
+  return true;
+}
+
 async function composePost(commId, space, body) {
   const wasm = await sbo();
   const payload = wasm.payloadPost(body, undefined, BigInt(Date.now()));
@@ -755,6 +782,18 @@ function identicon(seed, size = 18) {
 // An author byline: identicon + short display name.
 function avatarName(ref, name, size = 18) {
   return `<span class="byline">${identicon(ref, size)}${esc(name)}</span>`;
+}
+// An author byline that links to that identity's passport. Wraps ONLY the
+// identity (identicon + name) so it doesn't swallow neighbouring vote/receipt
+// affordances in the post-meta row.
+function authorLink(ref, name, size = 18) {
+  return `<a class="byline-link" href="#/passport/${encodeURIComponent(ref || "")}">${avatarName(ref, name, size)}</a>`;
+}
+// Turn an attestation slug (`founding-member`) into a display label
+// ("Founding member").
+function prettySlug(s) {
+  s = String(s || "").replace(/-/g, " ").trim();
+  return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 // Stable hue for a board id — used by its sidebar dot and its c/<board> tag.
 const boardHue = (id) => hashStr("board:" + (id || "?")) % 360;
@@ -1017,7 +1056,7 @@ function feedRow(p, votes, showComm = true) {
   return `<div class="card feed-row${pending ? " pending" : ""}">
     <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
     <div style="flex:1">
-      <div class="post-meta">${showComm ? `${boardTag(p.comm)} ` : ""}${avatarName(p.authorRef, p.author)}${timeAgo(p.ts)}${pending ? ` · <span class="muted">pending…</span>` : ""}${receiptLink(p)}</div>
+      <div class="post-meta">${showComm ? `${boardTag(p.comm)} ` : ""}${authorLink(p.authorRef, p.author)}${timeAgo(p.ts)}${pending ? ` · <span class="muted">pending…</span>` : ""}${receiptLink(p)}</div>
       <div class="post-title"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
     </div></div>`;
 }
@@ -1100,7 +1139,7 @@ async function viewThread(commId, postId) {
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
-    <div class="card"><div class="post-meta">${avatarName(post.authorRef, post.author, 22)}${timeAgo(post.ts)}${receiptLink(post)}</div>
+    <div class="card"><div class="post-meta">${authorLink(post.authorRef, post.author, 22)}${timeAgo(post.ts)}${receiptLink(post)}</div>
       <div class="post-body">${esc(post.body)}</div>
       <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · <span data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div>
     </div>
@@ -1134,7 +1173,7 @@ async function viewThread(commId, postId) {
   wireReceiptButtons();
 }
 function commentBox(c, votes) {
-  return `<div class="comment"><div class="post-meta">${avatarName(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${receiptLink(c)}</div><div>${esc(c.body)}</div></div>`;
+  return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${receiptLink(c)}</div><div>${esc(c.body)}</div></div>`;
 }
 
 function wireVoteButtons() {
@@ -1370,16 +1409,52 @@ async function viewPassport(subject) {
   const main = $("#main");
   subject = subject || session.email;
   if (!subject) { main.innerHTML = `<div class="card">Sign in to see your passport.</div>`; return; }
-  main.innerHTML = `<div class="pp-head avatar-lg">${identicon(subject, 46)}<div class="h1">${esc(shortAuthor(subject))}</div></div><div id="pp" class="muted">loading…</div>`;
+  const name = shortAuthor(subject);
+  const canVouch = !!session.email && subject !== session.email;
+  main.innerHTML = `<div class="pp-head avatar-lg">${identicon(subject, 46)}
+    <div style="flex:1"><div class="h1">${esc(name)}</div></div>
+    <div id="pp-vouch"></div></div>
+    <div id="pp" class="muted">loading…</div>`;
   const atts = await getPassport(subject);
-  const roles = atts.filter((a) => a.type !== "vouch" && a.type !== "ban");
+  const badges = atts.filter((a) => String(a.type || "").startsWith("badge:"));
+  const memberships = atts.filter((a) => String(a.type || "").startsWith("membership:"));
   const vouches = atts.filter((a) => a.type === "vouch");
+  const alreadyVouched = canVouch && vouches.some((v) => v.issuer === session.email);
+
   $("#pp").outerHTML = `<div id="pp">
-    <div class="card"><div class="h2">Badges & roles</div>
-      ${roles.length ? roles.map((a) => `<div class="passport-row"><span>${esc(a.type)}</span><span class="muted">issued by ${esc(a.issuer)}</span></div>`).join("") : `<div class="muted">No badges yet.</div>`}</div>
-    <div class="card"><div class="h2">Vouched by</div>
-      ${vouches.length ? vouches.map((a) => esc(a.issuer)).join(" · ") : `<div class="muted">No vouches yet.</div>`}</div>
+    <div class="card pp-sec"><div class="h2">Badges</div>
+      ${badges.length
+        ? `<div class="pp-badges">${badges.map((a) => `<div class="pp-badge"><span class="b-name">${esc(prettySlug(a.type.slice(6)))}</span><span class="b-by">by ${esc(shortAuthor(a.issuer))}</span></div>`).join("")}</div>`
+        : `<div class="muted">No badges yet.</div>`}</div>
+    <div class="card pp-sec"><div class="h2">Member of</div>
+      ${memberships.length
+        ? `<div class="pp-pills">${memberships.map((a) => boardTag(a.type.slice(11))).join("")}</div>`
+        : `<div class="muted">Not a member of any community yet.</div>`}</div>
+    <div class="card pp-sec"><div class="h2">Vouched by</div>
+      ${vouches.length
+        ? `<div class="vouch-list">${vouches.map((a) => `<a class="byline-link vouch-item" href="#/passport/${encodeURIComponent(a.issuer)}">${identicon(a.issuer, 18)}${esc(shortAuthor(a.issuer))}</a>`).join("")}</div>`
+        : `<div class="muted">No vouches yet.</div>`}</div>
     <div class="card muted">This is yours. It travels with you across every community here.</div></div>`;
+
+  const vslot = $("#pp-vouch");
+  if (vslot && canVouch) {
+    vslot.innerHTML = alreadyVouched
+      ? `<button class="primary" disabled>✓ Vouched</button>`
+      : `<button class="primary" id="do-vouch">Vouch for ${esc(name)}</button>`;
+    const btn = $("#do-vouch");
+    if (btn) btn.onclick = async () => {
+      if (!(await ensureCanWrite())) return;
+      btn.disabled = true; btn.textContent = "Vouching…";
+      try {
+        await vouchFor(subject);
+        toast("Vouched — confirming on-chain…");
+        route(); // re-render; the daemon overlay serves the new vouch immediately
+      } catch (e) {
+        toast("vouch failed: " + e.message);
+        btn.disabled = false; btn.textContent = "Vouch for " + name;
+      }
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
