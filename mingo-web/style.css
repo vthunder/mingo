@@ -328,6 +328,14 @@ button.link {
   transition: color .12s;
 }
 button.link:hover { background: none; color: color-mix(in srgb, var(--accent) 80%, var(--ink)); text-decoration: underline; }
+/* Destructive affordances (owner-delete, mingo-3go6). */
+button.link.danger { color: var(--err); }
+button.link.danger:hover { color: color-mix(in srgb, var(--err) 80%, var(--ink)); }
+button.primary.danger {
+  background: var(--err); color: #fff;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--err) 45%, transparent);
+}
+button.primary.danger:hover { background: color-mix(in srgb, var(--err) 88%, #000); }
 
 a.primary {
   display: inline-block; padding: 8px 15px; border-radius: var(--r-sm); font-weight: 600;

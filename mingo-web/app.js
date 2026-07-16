@@ -304,8 +304,9 @@ async function disablePoster() {
 
 // Submit a write through the server-side signer. Mirrors the fields the
 // client-side path builds, minus the signature (mingo signs).
-async function submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType }) {
+async function submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType, action }) {
   return idpPost("/poster/submit", {
+    action: action || "post",
     path,
     id,
     schema,
@@ -598,18 +599,18 @@ function certIssuer(certJwt) {
 // session email); pass `keyRooted: true` for self-authorizing writes like the
 // /sys/dnssec refresh, which omit Owner so the daemon's L2 gate passes by
 // signing-key match without needing attribution.
-async function writeContent({ path, id, schema, payload, hlc, prev, owner, contentType, keyRooted }) {
+async function writeContent({ path, id, schema, payload, hlc, prev, owner, contentType, keyRooted, action }) {
   if (!session.email) { signIn(); return; }
   // Server-side signing (mingo-poster): mingo signs + submits on our behalf, so
   // no popup. Only for email-rooted content writes — key-rooted self-authorizing
   // writes (the /sys/dnssec refresh) sign with a throwaway key locally and must
   // not route through the agent signer.
   if (poster.enabled && !keyRooted) {
-    return submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType });
+    return submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType, action });
   }
   const wasm = await sbo();
   const spec = {
-    action: "", path, id,
+    action: action || "", path, id,
     public_key: "ed25519:" + "00".repeat(32), // set by whichever signer runs
     content_schema: schema,
     payload: Array.from(payload),
@@ -769,6 +770,26 @@ async function editContent(item, body) {
     payload,
     contentType: "application/json",
     prev: item.objectHash, // chain onto the current head → daemon sees an update
+  });
+}
+
+// Owner-delete a post or comment (bean mingo-3go6): a `delete` write to the
+// object's (path,id). Delete carries no payload; the daemon removes the object
+// from head state (sbo Action::Delete), so it vanishes for every reader on the
+// next read — no client cache to invalidate. Authorization is the owner fast
+// path (the current owner may always act), so no policy grant is needed; the
+// poster path additionally needs `action:delete` in its warrant scopes. We pass
+// the object's schema so a poster-signed delete satisfies the warrant's
+// `schema:` scope. Routes through writeContent → poster or client signing
+// exactly like a post/edit.
+async function deleteContent(item) {
+  return writeContent({
+    path: item.path,
+    id: item.id,
+    schema: item.schema,
+    action: "delete",
+    payload: new Uint8Array(0),
+    contentType: "application/json",
   });
 }
 
@@ -935,6 +956,7 @@ const ICON_PROFILE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 const ICON_SETTINGS = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>`;
 const ICON_SIGNOUT = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>`;
 const ICON_EDIT = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
+const ICON_DELETE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14"/><path d="M10 11v6M14 11v6"/></svg>`;
 
 // ---------------------------------------------------------------------------
 // popup menus (user dropdown + post-card kebab). A single dismissal model:
@@ -1144,7 +1166,7 @@ async function viewHub() {
   wireVoteButtons();
   wireReceiptButtons();
   wireEditButtons();
-  wireCardMenus();
+  wireCardMenus(); wireDeleteButtons();
   startLivePoll(() => pollFeed("hub"));
 }
 
@@ -1168,12 +1190,17 @@ function cardMenu(item) {
   const editItem = ownItem(item)
     ? `<button class="menu-item" role="menuitem" data-edit="${esc(item.uri)}">${ICON_EDIT}<span>Edit</span></button>`
     : "";
+  // Owner-only delete (mingo-3go6), confirmed inline before it writes.
+  const deleteItem = ownItem(item)
+    ? `<button class="menu-item danger" role="menuitem" data-delete="${esc(item.uri)}">${ICON_DELETE}<span>Delete</span></button>`
+    : "";
   const popId = `m-${hashStr(item.uri).toString(36)}`;
   return `<div class="fr-menu">
     <button class="kebab" aria-haspopup="true" aria-expanded="false" aria-controls="${popId}" aria-label="More actions" title="More">⋮</button>
     <div class="menu-pop" id="${popId}" hidden role="menu">
       <button class="menu-item" role="menuitem" data-receipt="${esc(item.uri)}">${RECEIPT_ICON}<span>Receipt</span></button>
       ${editItem}
+      ${deleteItem}
     </div></div>`;
 }
 function wireCardMenus() {
@@ -1224,7 +1251,7 @@ async function viewCommunity(commId) {
   wireVoteButtons();
   wireReceiptButtons();
   wireEditButtons();
-  wireCardMenus();
+  wireCardMenus(); wireDeleteButtons();
   startLivePoll(() => pollFeed("community", c.id));
 }
 
@@ -1264,7 +1291,15 @@ async function viewThread(commId, postId) {
   main.innerHTML = `<div id="thread" class="muted">loading…</div>`;
   const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
   const post = posts.find((p) => p.id === postId);
-  if (!post) { main.innerHTML = `<div class="card">Post not found.</div>`; return; }
+  // A deleted post is gone from head state, so it simply isn't in `posts`. Its
+  // comments are independent objects with no chain-side cascade (mingo-3go6), so
+  // we don't render the orphaned thread at all — the post is the only entry point
+  // to it, and the feed already omits the deleted post.
+  if (!post) {
+    main.innerHTML = `<a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
+      <div class="card muted">This post was deleted or doesn't exist.</div>`;
+    return;
+  }
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
@@ -1303,11 +1338,11 @@ async function viewThread(commId, postId) {
   wireVoteButtons();
   wireReceiptButtons();
   wireEditButtons();
-  wireCardMenus();
+  wireCardMenus(); wireDeleteButtons();
   startLivePoll(() => pollThread(commId, post));
 }
 function commentBox(c, votes) {
-  return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${editedTag(c)}${receiptLink(c)}${editLink(c)}</div><div data-body="${esc(c.uri)}">${esc(c.body)}</div></div>`;
+  return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${editedTag(c)}${receiptLink(c)}${editLink(c)}${deleteLink(c)}</div><div data-body="${esc(c.uri)}">${esc(c.body)}</div></div>`;
 }
 
 function wireVoteButtons() {
@@ -1384,6 +1419,49 @@ function wireEditButtons() {
   document.querySelectorAll("[data-edit]").forEach((b) => {
     b.onclick = () => beginEdit(b.getAttribute("data-edit"));
   });
+}
+// The "delete" button (owner-only), for comment meta-lines where the kebab menu
+// isn't rendered. Registers the item so beginDelete can look it up (mingo-3go6).
+function deleteLink(item) {
+  if (!ownItem(item)) return "";
+  receiptItems.set(item.uri, item);
+  return ` · <button class="link delete-btn danger" data-delete="${esc(item.uri)}" title="delete">delete</button>`;
+}
+function wireDeleteButtons() {
+  document.querySelectorAll("[data-delete]").forEach((b) => {
+    b.onclick = () => beginDelete(b.getAttribute("data-delete"));
+  });
+}
+// Confirm-then-delete, mirroring beginEdit's inline swap: the body element
+// (data-body="<uri>") is replaced with a confirmation prompt; Cancel restores
+// the saved markup, Delete writes and re-renders once the daemon overlay has the
+// removal (same ~1.2s settle as edit/post). Works for posts and comments — both
+// carry a data-body element keyed by uri.
+function beginDelete(uri) {
+  const item = receiptItems.get(uri);
+  if (!item) return;
+  const bodyEl = document.querySelector(`[data-body="${CSS.escape(uri)}"]`);
+  if (!bodyEl || bodyEl.querySelector(".edit-box")) return; // already editing/deleting
+  const saved = bodyEl.innerHTML;
+  const kind = item.schema === "comment.v1" ? "comment" : "post";
+  bodyEl.innerHTML = `<div class="edit-box"><div class="muted">Delete this ${kind}? This removes it for everyone and can't be undone.</div>
+    <div class="row-between" style="margin-top:8px"><span class="muted tiny">deleting</span>
+    <span><button class="edit-cancel">Cancel</button> <button class="primary danger delete-confirm">Delete</button></span></div></div>`;
+  bodyEl.querySelector(".edit-cancel").onclick = () => { bodyEl.innerHTML = saved; };
+  bodyEl.querySelector(".delete-confirm").onclick = async () => {
+    if (!(await ensureCanWrite())) return;
+    const btn = bodyEl.querySelector(".delete-confirm");
+    btn.disabled = true; btn.textContent = "Deleting…";
+    try {
+      await deleteContent(item);
+      toast(`${kind} deleted.`);
+      await new Promise((r) => setTimeout(r, 1200));
+      route(); // overlay serves head without the object; re-render drops it
+    } catch (e) {
+      toast("delete failed: " + e.message);
+      btn.disabled = false; btn.textContent = "Delete";
+    }
+  };
 }
 // Swap the item's body element (marked data-body="<uri>") for an inline editor.
 // Cancel restores the saved markup; Save re-writes and re-renders (the daemon
@@ -1752,7 +1830,7 @@ function liveAppend(container, items, render) {
     container.appendChild(el(render(it)));
     added = true;
   }
-  if (added) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); wireCardMenus(); }
+  if (added) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); wireCardMenus(); wireDeleteButtons(); }
 }
 async function pollFeed(kind, commId) {
   const votes = await getVoteCounts();
