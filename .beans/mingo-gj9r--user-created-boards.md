@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-07-16T00:25:52Z
-updated_at: 2026-07-16T00:35:32Z
+updated_at: 2026-07-16T21:23:44Z
 parent: mingo-y9gb
 ---
 
@@ -20,3 +20,7 @@ Let users create their own community/board that others can discover and join, in
 
 ## Autonomous-run note (2026-07-16) — deferred, needs you
 Skipped in the overnight run: user-created boards requires giving non-sys identities authority to create /communities/<id>/** + write a governing policy, which under the current genesis means UPDATING THE HUB ROOT POLICY at /sys/policies/root (sys-signed). That is a root-policy change on the live chain — too risky to do unsupervised, and it is the crux design decision (which grant shape: members-create-anywhere-they-own vs IdP-mediated create vs a dedicated create-authority key). Recommend: decide the mechanism together, then a supervised sys-key op. sys key is at ~/secure-backup/mingo-sys.key.
+
+## Decision (dan, 2026-07-16)
+
+Once user-created boards land, remove the three genesis communities (cooks/woodworking/homelab) from genesis and re-genesis to clean up. So: no need to retrofit issuer/moderator machinery onto the genesis boards — moderation (mingo-n268) targets user-created boards only, and this bean blocks it.

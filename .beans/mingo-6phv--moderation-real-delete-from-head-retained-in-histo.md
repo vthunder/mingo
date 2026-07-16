@@ -2,10 +2,10 @@
 # mingo-6phv
 title: 'Moderation: real delete (from head, retained in history) for users and moderators'
 status: todo
-type: feature
+type: epic
 priority: normal
 created_at: 2026-07-16T00:25:52Z
-updated_at: 2026-07-16T20:56:59Z
+updated_at: 2026-07-16T21:23:42Z
 parent: mingo-y9gb
 ---
 
@@ -33,3 +33,16 @@ Confirmed tonight in sbo: Delete is a distinct action (transfer-to-null-owner); 
 
 ## Finding (2026-07-16): hub-root admin delete does NOT reach community content
 Verified live: the community policy at /communities/<id>/ SHADOWS the hub root policy for its subtree (resolve_policy uses the closest policy). The hub root's {to:admin(sys), can:[...,delete], on:/**} therefore does NOT authorize deleting objects under /communities/**. Right now the community policy grants only member:create + owner:update (sbo-qv95) — NO delete — so the ONLY party that can delete community content is the content OWNER (via the owner-can-always-act fast path). sys/admin CANNOT delete a community post (observed: 'Policy: Signer does not control owner … and policy denies'). => moderation MUST add delete grants IN the community policy (owner-delete + moderator-role delete + issuer delete, per the earlier policy design), not rely on the hub-root admin grant. Ownership is by EMAIL, so an owner can delete after re-provisioning their email's cert (used this to clean the two_writer test posts).
+
+## Decisions + review findings (dan + review, 2026-07-16) — split into phases
+
+Converted to an epic; work proceeds in two child beans:
+
+- **mingo-3go6 — Author delete (phase 1, unblocked).** Owner-delete needs NO policy change: the owner fast path in `validate_transfer` (sbo `validate.rs:912-928`) runs before the policy check, so it works on the live chain today. The earlier autonomous-run note claiming author-delete needs a new grant was wrong. Poster gets an `action:delete` warrant scope so mobile delete works (decided). Cascade: hide orphaned comments client-side when the parent post is deleted.
+- **mingo-n268 — Moderator delete (phase 2, blocked by mingo-gj9r + phase 1).** Moderator UI will differ from author-delete (decided). Genesis boards get NO moderator issuance — they'll be removed at regenesis once user-created boards land (decided). The policy amendment is a sys-signed UPDATE of the sys-owned community policy object (owner fast path), NOT a root-policy change — smaller op than this bean's earlier findings implied. `mod:remove` audit attestation included in v1 (decided).
+
+Corrections to earlier notes in this bean:
+
+- Delete is a HARD removal from head state (`state_db.delete_object`, `sync.rs:990-1007`), not a tombstone — stronger than spec'd, and exactly the credible-delete requirement.
+- The member-overwrite-via-update hole flagged below was already fixed: mingo `7652a41` split the space grant into create(member)/update(owner), proven by the two-writer harness (`e41c8d3`).
+- "History-pruning nodes drop deleted objects" is an EMERGENT property of snapshot-based fast-sync bootstrap (the node never sees pre-checkpoint content), not an implemented block-pruning feature. Messaging holds; don't promise a pruning mechanism.
