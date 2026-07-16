@@ -103,6 +103,12 @@ pub fn external_warrant_request(
 pub fn default_scopes(user_email: &str) -> Vec<String> {
     vec![
         "action:post".into(),
+        // Owner-delete (mingo-3go6): the daemon authorizes deleting one's own
+        // object via the owner fast path, but the poster warrant's scopes still
+        // gate what the agent may sign — so a delete needs `action:delete` in
+        // scope alongside `action:post`. Kept tight to these two actions and the
+        // same path/schema scoping as posting.
+        "action:delete".into(),
         "schema:post.v1".into(),
         "schema:comment.v1".into(),
         "schema:reaction.v1".into(),
@@ -580,6 +586,10 @@ pub async fn disable(
 
 #[derive(Deserialize)]
 pub struct SubmitReq {
+    /// Wire action: `post` (default, incl. edit-as-update) or `delete`
+    /// (owner-delete, mingo-3go6). Absent/empty means `post` for back-compat.
+    #[serde(default)]
+    pub action: Option<String>,
     pub path: String,
     pub id: String,
     pub schema: String,
@@ -642,6 +652,18 @@ pub async fn submit(
         ensure_dnssec_fresh(&st.config.daemon_url, issuer).await?;
     }
 
+    // Only post (incl. edit-as-update) and owner-delete are signable on a user's
+    // behalf; both are covered by the warrant's `action:` scopes. Reject anything
+    // else rather than silently downgrading to a post.
+    let action = match req.action.as_deref() {
+        None | Some("") | Some("post") => Action::Post,
+        Some("delete") => Action::Delete,
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "poster cannot sign action '{other}' (only post or delete)"
+            )));
+        }
+    };
     let hlc = req
         .hlc
         .unwrap_or_else(|| format!("{}.0", chrono::Utc::now().timestamp_millis()));
@@ -651,7 +673,7 @@ pub async fn submit(
         &w.warrant,
         None,
         WriteSpec {
-            action: Action::Post,
+            action,
             path: &req.path,
             id: &req.id,
             schema: &req.schema,
@@ -725,6 +747,74 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(&"as:dan@example.com".to_string()));
+    }
+
+    #[test]
+    fn default_scopes_authorize_owner_delete() {
+        use sbo_core::authorize::scopes_authorize;
+        let sc = default_scopes("dan@example.com");
+        assert!(
+            sc.contains(&"action:delete".to_string()),
+            "owner-delete (mingo-3go6) needs action:delete in the warrant scopes"
+        );
+        // Deleting one's own post/comment is in scope (action + path + schema all match).
+        assert!(scopes_authorize(
+            &sc,
+            "delete",
+            "/communities/hub/spaces/general/",
+            Some("post.v1")
+        ));
+        assert!(scopes_authorize(
+            &sc,
+            "delete",
+            "/communities/hub/spaces/general/",
+            Some("comment.v1")
+        ));
+        // Post still authorized; an out-of-grant action (e.g. a raw transfer) is not.
+        assert!(scopes_authorize(
+            &sc,
+            "post",
+            "/communities/hub/spaces/general/",
+            Some("post.v1")
+        ));
+        assert!(!scopes_authorize(
+            &sc,
+            "transfer",
+            "/communities/hub/spaces/general/",
+            Some("post.v1")
+        ));
+    }
+
+    #[test]
+    fn assembled_delete_round_trips_as_the_delegating_user() {
+        let (_idp, poster, cert) = setup();
+        let wire_bytes = assemble_agent_write(
+            &poster,
+            &cert,
+            "warrant.jws.placeholder",
+            None,
+            WriteSpec {
+                action: Action::Delete,
+                path: "/communities/hub/spaces/general/",
+                id: "p1",
+                schema: "post.v1",
+                content_type: "application/json",
+                payload: Vec::new(),
+                owner: "dan@example.com",
+                hlc: Some("123.0"),
+                prev: None,
+            },
+        )
+        .unwrap();
+
+        let msg = wire::parse(&wire_bytes).expect("delete wire parses");
+        assert!(matches!(msg.action, Action::Delete));
+        assert_eq!(
+            msg.owner.as_ref().map(|o| o.as_str()),
+            Some("dan@example.com"),
+            "delete attributes to the delegating user via the warrant's as: scope"
+        );
+        assert_eq!(msg.content_schema.as_deref(), Some("post.v1"));
     }
 
     #[test]
