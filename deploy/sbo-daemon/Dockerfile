@@ -34,7 +34,7 @@ WORKDIR /src
 
 # Planner: clone the pinned source and distill the dependency graph to recipe.json.
 FROM chef AS planner
-ARG SBO_REV=903e6e5fbaeeebae8b7318c362a18efc8a72e706
+ARG SBO_REV=215857f4452f55ef22f1533d260cf520b3e7851a
 RUN git clone https://github.com/vthunder/sbo . \
     && git checkout "$SBO_REV"
 RUN cargo chef prepare --recipe-path recipe.json
@@ -42,7 +42,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Builder: cook deps (cached image layer, invalidated only by recipe.json), then
 # build the daemon against the real source (only changed workspace crates rebuild).
 FROM chef AS build
-ARG SBO_REV=903e6e5fbaeeebae8b7318c362a18efc8a72e706
+ARG SBO_REV=215857f4452f55ef22f1533d260cf520b3e7851a
 COPY --from=planner /src/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
