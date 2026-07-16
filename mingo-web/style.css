@@ -35,8 +35,14 @@
   --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
+/* Dark palette. Applied two ways so a MANUAL choice can win over the OS:
+   (1) the media query is the no-JS / first-paint default when the OS is dark;
+   (2) :root[data-theme="dark"] is what the in-app toggle sets — an attribute
+   selector (higher specificity than the bare :root in the media query), so a
+   forced light theme (:root[data-theme="light"], below) always overrides an
+   OS-dark media match. app.js sets data-theme on <html> for every session. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root { color-scheme: dark;
     --bg: #131218;
     --panel: #1c1b23;
     --panel-2: #232230;
@@ -62,6 +68,60 @@
     --sh-3: 0 20px 56px rgba(0,0,0,.6), 0 6px 18px rgba(0,0,0,.5);
     --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
   }
+}
+:root[data-theme="dark"] { color-scheme: dark;
+  --bg: #131218;
+  --panel: #1c1b23;
+  --panel-2: #232230;
+  --line: #2d2b39;
+  --line-2: #3a3849;
+  --ink: #eceaf3;
+  --ink-2: #cfccdb;
+  --muted: #9a97a9;
+  --faint: #6f6c7e;
+  --accent: #8f86ff;
+  --accent-ink: #14121c;
+  --accent-weak: #262340;
+  --accent-line: #3a356a;
+  --up: #ff7f4d;
+  --up-weak: #3a2417;
+  --ok: #2dd4bf;
+  --err: #ff6b6b;
+  --warn: #e0a94a;
+  --toast-bg: #2c2a38;
+  --toast-ink: #ececf2;
+  --sh-1: 0 1px 2px rgba(0,0,0,.4);
+  --sh-2: 0 4px 16px rgba(0,0,0,.42);
+  --sh-3: 0 20px 56px rgba(0,0,0,.6), 0 6px 18px rgba(0,0,0,.5);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+/* Forced light — re-point the tokens to the base (light) palette so it wins
+   even when the OS is dark (attribute selector beats the media-query :root). */
+:root[data-theme="light"] { color-scheme: light;
+  --bg: #f5f4f1;
+  --panel: #ffffff;
+  --panel-2: #faf9f7;
+  --line: #e7e3dc;
+  --line-2: #d9d4cb;
+  --ink: #1d1b26;
+  --ink-2: #3c3a48;
+  --muted: #6d6a78;
+  --faint: #94909f;
+  --accent: #5546e6;
+  --accent-ink: #ffffff;
+  --accent-weak: #ecebfd;
+  --accent-line: #d6d2fb;
+  --up: #ef6c2b;
+  --up-weak: #fdece1;
+  --ok: #0d9488;
+  --err: #d13d3d;
+  --warn: #b7791f;
+  --toast-bg: #24222e;
+  --toast-ink: #ececf2;
+  --sh-1: 0 1px 2px rgba(24,22,34,.05), 0 1px 3px rgba(24,22,34,.04);
+  --sh-2: 0 4px 14px rgba(24,22,34,.08), 0 1px 3px rgba(24,22,34,.06);
+  --sh-3: 0 18px 50px rgba(20,18,30,.24), 0 6px 16px rgba(20,18,30,.14);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 * { box-sizing: border-box; }
@@ -94,8 +154,46 @@ a { color: inherit; text-decoration: none; }
   color: var(--ink); cursor: pointer; padding: 2px 6px; margin-left: -4px; border-radius: var(--r-sm);
 }
 .nav-backdrop { display: none; }
-.auth-slot { font-size: 13.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.auth-slot { font-size: 13.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .auth-slot > .muted { color: var(--ink-2); font-weight: 600; }
+
+/* theme toggle — a small icon button in the topbar, visible signed in or out.
+   The glyph is swapped by app.js (☀ / ☾) to reflect the ACTIVE theme. */
+.theme-toggle {
+  border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-2);
+  width: 34px; height: 34px; padding: 0; border-radius: var(--pill); font-size: 16px;
+  line-height: 1; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+}
+.theme-toggle:hover { background: var(--panel-2); border-color: var(--muted); }
+
+/* user menu (topbar dropdown) */
+.user-menu { position: relative; }
+.user-btn {
+  display: inline-flex; align-items: center; gap: 8px; padding: 4px 9px 4px 5px;
+  border: 1px solid var(--line-2); background: var(--panel); border-radius: var(--pill);
+  font-weight: 600; color: var(--ink-2); max-width: 190px;
+}
+.user-btn:hover { background: var(--panel-2); border-color: var(--muted); }
+.user-btn .u-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.user-btn .u-caret { color: var(--faint); font-size: 10px; }
+
+/* generic popup menu — used by the user menu AND the post-card kebab */
+.menu-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; min-width: 176px; z-index: 120;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  box-shadow: var(--sh-3); padding: 5px; animation: pop .14s cubic-bezier(.2,.8,.3,1);
+}
+.menu-pop[hidden] { display: none; }
+.menu-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  border: none; background: none; padding: 8px 10px; border-radius: var(--r-xs);
+  color: var(--ink-2); font-weight: 500; font-size: 13.5px;
+}
+.menu-item:hover { background: var(--panel-2); color: var(--ink); border-color: transparent; }
+.menu-item svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--faint); }
+.menu-item.danger { color: var(--err); }
+.menu-item.danger:hover { background: color-mix(in srgb, var(--err) 10%, var(--panel-2)); color: var(--err); }
+.menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
 
 /* ---------------- layout ---------------- */
 .layout {
@@ -130,15 +228,27 @@ a { color: inherit; text-decoration: none; }
   padding: 16px 18px; margin-bottom: 13px; box-shadow: var(--sh-1);
 }
 
-/* feed rows: denser, scannable, real hover affordance */
+/* feed rows: a tidy CSS grid so the vote rail, header and body always line up.
+   Columns: [vote] [content] [kebab]. The vote rail spans both rows and stays
+   top-aligned with the header; the body sits under the content column only. */
 .feed-row {
-  display: flex; gap: 14px; align-items: flex-start; padding: 13px 16px;
+  display: grid; gap: 2px 14px; padding: 13px 16px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "vote head menu" "vote body body";
+  align-items: start;
   transition: border-color .14s, box-shadow .14s, transform .14s;
 }
 .feed-row:hover { border-color: var(--line-2); box-shadow: var(--sh-2); }
+.feed-row .fr-vote { grid-area: vote; }
+.feed-row .post-meta { grid-area: head; }
+.feed-row .fr-menu { grid-area: menu; }
+.feed-row .post-title, .feed-row .post-body { grid-area: body; }
+.feed-row.thread-post .post-body { margin-top: 6px; }
+
+/* vote rail — a compact stacked control aligned to the header row's top */
 .votes {
   display: flex; flex-direction: column; align-items: center; gap: 1px;
-  min-width: 34px; padding-top: 1px; color: var(--muted);
+  min-width: 30px; color: var(--muted);
 }
 .votes .up {
   color: var(--faint); font-size: 15px; line-height: 1; padding: 3px 6px; border-radius: var(--r-sm);
@@ -150,11 +260,23 @@ a { color: inherit; text-decoration: none; }
 
 .post-meta {
   color: var(--muted); font-size: 12.5px; display: flex; align-items: center;
-  gap: 6px; flex-wrap: wrap; line-height: 1.4;
+  gap: 6px 8px; flex-wrap: wrap; line-height: 1.4; min-width: 0;
 }
 .post-meta > * { display: inline-flex; align-items: center; }
-.byline { gap: 6px; color: var(--ink-2); font-weight: 600; }
+/* identicon LEFT of the name; a long email truncates instead of wrapping the row */
+.byline { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); font-weight: 600; max-width: 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.byline-link { max-width: 260px; }
+.post-meta .fr-time { color: var(--muted); }
 .post-title { font-weight: 600; font-size: 15.5px; margin: 5px 0 0; letter-spacing: -.01em; }
+
+/* post-card kebab (⋮) — top-right affordance folding receipt + edit + future items */
+.fr-menu { position: relative; }
+.kebab {
+  border: 1px solid transparent; background: none; color: var(--faint);
+  width: 28px; height: 28px; padding: 0; border-radius: var(--r-sm); font-size: 17px;
+  line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+}
+.kebab:hover, .kebab[aria-expanded="true"] { background: var(--panel-2); border-color: var(--line); color: var(--ink-2); }
 .post-title a { color: var(--ink); transition: color .12s; }
 .feed-row:hover .post-title a { color: var(--accent); }
 .post-body { white-space: pre-wrap; color: var(--ink-2); }
@@ -174,6 +296,12 @@ a { color: inherit; text-decoration: none; }
   .ctag { background: hsl(var(--ch) 34% 22%); color: hsl(var(--ch) 72% 78%); }
   .ctag:hover { filter: brightness(1.15); }
 }
+/* Manual-theme overrides for the board tag (attribute selectors win over the
+   media query above, so a forced theme is honored regardless of OS setting). */
+:root[data-theme="dark"] .ctag { background: hsl(var(--ch) 34% 22%); color: hsl(var(--ch) 72% 78%); }
+:root[data-theme="dark"] .ctag:hover { filter: brightness(1.15); }
+:root[data-theme="light"] .ctag { background: hsl(var(--ch) 68% 93%); color: hsl(var(--ch) 46% 38%); }
+:root[data-theme="light"] .ctag:hover { filter: brightness(.96); }
 
 .badge {
   display: inline-block; font-size: 11.5px; font-weight: 600; background: var(--accent-weak);
@@ -223,6 +351,19 @@ textarea { min-height: 94px; resize: vertical; }
 
 /* ---------------- headings + misc ---------------- */
 .h1 { font-size: 25px; font-weight: 800; letter-spacing: -.02em; margin: 4px 0 16px; }
+
+/* view header — a header block for the main column that aligns its top edge
+   with the sidebar's first card, so the two columns read as intentional. Folds
+   the title, subtitle/description and the primary action into one card. */
+.view-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+}
+.view-header .vh-main { min-width: 0; }
+.view-header .h1 { margin: 0; }
+.view-header .vh-sub { margin-top: 4px; font-size: 13.5px; }
+.view-header .vh-action { flex: 0 0 auto; }
+.view-title { display: flex; align-items: center; gap: 9px; }
+.view-title .cdot { width: 11px; height: 11px; }
 .h2 { font-size: 16.5px; font-weight: 700; letter-spacing: -.01em; margin: 18px 0 9px; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .comment { border-left: 2px solid var(--line-2); padding: 3px 0 3px 14px; margin: 12px 0; }
@@ -334,6 +475,11 @@ button.link.receipt:hover { color: var(--ok); border-color: color-mix(in srgb, v
   body.nav-open .nav-backdrop { opacity: 1; visibility: visible; }
   body.nav-open { overflow: hidden; }
   .community-list a { padding: 10px 9px; }
-  .feed-row { padding: 12px 13px; }
+  .feed-row { padding: 12px 13px; gap: 2px 10px; }
   .card { padding: 15px 15px; }
+  .topbar { gap: 8px; }
+  .user-btn { max-width: 128px; }
+  .view-header { gap: 10px; }
+  .view-header .vh-action button, .view-header .vh-action a.primary { padding: 7px 11px; }
+  .menu-pop { min-width: 168px; }
 }

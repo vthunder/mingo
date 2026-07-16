@@ -868,32 +868,82 @@ function toast(msg, ms = 3000) {
   if (ms > 0) toastTimer = setTimeout(() => (t.hidden = true), ms);
 }
 
+// ---------------------------------------------------------------------------
+// theme (light/dark). A manual choice is persisted in localStorage and wins over
+// the OS preference by stamping data-theme on <html>; the CSS re-points the same
+// tokens for :root[data-theme="dark"|"light"]. index.html sets the attribute
+// before first paint (no flash); here we keep the toggle button glyph in sync
+// and flip the choice live. Default (no stored choice) follows the OS.
+// ---------------------------------------------------------------------------
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme")
+    || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const btn = $("#theme-toggle");
+  if (btn) {
+    // Show the glyph of the theme you'd switch TO.
+    btn.textContent = theme === "dark" ? "☀" : "☾";
+    btn.setAttribute("title", theme === "dark" ? "Switch to light theme" : "Switch to dark theme");
+  }
+}
+function toggleTheme() {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  localStorage.setItem("mingo_theme", next);
+  applyTheme(next);
+}
+
 function renderAuth() {
   const slot = $("#auth-slot");
   if (session.email) {
-    const posterBtn = poster.enabled
-      ? `<button class="link" id="poster-toggle" title="mingo signs your posts — tap to turn off">📱 mingo posts: on</button>`
-      : `<button class="link" id="poster-toggle" title="Let mingo sign your posts so you don't get a popup each time (works on mobile)">📱 let mingo post for me</button>`;
-    slot.innerHTML = `<span class="muted">${esc(session.email)}</span> · ${posterBtn} · <button class="link" id="signout">sign out</button>`;
-    $("#signout").onclick = signOut;
-    $("#poster-toggle").onclick = onPosterToggle;
+    const name = shortAuthor(session.email);
+    slot.innerHTML = `<div class="user-menu">
+      <button class="user-btn" id="user-btn" aria-haspopup="true" aria-expanded="false">
+        ${identicon(session.email, 22)}<span class="u-name">${esc(name)}</span><span class="u-caret">▾</span>
+      </button>
+      <div class="menu-pop" id="user-pop" hidden role="menu">
+        <button class="menu-item" role="menuitem" id="menu-profile">${ICON_PROFILE}<span>Profile</span></button>
+        <button class="menu-item" role="menuitem" id="menu-settings">${ICON_SETTINGS}<span>Settings</span></button>
+        <div class="menu-sep"></div>
+        <button class="menu-item danger" role="menuitem" id="menu-signout">${ICON_SIGNOUT}<span>Sign out</span></button>
+      </div></div>`;
+    const btn = $("#user-btn"), pop = $("#user-pop");
+    btn.onclick = (e) => { e.stopPropagation(); toggleMenu(btn, pop); };
+    $("#menu-profile").onclick = () => { closeAllMenus(); location.hash = `#/passport/${encodeURIComponent(session.email)}`; };
+    $("#menu-settings").onclick = () => { closeAllMenus(); location.hash = "#/settings"; };
+    $("#menu-signout").onclick = () => { closeAllMenus(); signOut(); };
   } else {
     slot.innerHTML = `<button class="primary" id="signin">Sign in</button>`;
     $("#signin").onclick = signIn;
   }
 }
 
-// Enable or disable server-side signing. Enable raises the consent request and
-// surfaces a tap-through approval link, then polls until the warrant lands.
-async function onPosterToggle() {
-  if (poster.enabled) {
-    if (!confirm("Turn off mingo posting for you? You'll approve each post yourself again. (To fully revoke, use Manage at browserid.me.)")) return;
-    await disablePoster();
-    renderAuth();
-    toast("mingo will no longer post for you.");
-    return;
-  }
-  openPosterEnableModal();
+// Small inline icons for the user menu items (currentColor, no network).
+const ICON_PROFILE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5S20 17 20 21"/></svg>`;
+const ICON_SETTINGS = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>`;
+const ICON_SIGNOUT = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>`;
+const ICON_EDIT = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
+
+// ---------------------------------------------------------------------------
+// popup menus (user dropdown + post-card kebab). A single dismissal model:
+// clicking anywhere else or pressing Escape closes any open menu; opening one
+// closes the others. Menus are plain absolutely-positioned popovers toggled via
+// the [hidden] attribute so their action buttons (data-receipt/data-edit) keep
+// working with the existing wireReceiptButtons/wireEditButtons handlers.
+// ---------------------------------------------------------------------------
+function closeAllMenus() {
+  document.querySelectorAll(".menu-pop").forEach((p) => {
+    if (p.hidden) return;
+    p.hidden = true;
+    const trigger = p.previousElementSibling || document.querySelector(`[aria-controls="${p.id}"]`);
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+  });
+}
+function toggleMenu(trigger, pop) {
+  const willOpen = pop.hidden;
+  closeAllMenus();
+  if (willOpen) { pop.hidden = false; trigger.setAttribute("aria-expanded", "true"); }
 }
 
 // The open poster modal's controls, so the same-tab consent round-trip can
@@ -1060,7 +1110,6 @@ async function renderChrome() {
     const sr = await stateRoot();
     $("#state-root").textContent = `block ${sr.block} · root ${sr.state_root.slice(0, 10)}…`;
   } catch {}
-  if (session.email) $("#passport-link").setAttribute("href", `#/passport/${encodeURIComponent(session.email)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1068,7 +1117,10 @@ async function renderChrome() {
 // ---------------------------------------------------------------------------
 async function viewHub() {
   const main = $("#main");
-  main.innerHTML = `<div class="h1">Your feed</div><div id="feed" class="muted">loading…</div>`;
+  main.innerHTML = `<div class="card view-header">
+      <div class="vh-main"><div class="h1">Your feed</div>
+        <div class="muted vh-sub">Top posts across your communities</div></div>
+    </div><div id="feed" class="muted">loading…</div>`;
   const comms = window.__comms || (await getCommunities());
   const votes = await getVoteCounts();
   const rows = [];
@@ -1081,17 +1133,43 @@ async function viewHub() {
   wireVoteButtons();
   wireReceiptButtons();
   wireEditButtons();
+  wireCardMenus();
   startLivePoll(() => pollFeed("hub"));
 }
 
 function feedRow(p, votes, showComm = true) {
   const pending = p.confirmed === false;
   return `<div class="card feed-row${pending ? " pending" : ""}">
-    <div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div>
-    <div style="flex:1">
-      <div class="post-meta">${showComm ? `${boardTag(p.comm)} ` : ""}${authorLink(p.authorRef, p.author)}${timeAgo(p.ts)}${editedTag(p)}${pending ? ` · <span class="muted">pending…</span>` : ""}${receiptLink(p)}${editLink(p)}</div>
-      <div class="post-title" data-body="${esc(p.uri)}"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
+    <div class="fr-vote"><div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div></div>
+    <div class="post-meta">${showComm ? boardTag(p.comm) : ""}${authorLink(p.authorRef, p.author)}<span class="fr-time">${timeAgo(p.ts)}</span>${editedTag(p)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
+    ${cardMenu(p)}
+    <div class="post-title" data-body="${esc(p.uri)}"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
+  </div>`;
+}
+
+// The top-right kebab (⋮) menu for a post card. Folds the receipt and (owner-
+// only) edit affordances into one popover, keeping their existing data-receipt /
+// data-edit hooks so wireReceiptButtons/wireEditButtons still bind them. Future
+// items (report/delete) slot in as more .menu-item buttons here. Registers the
+// item in receiptItems so both actions can look it up (as receiptLink did).
+function cardMenu(item) {
+  receiptItems.set(item.uri, item);
+  const editItem = ownItem(item)
+    ? `<button class="menu-item" role="menuitem" data-edit="${esc(item.uri)}">${ICON_EDIT}<span>Edit</span></button>`
+    : "";
+  const popId = `m-${hashStr(item.uri).toString(36)}`;
+  return `<div class="fr-menu">
+    <button class="kebab" aria-haspopup="true" aria-expanded="false" aria-controls="${popId}" aria-label="More actions" title="More">⋮</button>
+    <div class="menu-pop" id="${popId}" hidden role="menu">
+      <button class="menu-item" role="menuitem" data-receipt="${esc(item.uri)}">${RECEIPT_ICON}<span>Receipt</span></button>
+      ${editItem}
     </div></div>`;
+}
+function wireCardMenus() {
+  document.querySelectorAll(".kebab").forEach((b) => {
+    const pop = b.nextElementSibling;
+    b.onclick = (e) => { e.stopPropagation(); toggleMenu(b, pop); };
+  });
 }
 
 async function viewCommunity(commId) {
@@ -1106,9 +1184,13 @@ async function viewCommunity(commId) {
       ? `<button class="primary" id="newpost">+ New post</button>`
       : `<button class="primary" id="join">Join to post</button>`;
   main.innerHTML = `
-    <div class="row-between"><div class="h1">c/${esc(c.id)} ${c.open ? "✓" : ""}</div>
-      ${actionBtn}</div>
-    <div class="card muted">${esc(c.description || "")}</div>
+    <div class="card view-header">
+      <div class="vh-main">
+        <div class="view-title"><span class="cdot" style="--ch:${boardHue(c.id)}"></span><div class="h1">c/${esc(c.id)}${c.open ? " ✓" : ""}</div></div>
+        ${c.description ? `<div class="muted vh-sub">${esc(c.description)}</div>` : ""}
+      </div>
+      <div class="vh-action">${actionBtn}</div>
+    </div>
     <div id="compose"></div>
     <div id="posts" class="muted">loading…</div>`;
   if (session.email && member) $("#newpost").onclick = () => showCompose(c.id);
@@ -1131,6 +1213,7 @@ async function viewCommunity(commId) {
   wireVoteButtons();
   wireReceiptButtons();
   wireEditButtons();
+  wireCardMenus();
   startLivePoll(() => pollFeed("community", c.id));
 }
 
@@ -1174,9 +1257,11 @@ async function viewThread(commId, postId) {
   const kids = comments.filter((c) => c.parent === post.uri);
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
-    <div class="card"><div class="post-meta">${authorLink(post.authorRef, post.author, 22)}${timeAgo(post.ts)}${editedTag(post)}${receiptLink(post)}${editLink(post)}</div>
+    <div class="card feed-row thread-post">
+      <div class="fr-vote"><div class="votes"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲</button><span class="n" data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div></div>
+      <div class="post-meta">${authorLink(post.authorRef, post.author, 22)}<span class="fr-time">${timeAgo(post.ts)}</span>${editedTag(post)}</div>
+      ${cardMenu(post)}
       <div class="post-body" data-body="${esc(post.uri)}">${esc(post.body)}</div>
-      <div style="margin-top:8px"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲ upvote</button> · <span data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div>
     </div>
     <div class="h2">Comments</div>
     <div class="card"><textarea id="c-body" placeholder="Add a comment…"></textarea>
@@ -1207,6 +1292,7 @@ async function viewThread(commId, postId) {
   wireVoteButtons();
   wireReceiptButtons();
   wireEditButtons();
+  wireCardMenus();
   startLivePoll(() => pollThread(commId, post));
 }
 function commentBox(c, votes) {
@@ -1502,6 +1588,17 @@ async function renderReceipt(item, body) {
   });
 }
 
+// The user's Profile (route/function still named "passport" internally; the
+// user-facing label everywhere is "Profile"). Structure: identicon + name,
+// Badges, Member of, Vouched by, and a Vouch button on others' profiles.
+//
+// PLANNED (bean mingo-chzb) — a Reddit-style profile. NOT built yet; the
+// structure below is left ready for these to slot in without a rework:
+//   · karma / contribution count (aggregate of upvotes on the subject's items)
+//   · account age ("member since", from the earliest owned object)
+//   · Posts / Comments tabs listing the subject's authored content
+//   · follow / share / report buttons in the header action slot (#pp-vouch)
+// Do NOT implement these here — leave the header + section scaffold intact.
 async function viewPassport(subject) {
   const main = $("#main");
   subject = subject || session.email;
@@ -1530,8 +1627,7 @@ async function viewPassport(subject) {
     <div class="card pp-sec"><div class="h2">Vouched by</div>
       ${vouches.length
         ? `<div class="vouch-list">${vouches.map((a) => `<a class="byline-link vouch-item" href="#/passport/${encodeURIComponent(a.issuer)}">${identicon(a.issuer, 18)}${esc(shortAuthor(a.issuer))}</a>`).join("")}</div>`
-        : `<div class="muted">No vouches yet.</div>`}</div>
-    <div class="card muted">This is yours. It travels with you across every community here.</div></div>`;
+        : `<div class="muted">No vouches yet.</div>`}</div></div>`;
 
   const vslot = $("#pp-vouch");
   if (vslot && canVouch) {
@@ -1552,6 +1648,51 @@ async function viewPassport(subject) {
       }
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// settings (route #/settings). Surfaces the mingo-poster status and lets the
+// user turn server-side posting OFF (disablePoster) or ON (the existing
+// openPosterEnableModal, the same recommended, mobile-safe consent flow the
+// write-time prompt uses). Replaces the old standalone "let mingo post for me"
+// auth-area link — writes still fall back to that modal via ensureCanWrite.
+// ---------------------------------------------------------------------------
+async function viewSettings() {
+  const main = $("#main");
+  if (!session.email) { main.innerHTML = `<div class="card">Sign in to view settings.</div>`; return; }
+  main.innerHTML = `<div class="card view-header"><div class="vh-main"><div class="h1">Settings</div>
+    <div class="muted vh-sub">Signed in as ${esc(session.email)}</div></div></div>
+    <div id="settings-body" class="muted">loading…</div>`;
+  await refreshPosterStatus();
+  const render = () => {
+    const on = poster.enabled;
+    $("#settings-body").outerHTML = `<div id="settings-body">
+      <div class="card">
+        <div class="row-between">
+          <div style="min-width:0">
+            <div class="h2" style="margin:0">Posting on your behalf</div>
+            <div class="muted tiny" style="margin-top:4px">mingo posts for you: <strong class="${on ? "confirmed" : ""}">${on ? "on" : "off"}</strong></div>
+          </div>
+          <button class="${on ? "" : "primary"}" id="poster-btn">${on ? "Turn off" : "Turn on"}</button>
+        </div>
+        <p class="muted tiny" style="margin-top:10px">When on, mingo signs your posts,
+          comments and votes for you — no signing pop-up each time, and it works on
+          mobile. ${on ? "To fully revoke, use Manage at browserid.me." : "You approve once on browserid.me."}</p>
+      </div></div>`;
+    $("#poster-btn").onclick = async () => {
+      if (poster.enabled) {
+        const btn = $("#poster-btn");
+        btn.disabled = true; btn.textContent = "Turning off…";
+        await disablePoster();
+        toast("mingo will no longer post for you.");
+        renderAuth();
+        render();
+      } else {
+        if (await openPosterEnableModal()) { renderAuth(); render(); }
+      }
+    };
+  };
+  render();
 }
 
 // ---------------------------------------------------------------------------
@@ -1600,7 +1741,7 @@ function liveAppend(container, items, render) {
     container.appendChild(el(render(it)));
     added = true;
   }
-  if (added) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); }
+  if (added) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); wireCardMenus(); }
 }
 async function pollFeed(kind, commId) {
   const votes = await getVoteCounts();
@@ -1640,6 +1781,7 @@ async function route() {
     if (h === "#/" || h === "") return void (await viewHub());
     if (parts[0] === "c" && parts[2] === "p") return void (await viewThread(parts[1], parts[3]));
     if (parts[0] === "c") return void (await viewCommunity(parts[1]));
+    if (parts[0] === "settings") return void (await viewSettings());
     if (parts[0] === "passport") return void (await viewPassport(decodeURIComponent(parts[1] || "")));
     await viewHub();
   } catch (e) {
@@ -1649,6 +1791,23 @@ async function route() {
 
 document.querySelector(".brand").onclick = () => (location.hash = "#/");
 window.addEventListener("hashchange", route);
+
+// Theme toggle: reflect the active theme on the button and flip on click.
+applyTheme(currentTheme());
+$("#theme-toggle").onclick = toggleTheme;
+// If the user hasn't made a manual choice, follow live OS changes.
+if (window.matchMedia) {
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+    if (!localStorage.getItem("mingo_theme")) applyTheme(e.matches ? "dark" : "light");
+  });
+}
+
+// Global dismissal for popup menus (user dropdown + post-card kebabs): any click
+// outside an open menu, or Escape, closes them.
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".menu-pop, .kebab, .user-btn")) closeAllMenus();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAllMenus(); });
 
 // Mobile nav drawer: hamburger toggles it; backdrop, navigation, and Escape
 // close it. (On desktop the sidebar is a normal column and none of this shows.)

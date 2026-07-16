@@ -7,6 +7,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mingo</title>
+  <!-- Set the theme BEFORE first paint so there's no flash of the wrong palette.
+       A manual choice (localStorage) wins; otherwise default to the OS preference.
+       app.js reuses the same key + attribute for its live toggle. -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("mingo_theme");
+        var theme = saved || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme", theme);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -14,6 +26,7 @@
     <button id="nav-toggle" class="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">☰</button>
     <div class="brand" data-route="#/">mingo</div>
     <div class="spacer"></div>
+    <button id="theme-toggle" class="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme"></button>
     <div id="auth-slot" class="auth-slot"><!-- sign in / who am i --></div>
   </header>
 
@@ -24,12 +37,6 @@
       <div class="side-section">
         <div class="side-h">Communities</div>
         <ul id="community-list" class="community-list"><li class="muted">loading…</li></ul>
-      </div>
-      <div class="side-section">
-        <div class="side-h">You</div>
-        <ul class="community-list">
-          <li><a id="passport-link" href="#/passport">🎖 Passport</a></li>
-        </ul>
       </div>
       <div class="side-section">
         <div class="side-h">Daemon</div>
