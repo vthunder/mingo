@@ -189,6 +189,34 @@ enum Commands {
         #[arg(long)]
         execute: bool,
     },
+
+    /// Rewrite ONLY `roles.admin` in the LIVE root policy (/sys/policies/ id
+    /// root) to migrate Mingo admin from the baked sys key to an external email
+    /// identity. Fetches the current root policy, preserves every other field
+    /// exactly, and re-posts a KEY-ROOTED policy.v2 update signed by the sys key.
+    /// DRY-RUN by default (prints current vs proposed admin + a preservation
+    /// proof); pass --execute to submit. Dropping the sys key from admin is an
+    /// irreversible cutover and additionally requires --i-understand-cutover.
+    SetRootAdmin {
+        /// FULL admin member list (repeatable). Each entry is a key
+        /// (`ed25519:<hex>` / `key:<hex>` → `{"key":...}`) or an email/name
+        /// (→ `{"name":...}`). E.g. `--admin ed25519:564a… --admin
+        /// danmills@sandmill.org` for the dual-admin transition.
+        #[arg(long)]
+        admin: Vec<String>,
+        /// SBO daemon origin (read the current policy + submit the update).
+        #[arg(long, default_value = "https://da.sandmill.org")]
+        daemon: String,
+        /// Sys key file (signs the update; ~ expanded).
+        #[arg(long, default_value = "~/secure-backup/mingo-sys.key")]
+        sys_key_file: String,
+        /// Actually submit the update (default is a dry-run print).
+        #[arg(long)]
+        execute: bool,
+        /// Acknowledge the irreversible cutover (proposed admin drops the sys key).
+        #[arg(long)]
+        i_understand_cutover: bool,
+    },
 }
 
 /// Load a transient domain signing key from `{"secret_key":"<hex 32-byte seed>"}`
@@ -430,6 +458,21 @@ fn main() -> Result<()> {
                 only,
                 keep,
                 execute,
+            })?;
+        }
+        Commands::SetRootAdmin {
+            admin,
+            daemon,
+            sys_key_file,
+            execute,
+            i_understand_cutover,
+        } => {
+            mingo_app::set_root_admin::run(&mingo_app::set_root_admin::SetRootAdminArgs {
+                admin,
+                daemon,
+                sys_key_file,
+                execute,
+                i_understand_cutover,
             })?;
         }
     }

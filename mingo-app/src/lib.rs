@@ -18,3 +18,4 @@ pub mod community;
 pub mod genesis;
 pub mod livetest;
 pub mod seed;
+pub mod set_root_admin;
