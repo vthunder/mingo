@@ -531,6 +531,62 @@ fn settle_absent(ctx: &Ctx, path: &str, id: &str, sub: &Submitted) -> Outcome {
     }
 }
 
+/// Poll until a delete-that-should-succeed has removed the object from head
+/// (`/v1/object` 404s). The object is expected to START present (confirmed) and
+/// disappear; during the delete's confirmation window the daemon still serves it
+/// as `confirmed:false`, so we keep waiting until it is truly gone. A delete
+/// denied at submit fails fast.
+fn wait_deleted(ctx: &Ctx, path: &str, id: &str, sub: &Submitted) -> Outcome {
+    if !sub.accepted {
+        return Outcome::Fail(format!(
+            "delete denied at submit: {}",
+            sub.reason.clone().unwrap_or_default()
+        ));
+    }
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        match get_object(ctx, path, id) {
+            Ok(None) => return Outcome::Pass,
+            Ok(Some(_)) => {} // still present (pending delete or not yet applied) — wait
+            Err(e) => return Outcome::Error(format!("{e:#}")),
+        }
+        if Instant::now() >= deadline {
+            return Outcome::Timeout(format!(
+                "object still present at {path}{id} — delete never took effect"
+            ));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Gate a dependent step on a prerequisite write being CONFIRMED in head (a
+/// membership, an attestation, a post a later step deletes). Errors if it never
+/// confirms — a broken precondition is a runner error, not a product FAIL.
+fn require_present(ctx: &Ctx, path: &str, id: &str, what: &str) -> Result<()> {
+    match settle_present(ctx, path, id, None) {
+        Outcome::Pass => {
+            println!("  · confirmed {what} in head");
+            Ok(())
+        }
+        other => bail!("{what} never confirmed in head: {}", other.note()),
+    }
+}
+
+/// Self-issue `membership:<comm>` and block until it is confirmed in head, so a
+/// subsequent post/delete is authorized at submit-time validation.
+fn join_and_confirm(ctx: &Ctx, actor: &Provisioned, comm: &str) -> Result<()> {
+    let sub = self_issue_membership(ctx, actor, comm)?;
+    if !sub.accepted {
+        bail!(
+            "membership self-issue denied at submit: {}",
+            sub.reason.unwrap_or_default()
+        );
+    }
+    let addr = &actor.email;
+    let path = format!("/u/{addr}/attestations/{addr}/");
+    require_present(ctx, &path, &format!("membership-{comm}"), &format!("{addr} membership:{comm}"))
+}
+
 // ---- write builders (reusing seed::assemble_write) ------------------------
 
 /// A member self-issues `membership:cooks` — the SPA's joinHub shape, exactly
@@ -717,7 +773,7 @@ fn run_scenario(ctx: &mut Ctx, id: &str) -> Result<Outcome> {
 /// be disregarded (no `govern`). Headline security test for the capture fix.
 fn s1_capture_fix(ctx: &mut Ctx) -> Result<Outcome> {
     let alice = provision(ctx, "s1-alice")?;
-    self_issue_membership(ctx, &alice, "cooks")?;
+    join_and_confirm(ctx, &alice, "cooks")?;
     // A subtree the member controls no policy over.
     let sub = format!("/communities/cooks/spaces/general/{}/", oid(ctx, "s1"));
     let wire_bytes = assemble_policy(&alice, &sub)?;
@@ -737,7 +793,7 @@ fn s2_non_member_denied(ctx: &mut Ctx) -> Result<Outcome> {
 /// S3 — self-issue membership, then post → applied.
 fn s3_member_can_post(ctx: &mut Ctx) -> Result<Outcome> {
     let member = provision(ctx, "s3-member")?;
-    self_issue_membership(ctx, &member, "cooks")?;
+    join_and_confirm(ctx, &member, "cooks")?;
     let id = oid(ctx, "s3-post");
     let sub = write_post(ctx, &member, &id, "member post (should apply)")?;
     if !sub.accepted {
@@ -754,8 +810,8 @@ fn s3_member_can_post(ctx: &mut Ctx) -> Result<Outcome> {
 fn s4_owner_only_update(ctx: &mut Ctx) -> Result<Outcome> {
     let a = provision(ctx, "s4-a")?;
     let b = provision(ctx, "s4-b")?;
-    self_issue_membership(ctx, &a, "cooks")?;
-    self_issue_membership(ctx, &b, "cooks")?;
+    join_and_confirm(ctx, &a, "cooks")?;
+    join_and_confirm(ctx, &b, "cooks")?;
     let id = oid(ctx, "s4-post");
     let original = "A's original post";
     let sub_a = write_post(ctx, &a, &id, original)?;
@@ -763,9 +819,7 @@ fn s4_owner_only_update(ctx: &mut Ctx) -> Result<Outcome> {
         return Ok(Outcome::Fail("A's post denied at submit".to_string()));
     }
     // Ensure A's post is confirmed before B attempts the hijack.
-    if let Outcome::Timeout(m) = settle_present(ctx, &space(), &id, Some(original)) {
-        return Ok(Outcome::Timeout(format!("A's post never confirmed: {m}")));
-    }
+    require_present(ctx, &space(), &id, "A's post")?;
     // B rewrites the SAME (path,id) as themselves.
     let path = space();
     let payload = serde_json::to_vec(&serde_json::json!({
@@ -797,17 +851,17 @@ fn s4_owner_only_update(ctx: &mut Ctx) -> Result<Outcome> {
 /// S5 — A deletes their own post → gone from head.
 fn s5_author_delete(ctx: &mut Ctx) -> Result<Outcome> {
     let a = provision(ctx, "s5-a")?;
-    self_issue_membership(ctx, &a, "cooks")?;
+    join_and_confirm(ctx, &a, "cooks")?;
     let id = oid(ctx, "s5-post");
     let sub = write_post(ctx, &a, &id, "post to self-delete")?;
     if !sub.accepted {
         return Ok(Outcome::Fail("post denied at submit".to_string()));
     }
-    if let Outcome::Timeout(m) = settle_present(ctx, &space(), &id, None) {
-        return Ok(Outcome::Timeout(format!("post never confirmed before delete: {m}")));
-    }
+    // The post must be CONFIRMED before the author deletes it (the delete's
+    // owner check reads confirmed head state).
+    require_present(ctx, &space(), &id, "post to delete")?;
     let del = write_delete(ctx, &a, &space(), &id, "post.v1")?;
-    Ok(settle_absent(ctx, &space(), &id, &del))
+    Ok(wait_deleted(ctx, &space(), &id, &del))
 }
 
 /// S6 — appoint a moderator (role:moderator:cooks by cooks@mingo.place), then
@@ -815,8 +869,8 @@ fn s5_author_delete(ctx: &mut Ctx) -> Result<Outcome> {
 fn s6_moderator_delete(ctx: &mut Ctx) -> Result<Outcome> {
     let victim = provision(ctx, "s6-victim")?;
     let moderator = provision(ctx, "s6-mod")?;
-    self_issue_membership(ctx, &victim, "cooks")?;
-    self_issue_membership(ctx, &moderator, "cooks")?;
+    join_and_confirm(ctx, &victim, "cooks")?;
+    join_and_confirm(ctx, &moderator, "cooks")?;
 
     // The community issuer cooks@mingo.place appoints the moderator. Mint its
     // identity cert the same way `appoint-moderator` does (handle "cooks").
@@ -836,23 +890,21 @@ fn s6_moderator_delete(ctx: &mut Ctx) -> Result<Outcome> {
             appt.reason.unwrap_or_default()
         )));
     }
-    // Wait for the role attestation to confirm so the delete's policy check sees it.
+    // The role attestation MUST be confirmed in head before the moderator's
+    // delete — otherwise submit-time validation sees no role and denies it
+    // (the S6 failure the first live run hit).
     let appt_path = format!("/u/{}/attestations/{}/", issuer.email, moderator.email);
-    if let Outcome::Timeout(m) = settle_present(ctx, &appt_path, "role:moderator:cooks", None) {
-        return Ok(Outcome::Timeout(format!("moderator role never confirmed: {m}")));
-    }
+    require_present(ctx, &appt_path, "role:moderator:cooks", "moderator role attestation")?;
 
-    // Victim posts; moderator deletes it.
+    // Victim posts; the post must confirm before the moderator deletes it.
     let id = oid(ctx, "s6-post");
     let vpost = write_post(ctx, &victim, &id, "victim post for moderator delete")?;
     if !vpost.accepted {
         return Ok(Outcome::Fail("victim post denied at submit".to_string()));
     }
-    if let Outcome::Timeout(m) = settle_present(ctx, &space(), &id, None) {
-        return Ok(Outcome::Timeout(format!("victim post never confirmed: {m}")));
-    }
+    require_present(ctx, &space(), &id, "victim post")?;
     let del = write_delete(ctx, &moderator, &space(), &id, "post.v1")?;
-    Ok(settle_absent(ctx, &space(), &id, &del))
+    Ok(wait_deleted(ctx, &space(), &id, &del))
 }
 
 /// S7 — a plain member tries to delete ANOTHER member's post → denied, post
@@ -860,16 +912,14 @@ fn s6_moderator_delete(ctx: &mut Ctx) -> Result<Outcome> {
 fn s7_non_moderator_delete(ctx: &mut Ctx) -> Result<Outcome> {
     let owner = provision(ctx, "s7-owner")?;
     let other = provision(ctx, "s7-other")?;
-    self_issue_membership(ctx, &owner, "cooks")?;
-    self_issue_membership(ctx, &other, "cooks")?;
+    join_and_confirm(ctx, &owner, "cooks")?;
+    join_and_confirm(ctx, &other, "cooks")?;
     let id = oid(ctx, "s7-post");
     let sub = write_post(ctx, &owner, &id, "owner post, other tries to delete")?;
     if !sub.accepted {
         return Ok(Outcome::Fail("owner post denied at submit".to_string()));
     }
-    if let Outcome::Timeout(m) = settle_present(ctx, &space(), &id, None) {
-        return Ok(Outcome::Timeout(format!("owner post never confirmed: {m}")));
-    }
+    require_present(ctx, &space(), &id, "owner post")?;
     let del = write_delete(ctx, &other, &space(), &id, "post.v1")?;
     if del.accepted {
         // A disregarded delete: wait past finality, then confirm the post survived.
