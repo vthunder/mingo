@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-07-16T21:22:25Z
-updated_at: 2026-07-17T00:14:07Z
+updated_at: 2026-07-17T06:43:18Z
 parent: mingo-6phv
 blocked_by:
     - mingo-gj9r
@@ -51,3 +51,9 @@ Verification: `node --check mingo-web/app.js` and `cargo build -p mingo-idp` bot
 - Community policy grant (moderator-role delete): part of the regenesis (mingo-qjkf), landing separately — `community_policy_open` in `mingo-app/src/genesis.rs` already carries it.
 - Moderator attestation issuance UI (grant/revoke `role:moderator`): OUT OF SCOPE — needs board-creator identity / user-created boards (mingo-gj9r).
 - `mod:remove` audit-trail companion attestation: not in this UI phase'\''s scope.
+
+## Appointment path added (2026-07-17)
+
+`mingo appoint-moderator <commId> <subject>` CLI subcommand (commit 9ec9336): mints a `<commId>@mingo.place` issuer cert via mingo-idp /admin/provision, assembles an attestation.v1 (Owner=issuer, type=role:moderator:<commId>, subject) at /u/<issuer>/attestations/<subject>/, submits to the daemon. Dry-run by default; --execute to write. This is the "set the attestation from sys" mechanism (sbo CLI cannot — it attaches no attribution cert for an email issuer). With this, moderator-delete is end-to-end appointable+exercisable on the live chain.
+
+Still open: grant/revoke moderator UI in the SPA (board-creator-only; awaits user-created boards mingo-gj9r for the general case — for genesis boards, appointment is via this CLI).
