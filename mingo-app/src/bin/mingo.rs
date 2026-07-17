@@ -175,6 +175,10 @@ enum Commands {
         /// Env var holding the IdP admin token (X-Admin-Token).
         #[arg(long, default_value = "MINGO_ADMIN_TOKEN")]
         admin_token_env: String,
+        /// Sys key file for the P2-P4 policy scenarios (S9-S13). Same format as
+        /// `seed --sys-key` (`ed25519:<hex>` or JSON `{"secret_key": <hex>}`).
+        #[arg(long, default_value = "~/secure-backup/mingo-sys.key")]
+        sys_key_file: String,
         /// Restrict to specific scenarios, comma-separated (e.g. --only S1,S2).
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
@@ -413,6 +417,7 @@ fn main() -> Result<()> {
             idp,
             daemon,
             admin_token_env,
+            sys_key_file,
             only,
             keep,
             execute,
@@ -421,6 +426,7 @@ fn main() -> Result<()> {
                 idp,
                 daemon,
                 admin_token_env,
+                sys_key_file,
                 only,
                 keep,
                 execute,

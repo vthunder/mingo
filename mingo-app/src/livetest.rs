@@ -57,6 +57,8 @@ pub struct LiveTestArgs {
     pub daemon: String,
     /// Env var holding the IdP admin token (X-Admin-Token).
     pub admin_token_env: String,
+    /// Sys key file for the P2-P4 policy scenarios (S9-S13).
+    pub sys_key_file: String,
     /// Restrict to these scenario ids (e.g. `["S1","S2"]`); empty = all.
     pub only: Vec<String>,
     /// Keep test objects at the end (skip cleanup).
@@ -163,6 +165,50 @@ pub fn scenarios() -> Vec<Scenario> {
             detail: "issuer bans a member; that member's post → disregarded. \
                      (NOT YET IMPLEMENTED — SKIP.)",
         },
+        // P2-P4 policy-delegation scenarios. Sys-signed policy objects installed
+        // under a throwaway /livetest-p234-<runid>-*/ subtree (need --sys-key-file).
+        Scenario {
+            id: "S9",
+            title: "P2 pinning immunity (sovereignty vs revocable)",
+            expect: Expect::Present,
+            implemented: true,
+            detail: "ancestor A grants sys govern; child C pins A@v1, sibling D \
+                     tracks. Amend A→v2 removing sys govern. Update C (pinned) \
+                     APPLIES; update D (tracking) DENIED.",
+        },
+        Scenario {
+            id: "S10",
+            title: "P2 creation pin must be latest",
+            expect: Expect::Present,
+            implemented: true,
+            detail: "with A at latest, a child pinned to a STALE A hash is \
+                     REJECTED; a child pinned to the latest hash is ACCEPTED.",
+        },
+        Scenario {
+            id: "S11",
+            title: "P2 forward-only pin advance",
+            expect: Expect::Present,
+            implemented: true,
+            detail: "child pinned to A@v2; amend A→v3. Update child pin→v3 \
+                     (forward) ACCEPTED; update pin→older (backward) REJECTED.",
+        },
+        Scenario {
+            id: "S12",
+            title: "P3 descendant-constraint (subset grants + mandated restriction)",
+            expect: Expect::Present,
+            implemented: true,
+            detail: "A templates allowed_grants G + mandated restriction R. Child \
+                     with grant exceeding G REJECTED; child missing R REJECTED; \
+                     child subset-of-G carrying R ACCEPTED.",
+        },
+        Scenario {
+            id: "S13",
+            title: "P4 no-pin (forbid_pinning)",
+            expect: Expect::Present,
+            implemented: true,
+            detail: "A sets descendant_constraint.forbid_pinning. A PINNED child \
+                     REJECTED; an unpinned (tracking) child ACCEPTED.",
+        },
     ]
 }
 
@@ -246,6 +292,8 @@ struct ObjView {
     block: u64,
     #[serde(default)]
     value: serde_json::Value,
+    #[serde(default)]
+    object_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,6 +360,31 @@ struct Ctx {
     keep: bool,
     /// Objects written this run (path, id) — deleted at the end unless --keep.
     written: Vec<(String, String)>,
+    /// Sys signing key + its `ed25519:<hex>` owner string, for the P2-P4 policy
+    /// scenarios. None when no sys key file loaded (S9-S13 then SKIP).
+    sys: Option<SysKey>,
+    /// Sys-owned policy objects installed this run (path, id) — swept in cleanup.
+    written_policies: Vec<(String, String)>,
+}
+
+/// The sys identity for key-rooted policy writes: the signing key (admin role /
+/// govern on `/**`) and its owner reference (`ed25519:<hex pubkey>`).
+struct SysKey {
+    key: SigningKey,
+    owner: String,
+}
+
+/// Load the sys key from a file (same formats as `seed --sys-key`), deriving its
+/// `ed25519:<hex>` owner string. `~` is expanded to $HOME.
+fn load_sys_key(path: &str) -> Result<SysKey> {
+    let expanded = if let Some(rest) = path.strip_prefix("~/") {
+        format!("{}/{}", std::env::var("HOME").unwrap_or_default(), rest)
+    } else {
+        path.to_string()
+    };
+    let key = crate::seed::load_signing_key_file(&expanded)?;
+    let owner = format!("ed25519:{}", hex::encode(key.public_key().bytes));
+    Ok(SysKey { key, owner })
 }
 
 fn now_s() -> i64 {
@@ -344,6 +417,19 @@ fn execute(args: &LiveTestArgs, domain: &str, chosen: &[&Scenario]) -> Result<()
     // /sys/dnssec/<domain> proof — refresh it once up front.
     ensure_dnssec_fresh(&client, &args.daemon, domain, now_s())?;
 
+    // Load the sys key for the P2-P4 policy scenarios (best-effort: if it's
+    // absent, S9-S13 SKIP rather than aborting the identity scenarios).
+    let sys = match load_sys_key(&args.sys_key_file) {
+        Ok(s) => {
+            println!("Sys key loaded ({}) for P2-P4 policy scenarios", s.owner);
+            Some(s)
+        }
+        Err(e) => {
+            println!("Sys key not loaded ({e:#}) — P2-P4 scenarios (S9-S13) will SKIP");
+            None
+        }
+    };
+
     let mut ctx = Ctx {
         client,
         idp: args.idp.clone(),
@@ -353,6 +439,8 @@ fn execute(args: &LiveTestArgs, domain: &str, chosen: &[&Scenario]) -> Result<()
         runid: make_runid(),
         keep: args.keep,
         written: Vec::new(),
+        sys,
+        written_policies: Vec::new(),
     };
     println!("Run id: {} (test ids prefixed livetest-{}-)", ctx.runid, ctx.runid);
     println!();
@@ -374,7 +462,11 @@ fn execute(args: &LiveTestArgs, domain: &str, chosen: &[&Scenario]) -> Result<()
     if !ctx.keep {
         cleanup(&mut ctx);
     } else {
-        println!("--keep: leaving {} test object(s) on-chain.", ctx.written.len());
+        println!(
+            "--keep: leaving {} content + {} policy object(s) on-chain.",
+            ctx.written.len(),
+            ctx.written_policies.len()
+        );
     }
 
     print_summary(&results);
@@ -653,7 +745,7 @@ fn write_delete(
     id: &str,
     schema: &str,
 ) -> Result<Submitted> {
-    let wire_bytes = assemble_delete(&actor.key, &actor.cert, path, id, schema, &actor.email)?;
+    let wire_bytes = assemble_delete(&actor.key, Some(&actor.cert), path, id, schema, &actor.email)?;
     submit(ctx, &wire_bytes, &format!("delete {id} by {}", actor.email))
 }
 
@@ -700,7 +792,7 @@ fn space() -> String {
 /// identity cert. Parallels `seed::assemble_write` but for `Action::Delete`.
 fn assemble_delete(
     signing_key: &SigningKey,
-    auth_cert: &str,
+    auth_cert: Option<&str>,
     path: &str,
     id: &str,
     schema: &str,
@@ -724,7 +816,7 @@ fn assemble_delete(
         related: None,
         hlc: None,
         prev: None,
-        auth_cert: Some(auth_cert.to_string()),
+        auth_cert: auth_cert.map(str::to_string),
         auth_evidence: None,
         auth_warrant: None,
     };
@@ -765,7 +857,92 @@ fn run_scenario(ctx: &mut Ctx, id: &str) -> Result<Outcome> {
         "S6" => s6_moderator_delete(ctx),
         "S7" => s7_non_moderator_delete(ctx),
         "S8" => Ok(Outcome::Skip("not implemented".to_string())),
+        "S9" => s9_pinning_immunity(ctx),
+        "S10" => s10_creation_pin_latest(ctx),
+        "S11" => s11_forward_only(ctx),
+        "S12" => s12_descendant_constraint(ctx),
+        "S13" => s13_no_pin(ctx),
         other => Ok(Outcome::Skip(format!("unknown scenario {other}"))),
+    }
+}
+
+// ---- P2-P4 policy primitives (sys-signed, key-rooted) ---------------------
+
+/// Install (or amend) a sys-signed `policy.v2` object at (path,id). Key-rooted:
+/// Owner = the sys pubkey, signed by the sys key, no cert (the root policy
+/// grants the sys admin key `govern` on `/**`). Returns the submit outcome and
+/// the policy's on-chain content-hash (`sha256:<hex>` of the payload — what a
+/// child PINS), computed exactly as the daemon indexes it.
+fn sys_install(
+    ctx: &mut Ctx,
+    path: &str,
+    id: &str,
+    policy: &serde_json::Value,
+    label: &str,
+) -> Result<(Submitted, String)> {
+    let (wire_bytes, content_hash) = {
+        let sys = ctx.sys.as_ref().ok_or_else(|| anyhow!("no sys key loaded"))?;
+        let payload = serde_json::to_vec(policy)?;
+        let content_hash = ContentHash::sha256(&payload).to_string();
+        let wire = assemble_write(
+            &sys.key,
+            None,
+            None,
+            path,
+            id,
+            "policy.v2",
+            "application/json",
+            payload,
+            Some(&sys.owner),
+            None,
+        )?;
+        (wire, content_hash)
+    };
+    let sub = submit(ctx, &wire_bytes, label)?;
+    ctx.written_policies.push((path.to_string(), id.to_string()));
+    Ok((sub, content_hash))
+}
+
+/// The current on-chain `object_hash` of an object, or None if absent. Used to
+/// tell an APPLIED policy amendment (hash changed) from a DENIED one (unchanged).
+fn object_hash(ctx: &Ctx, path: &str, id: &str) -> Result<Option<String>> {
+    Ok(get_object(ctx, path, id)?.map(|o| o.object_hash))
+}
+
+/// Poll until the object's `object_hash` differs from `old` and is confirmed —
+/// proof a policy amendment/update was APPLIED. Timeout otherwise.
+fn wait_version_change(ctx: &Ctx, path: &str, id: &str, old: &str) -> Outcome {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        match get_object(ctx, path, id) {
+            Ok(Some(o)) if o.confirmed && o.object_hash != old => return Outcome::Pass,
+            Ok(_) => {}
+            Err(e) => return Outcome::Error(format!("{e:#}")),
+        }
+        if Instant::now() >= deadline {
+            return Outcome::Timeout(format!("policy at {path}{id} never changed version"));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// A sys `govern` grant over `<base>**` (lets sys install child policies there).
+fn sys_govern_grant(ctx: &Ctx, base: &str) -> serde_json::Value {
+    let owner = &ctx.sys.as_ref().expect("sys key present").owner;
+    serde_json::json!({ "to": { "key": owner }, "can": ["govern"], "on": format!("{base}**") })
+}
+
+/// The throwaway subtree root for a P2-P4 scenario: `/livetest-p234-<runid>-<tag>/`.
+fn p234_base(ctx: &Ctx, tag: &str) -> String {
+    format!("/livetest-p234-{}-{}/", ctx.runid, tag)
+}
+
+/// Guard: the P2-P4 scenarios need a sys key. Returns Skip when absent.
+fn need_sys(ctx: &Ctx) -> Option<Outcome> {
+    if ctx.sys.is_none() {
+        Some(Outcome::Skip("no --sys-key-file loaded".to_string()))
+    } else {
+        None
     }
 }
 
@@ -928,6 +1105,290 @@ fn s7_non_moderator_delete(ctx: &mut Ctx) -> Result<Outcome> {
     Ok(settle_present(ctx, &space(), &id, Some("owner post, other tries to delete")))
 }
 
+// ---- P2-P4 scenarios ------------------------------------------------------
+
+/// S9 — pinning immunity (sovereignty vs revocable). Child C pins ancestor A@v1;
+/// sibling D tracks A. After A is amended to remove sys govern, updating C (whose
+/// governance is frozen at v1) still APPLIES, while updating D (tracking latest)
+/// is DENIED.
+fn s9_pinning_immunity(ctx: &mut Ctx) -> Result<Outcome> {
+    if let Some(skip) = need_sys(ctx) {
+        return Ok(skip);
+    }
+    let base = p234_base(ctx, "s9");
+    let child_a = format!("{base}childA/");
+    let child_b = format!("{base}childB/");
+
+    // A_v1: grants sys govern over the subtree.
+    let a_v1 = serde_json::json!({ "grants": [ sys_govern_grant(ctx, &base) ] });
+    let (sub_a, h_a1) = sys_install(ctx, &base, "root", &a_v1, "A_v1 install")?;
+    if !sub_a.accepted {
+        return Ok(Outcome::Fail(format!("A_v1 install denied: {}", sub_a.reason.unwrap_or_default())));
+    }
+    require_present(ctx, &base, "root", "ancestor A")?;
+
+    // C pinned to A@v1 (sovereign).
+    let c_v1 = serde_json::json!({ "pin": { "ancestor": base, "hash": h_a1 }, "grants": [] });
+    let (sub_c, _) = sys_install(ctx, &child_a, "root", &c_v1, "C pinned@A_v1")?;
+    if !sub_c.accepted {
+        return Ok(Outcome::Fail(format!("C install denied: {}", sub_c.reason.unwrap_or_default())));
+    }
+    require_present(ctx, &child_a, "root", "child C")?;
+
+    // D unpinned (tracks A).
+    let d_v1 = serde_json::json!({ "grants": [] });
+    let (sub_d, _) = sys_install(ctx, &child_b, "root", &d_v1, "D unpinned")?;
+    if !sub_d.accepted {
+        return Ok(Outcome::Fail(format!("D install denied: {}", sub_d.reason.unwrap_or_default())));
+    }
+    require_present(ctx, &child_b, "root", "child D")?;
+
+    // Amend A -> v2, REMOVING sys govern (hand govern to a throwaway key).
+    let a_oh = object_hash(ctx, &base, "root")?.unwrap_or_default();
+    let throwaway = SigningKey::generate();
+    let rand_owner = format!("ed25519:{}", hex::encode(throwaway.public_key().bytes));
+    let a_v2 = serde_json::json!({
+        "grants": [ { "to": { "key": rand_owner }, "can": ["govern"], "on": format!("{base}**") } ]
+    });
+    let (sub_a2, _) = sys_install(ctx, &base, "root", &a_v2, "A_v2 (revoke sys govern)")?;
+    if !sub_a2.accepted {
+        return Ok(Outcome::Fail(format!("A_v2 amend denied: {}", sub_a2.reason.unwrap_or_default())));
+    }
+    if let Outcome::Timeout(m) = wait_version_change(ctx, &base, "root", &a_oh) {
+        return Ok(Outcome::Timeout(format!("A_v2 never applied: {m}")));
+    }
+
+    // Update C — still pinned to A@v1 (keeping the frozen pin). Should APPLY.
+    let c_oh = object_hash(ctx, &child_a, "root")?.unwrap_or_default();
+    let c_v2 = serde_json::json!({
+        "pin": { "ancestor": base, "hash": h_a1 },
+        "grants": [],
+        "deny": [ format!("{child_a}zzz*") ]
+    });
+    let (sub_cu, _) = sys_install(ctx, &child_a, "root", &c_v2, "update C (pinned@v1)")?;
+    let c_applied = sub_cu.accepted
+        && matches!(wait_version_change(ctx, &child_a, "root", &c_oh), Outcome::Pass);
+
+    // Update D — tracks A_v2, which no longer grants sys govern. Should DENY.
+    let d_oh = object_hash(ctx, &child_b, "root")?.unwrap_or_default();
+    let d_v2 = serde_json::json!({ "grants": [], "deny": [ format!("{child_b}zzz*") ] });
+    let (sub_du, _) = sys_install(ctx, &child_b, "root", &d_v2, "update D (tracking v2)")?;
+    let d_now = object_hash(ctx, &child_b, "root")?.unwrap_or_default();
+    let d_denied = !sub_du.accepted && d_now == d_oh;
+
+    match (c_applied, d_denied) {
+        (true, true) => Ok(Outcome::Pass),
+        (false, _) => Ok(Outcome::Fail(
+            "pinned child C update was NOT applied — sovereignty broken (frozen v1 should still grant sys govern)".to_string(),
+        )),
+        (_, false) => Ok(Outcome::Fail(format!(
+            "tracking child D update was NOT denied — revocation broken (submit accepted={}, reason={:?})",
+            sub_du.accepted, sub_du.reason
+        ))),
+    }
+}
+
+/// S10 — creation pin must equal the current latest ancestor version.
+fn s10_creation_pin_latest(ctx: &mut Ctx) -> Result<Outcome> {
+    if let Some(skip) = need_sys(ctx) {
+        return Ok(skip);
+    }
+    let base = p234_base(ctx, "s10");
+    // A_v1 then amend to A_v2 so v1's hash is STALE.
+    let a_v1 = serde_json::json!({ "grants": [ sys_govern_grant(ctx, &base) ] });
+    let (sa, h_stale) = sys_install(ctx, &base, "root", &a_v1, "A_v1")?;
+    if !sa.accepted {
+        return Ok(Outcome::Fail("A_v1 denied".to_string()));
+    }
+    require_present(ctx, &base, "root", "ancestor A")?;
+    let a_oh = object_hash(ctx, &base, "root")?.unwrap_or_default();
+    let a_v2 = serde_json::json!({ "grants": [ sys_govern_grant(ctx, &base) ], "deny": [ format!("{base}zzz*") ] });
+    let (sa2, h_latest) = sys_install(ctx, &base, "root", &a_v2, "A_v2 (new latest)")?;
+    if !sa2.accepted || matches!(wait_version_change(ctx, &base, "root", &a_oh), Outcome::Timeout(_)) {
+        return Ok(Outcome::Fail("A_v2 amend not applied".to_string()));
+    }
+
+    // Child pinned to the STALE hash — must be REJECTED.
+    let stale_path = format!("{base}childStale/");
+    let stale = serde_json::json!({ "pin": { "ancestor": base, "hash": h_stale }, "grants": [] });
+    let (sub_stale, _) = sys_install(ctx, &stale_path, "root", &stale, "child pinned@STALE")?;
+    let stale_absent = matches!(settle_absent(ctx, &stale_path, "root", &sub_stale), Outcome::Pass);
+
+    // Child pinned to the LATEST hash — must be ACCEPTED.
+    let latest_path = format!("{base}childLatest/");
+    let latest = serde_json::json!({ "pin": { "ancestor": base, "hash": h_latest }, "grants": [] });
+    let (sub_latest, _) = sys_install(ctx, &latest_path, "root", &latest, "child pinned@LATEST")?;
+    let latest_present = sub_latest.accepted
+        && matches!(settle_present(ctx, &latest_path, "root", None), Outcome::Pass);
+
+    match (stale_absent, latest_present) {
+        (true, true) => Ok(Outcome::Pass),
+        (false, _) => Ok(Outcome::Fail("stale-pinned child was NOT rejected".to_string())),
+        (_, false) => Ok(Outcome::Fail(format!(
+            "latest-pinned child was NOT accepted (submit accepted={}, reason={:?})",
+            sub_latest.accepted, sub_latest.reason
+        ))),
+    }
+}
+
+/// S11 — forward-only pin advance: a child may re-pin to the current latest
+/// ancestor version, never to an older one.
+fn s11_forward_only(ctx: &mut Ctx) -> Result<Outcome> {
+    if let Some(skip) = need_sys(ctx) {
+        return Ok(skip);
+    }
+    let base = p234_base(ctx, "s11");
+    let child = format!("{base}child/");
+    let grant = sys_govern_grant(ctx, &base);
+
+    // A_v1 → A_v2 (child will be created pinned to v2).
+    let (s1, _h1) = sys_install(ctx, &base, "root", &serde_json::json!({ "grants": [grant.clone()] }), "A_v1")?;
+    if !s1.accepted {
+        return Ok(Outcome::Fail("A_v1 denied".to_string()));
+    }
+    require_present(ctx, &base, "root", "ancestor A")?;
+    let oh1 = object_hash(ctx, &base, "root")?.unwrap_or_default();
+    let (s2, h2) = sys_install(ctx, &base, "root",
+        &serde_json::json!({ "grants": [grant.clone()], "deny": [ format!("{base}a*") ] }), "A_v2")?;
+    if !s2.accepted || matches!(wait_version_change(ctx, &base, "root", &oh1), Outcome::Timeout(_)) {
+        return Ok(Outcome::Fail("A_v2 not applied".to_string()));
+    }
+
+    // Child pinned to A@v2.
+    let (sc, _) = sys_install(ctx, &child, "root",
+        &serde_json::json!({ "pin": { "ancestor": base, "hash": h2 }, "grants": [] }), "child pinned@v2")?;
+    if !sc.accepted {
+        return Ok(Outcome::Fail(format!("child install denied: {}", sc.reason.unwrap_or_default())));
+    }
+    require_present(ctx, &child, "root", "child")?;
+
+    // Amend A → v3.
+    let oh2 = object_hash(ctx, &base, "root")?.unwrap_or_default();
+    let (s3, h3) = sys_install(ctx, &base, "root",
+        &serde_json::json!({ "grants": [grant.clone()], "deny": [ format!("{base}a*"), format!("{base}b*") ] }), "A_v3")?;
+    if !s3.accepted || matches!(wait_version_change(ctx, &base, "root", &oh2), Outcome::Timeout(_)) {
+        return Ok(Outcome::Fail("A_v3 not applied".to_string()));
+    }
+
+    // Forward: re-pin child to v3 (== latest) — ACCEPT.
+    let ch_oh = object_hash(ctx, &child, "root")?.unwrap_or_default();
+    let (sf, _) = sys_install(ctx, &child, "root",
+        &serde_json::json!({ "pin": { "ancestor": base, "hash": h3 }, "grants": [] }), "child re-pin→v3 (forward)")?;
+    let forward_ok = sf.accepted
+        && matches!(wait_version_change(ctx, &child, "root", &ch_oh), Outcome::Pass);
+
+    // Backward: re-pin child to v2 (older than latest v3) — REJECT.
+    let ch_oh2 = object_hash(ctx, &child, "root")?.unwrap_or_default();
+    let (sb, _) = sys_install(ctx, &child, "root",
+        &serde_json::json!({ "pin": { "ancestor": base, "hash": h2 }, "grants": [] }), "child re-pin→v2 (backward)")?;
+    let backward_now = object_hash(ctx, &child, "root")?.unwrap_or_default();
+    let backward_denied = !sb.accepted && backward_now == ch_oh2;
+
+    match (forward_ok, backward_denied) {
+        (true, true) => Ok(Outcome::Pass),
+        (false, _) => Ok(Outcome::Fail("forward re-pin (→latest) was NOT accepted".to_string())),
+        (_, false) => Ok(Outcome::Fail(format!(
+            "backward re-pin (→older) was NOT rejected (submit accepted={}, reason={:?})",
+            sb.accepted, sb.reason
+        ))),
+    }
+}
+
+/// S12 — descendant-constraint: a child must keep its grants within the parent's
+/// `allowed_grants` template and carry every mandated restriction verbatim.
+fn s12_descendant_constraint(ctx: &mut Ctx) -> Result<Outcome> {
+    if let Some(skip) = need_sys(ctx) {
+        return Ok(skip);
+    }
+    let base = p234_base(ctx, "s12");
+    let subtree = format!("{base}**");
+    // Template grant G and mandated restriction R (byte-exact in valid children).
+    let g = serde_json::json!({ "to": "*", "can": ["create"], "on": subtree });
+    let r = serde_json::json!({ "on": subtree, "require": { "max_size": 65536 } });
+    let a = serde_json::json!({
+        "grants": [ sys_govern_grant(ctx, &base) ],
+        "descendant_constraint": { "allowed_grants": [ g.clone() ], "mandated_restrictions": [ r.clone() ] }
+    });
+    let (sa, _) = sys_install(ctx, &base, "root", &a, "A (with descendant_constraint)")?;
+    if !sa.accepted {
+        return Ok(Outcome::Fail(format!("A install denied: {}", sa.reason.unwrap_or_default())));
+    }
+    require_present(ctx, &base, "root", "ancestor A")?;
+
+    // Child whose grant EXCEEDS the template (adds `update`) — REJECT.
+    let bad_path = format!("{base}childBad/");
+    let bad = serde_json::json!({
+        "grants": [ { "to": "*", "can": ["create", "update"], "on": subtree } ],
+        "restrictions": [ r.clone() ]
+    });
+    let (sub_bad, _) = sys_install(ctx, &bad_path, "root", &bad, "child grant exceeds template")?;
+    let bad_absent = matches!(settle_absent(ctx, &bad_path, "root", &sub_bad), Outcome::Pass);
+
+    // Child MISSING the mandated restriction — REJECT.
+    let miss_path = format!("{base}childMissing/");
+    let miss = serde_json::json!({ "grants": [ g.clone() ] });
+    let (sub_miss, _) = sys_install(ctx, &miss_path, "root", &miss, "child missing mandated restriction")?;
+    let miss_absent = matches!(settle_absent(ctx, &miss_path, "root", &sub_miss), Outcome::Pass);
+
+    // Child subset-of-G AND carrying R — ACCEPT.
+    let good_path = format!("{base}childGood/");
+    let good = serde_json::json!({ "grants": [ g.clone() ], "restrictions": [ r.clone() ] });
+    let (sub_good, _) = sys_install(ctx, &good_path, "root", &good, "child within template")?;
+    let good_present = sub_good.accepted
+        && matches!(settle_present(ctx, &good_path, "root", None), Outcome::Pass);
+
+    match (bad_absent, miss_absent, good_present) {
+        (true, true, true) => Ok(Outcome::Pass),
+        (false, _, _) => Ok(Outcome::Fail("over-broad-grant child was NOT rejected".to_string())),
+        (_, false, _) => Ok(Outcome::Fail("child missing mandated restriction was NOT rejected".to_string())),
+        (_, _, false) => Ok(Outcome::Fail(format!(
+            "compliant child was NOT accepted (submit accepted={}, reason={:?})",
+            sub_good.accepted, sub_good.reason
+        ))),
+    }
+}
+
+/// S13 — no-pin: a parent that forbids pinning rejects any pinned child; an
+/// unpinned (tracking) child is accepted.
+fn s13_no_pin(ctx: &mut Ctx) -> Result<Outcome> {
+    if let Some(skip) = need_sys(ctx) {
+        return Ok(skip);
+    }
+    let base = p234_base(ctx, "s13");
+    // forbid_pinning ⇒ empty allowed_grants ⇒ children may grant nothing.
+    let a = serde_json::json!({
+        "grants": [ sys_govern_grant(ctx, &base) ],
+        "descendant_constraint": { "forbid_pinning": true }
+    });
+    let (sa, h_a) = sys_install(ctx, &base, "root", &a, "A (forbid_pinning)")?;
+    if !sa.accepted {
+        return Ok(Outcome::Fail(format!("A install denied: {}", sa.reason.unwrap_or_default())));
+    }
+    require_present(ctx, &base, "root", "ancestor A")?;
+
+    // Pinned child (pin to latest, so ONLY the no-pin rule can reject) — REJECT.
+    let pinned_path = format!("{base}childPinned/");
+    let pinned = serde_json::json!({ "pin": { "ancestor": base, "hash": h_a }, "grants": [] });
+    let (sub_pin, _) = sys_install(ctx, &pinned_path, "root", &pinned, "pinned child (parent forbids)")?;
+    let pinned_absent = matches!(settle_absent(ctx, &pinned_path, "root", &sub_pin), Outcome::Pass);
+
+    // Unpinned tracking child, no grants — ACCEPT.
+    let open_path = format!("{base}childOpen/");
+    let open = serde_json::json!({ "grants": [] });
+    let (sub_open, _) = sys_install(ctx, &open_path, "root", &open, "unpinned tracking child")?;
+    let open_present = sub_open.accepted
+        && matches!(settle_present(ctx, &open_path, "root", None), Outcome::Pass);
+
+    match (pinned_absent, open_present) {
+        (true, true) => Ok(Outcome::Pass),
+        (false, _) => Ok(Outcome::Fail("pinned child was NOT rejected under forbid_pinning".to_string())),
+        (_, false) => Ok(Outcome::Fail(format!(
+            "unpinned child was NOT accepted (submit accepted={}, reason={:?})",
+            sub_open.accepted, sub_open.reason
+        ))),
+    }
+}
+
 /// Block until head reaches `target` or the settle timeout elapses.
 fn wait_for_head(ctx: &Ctx, target: u64) {
     let deadline = Instant::now() + SETTLE_TIMEOUT;
@@ -941,24 +1402,38 @@ fn wait_for_head(ctx: &Ctx, target: u64) {
 
 // ---- cleanup + summary ----------------------------------------------------
 
-/// Best-effort: provision a cleanup identity and delete every object we wrote.
-/// A failure here never fails the run — this only tidies the demo space.
+/// Best-effort cleanup. Sys-owned policy objects (S9-S13) CAN be swept — sys
+/// holds `govern` at their parent — so we delete them, children before parents.
+/// Content objects (S1-S7) are owner-locked to disposable per-scenario identities
+/// we no longer hold keys for, so those are only reported. A failure here never
+/// fails the run.
 fn cleanup(ctx: &mut Ctx) {
-    if ctx.written.is_empty() {
-        return;
+    // Sweep sys-owned policies (reverse install order ≈ children before parents).
+    if ctx.sys.is_some() && !ctx.written_policies.is_empty() {
+        let policies = ctx.written_policies.clone();
+        println!("Cleanup: deleting {} sys-owned policy object(s) (best effort)…", policies.len());
+        for (path, id) in policies.iter().rev() {
+            match sys_delete_policy(ctx, path, id) {
+                Ok(sub) if sub.accepted => println!("  · deleted policy {path}{id}"),
+                Ok(sub) => println!("  · could not delete {path}{id}: {}", sub.reason.unwrap_or_default()),
+                Err(e) => println!("  · could not delete {path}{id}: {e:#}"),
+            }
+        }
     }
-    println!("Cleanup: deleting {} test object(s) (best effort)…", ctx.written.len());
-    // Objects are owner-locked, so a shared cleanup identity can't delete them;
-    // deletes are authored per-owner during the scenarios where possible. Here
-    // we simply report what remains for manual sweeping.
-    for (path, id) in &ctx.written {
-        println!("  · left on-chain: {path}{id}");
+    // Report owner-locked content objects left behind.
+    if !ctx.written.is_empty() {
+        println!("Left on-chain (owner-locked, sweep with the owning identities if needed):");
+        for (path, id) in &ctx.written {
+            println!("  · {path}{id}");
+        }
     }
-    println!(
-        "  (test objects live under livetest-{}-* — owner-locked, so sweep with the \
-         owning identities if needed)",
-        ctx.runid
-    );
+}
+
+/// Delete a sys-owned `policy.v2` object (key-rooted, no cert). Best-effort.
+fn sys_delete_policy(ctx: &Ctx, path: &str, id: &str) -> Result<Submitted> {
+    let sys = ctx.sys.as_ref().ok_or_else(|| anyhow!("no sys key"))?;
+    let wire = assemble_delete(&sys.key, None, path, id, "policy.v2", &sys.owner)?;
+    submit(ctx, &wire, &format!("delete policy {path}{id}"))
 }
 
 fn print_summary(results: &[(&str, Expect, Outcome)]) {
@@ -996,10 +1471,12 @@ mod tests {
     fn scenario_catalogue_is_ordered_and_marked() {
         let s = scenarios();
         let ids: Vec<&str> = s.iter().map(|x| x.id).collect();
-        assert_eq!(ids, ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"]);
-        // S1..S7 implemented, S8 not.
-        assert!(s[..7].iter().all(|x| x.implemented));
-        assert!(!s[7].implemented);
+        assert_eq!(
+            ids,
+            ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13"]
+        );
+        // Only S8 (ban) is unimplemented; everything else is.
+        assert!(s.iter().filter(|x| !x.implemented).map(|x| x.id).eq(["S8"]));
     }
 
     #[test]
