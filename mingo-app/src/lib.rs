@@ -16,4 +16,5 @@
 pub mod appoint;
 pub mod community;
 pub mod genesis;
+pub mod livetest;
 pub mod seed;

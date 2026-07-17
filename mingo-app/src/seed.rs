@@ -993,14 +993,14 @@ struct ProvisionResp {
     cert: String,
 }
 
-struct Provisioned {
-    email: String,
+pub struct Provisioned {
+    pub email: String,
     /// The same ed25519 key in both forms: `key` signs SBO wires, `kp` signs
     /// warrants (browserid JWS). Derived from one seed, like mingo-idp's
     /// `SigningKey::from_bytes(poster_key.secret_bytes())`.
-    key: SigningKey,
-    kp: KeyPair,
-    cert: String,
+    pub key: SigningKey,
+    pub kp: KeyPair,
+    pub cert: String,
 }
 
 /// Per-author digest-bot credentials: the agent cert (agent.parent = author)
@@ -1252,7 +1252,7 @@ fn submit(
 /// Mirror the SPA's `ensureDnssecFresh`: ask the daemon whether the on-chain
 /// proof covers now+margin; if not, submit the returned proof as a KEY-ROOTED
 /// write (throwaway key, no owner, no cert — the proof authorizes itself).
-fn ensure_dnssec_fresh(
+pub fn ensure_dnssec_fresh(
     client: &reqwest::blocking::Client,
     daemon: &str,
     domain: &str,
@@ -1312,7 +1312,7 @@ fn space_config(sys_key: &SigningKey, community: &str, max_authoring_lag_s: i64)
 /// `<handle>.seed@sandmill.org` ↔ `<handle>` and mints a 24h cert for a fresh
 /// per-run key. Sentinel external emails keep the handles reserved against
 /// real signups without touching real mailboxes.
-fn provision_persona(
+pub fn provision_persona(
     client: &reqwest::blocking::Client,
     idp: &str,
     admin_token: &str,

@@ -158,6 +158,33 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Run live-chain authorization scenarios against the SBO chain: provision
+    /// disposable `livetest-*@mingo.place` identities, perform attributed
+    /// writes, and assert head state (PRESENT/ABSENT) — validating the
+    /// policy-delegation model (capture fix, memberships, owner/moderator
+    /// semantics). DRY-RUN by default (prints the scenario plan); pass
+    /// --execute to write to the live chain.
+    LiveTest {
+        /// IdP origin (its host is the identity domain, e.g. mingo.place).
+        #[arg(long, default_value = "https://mingo.place")]
+        idp: String,
+        /// SBO daemon origin (reads + submit).
+        #[arg(long, default_value = "https://da.sandmill.org")]
+        daemon: String,
+        /// Env var holding the IdP admin token (X-Admin-Token).
+        #[arg(long, default_value = "MINGO_ADMIN_TOKEN")]
+        admin_token_env: String,
+        /// Restrict to specific scenarios, comma-separated (e.g. --only S1,S2).
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Keep test objects on-chain at the end (skip the cleanup report).
+        #[arg(long)]
+        keep: bool,
+        /// Actually provision + write to the LIVE chain (default: print plan).
+        #[arg(long)]
+        execute: bool,
+    },
 }
 
 /// Load a transient domain signing key from `{"secret_key":"<hex 32-byte seed>"}`
@@ -379,6 +406,23 @@ fn main() -> Result<()> {
                 admin_token_env,
                 value,
                 expires,
+                execute,
+            })?;
+        }
+        Commands::LiveTest {
+            idp,
+            daemon,
+            admin_token_env,
+            only,
+            keep,
+            execute,
+        } => {
+            mingo_app::livetest::run(&mingo_app::livetest::LiveTestArgs {
+                idp,
+                daemon,
+                admin_token_env,
+                only,
+                keep,
                 execute,
             })?;
         }
