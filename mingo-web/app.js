@@ -158,6 +158,57 @@ async function getPassport(subject) {
 }
 
 // ---------------------------------------------------------------------------
+// board-scoped moderation (mingo-n268). A moderator of community <id> is the
+// in-force subject of a `role:moderator:<id>` attestation.v1 issued BY that
+// community's `issuer` (read from its community.v1 descriptor via getCommunities
+// / window.__comms). This mirrors the community policy's moderator role, which
+// grants `delete` on the board's spaces to `{attested: {type:
+// "role:moderator:<id>", by: <issuer>}}` — so a UI affordance shown here lines up
+// exactly with what the daemon will authorize.
+// ---------------------------------------------------------------------------
+// Resolve, in ONE attestation read, the set of board ids the session user
+// moderates. Cached per render (reset in route()), like other attestation reads.
+// SECURITY: matches on the AUTHENTICATED issuer (`owner_ref` — who actually
+// signed the attestation on-chain), NOT the self-declared `value.issuer`, so a
+// self-issued attestation naming a foreign issuer can't fake moderator status.
+// That mirrors the daemon's `by:` check; a spoofed one would fail the real
+// delete anyway (this only governs whether the button is offered).
+let _modBoards = null;
+async function moderatedBoards() {
+  if (!session.email) return new Set();
+  if (_modBoards) return _modBoards;
+  const comms = window.__comms || (await getCommunities());
+  let objs = [];
+  try { objs = await listSchema("attestation.v1"); } catch { objs = []; }
+  const now = Math.floor(Date.now() / 1000);
+  const set = new Set();
+  for (const c of comms) {
+    if (!c.issuer) continue;
+    const type = `role:moderator:${c.id}`;
+    const ok = objs.some((o) => {
+      const issuer = o.owner_ref || o.creator; // authenticated, on-chain issuer
+      const v = o.value || {};
+      return v.subject === session.email && v.type === type && issuer === c.issuer &&
+        (!v.expires || v.expires > now);
+    });
+    if (ok) set.add(c.id);
+  }
+  _modBoards = set;
+  return set;
+}
+// The boards the CURRENT render knows the session user moderates. Each view
+// refreshes this (await moderatedBoards()) before it builds HTML, so the sync
+// card/comment renderers below can consult it. Reset per navigation in route().
+let currentMods = new Set();
+const isMod = (commId) => !!commId && currentMods.has(commId);
+// The moderator-delete affordance shows on a NON-owned item in a board the user
+// moderates (owners get the plain owner-delete instead). `item.comm` must be set
+// by the caller (feed rows carry it; thread/mod-view stamp it at fetch time).
+function canModDelete(item) {
+  return !!session.email && !ownItem(item) && isMod(item.comm);
+}
+
+// ---------------------------------------------------------------------------
 // session (login via the broker dialog popup, requesting sbo_sign)
 // ---------------------------------------------------------------------------
 const session = {
@@ -434,6 +485,7 @@ async function signOut() {
   try { navigator.id.logout(); } catch (e) {}
   localStorage.removeItem("mingo_signing_ready"); // re-grant on next sign-in
   session.email = null;
+  _modBoards = null; currentMods = new Set(); // drop cached moderator status
   renderAuth();
   route();
   toast("Signed out");
@@ -1156,6 +1208,7 @@ async function viewHub() {
     </div><div id="feed" class="muted">loading…</div>`;
   const comms = window.__comms || (await getCommunities());
   const votes = await getVoteCounts();
+  currentMods = await moderatedBoards(); // so mod-delete shows on moderated boards in the feed
   const rows = [];
   for (const c of comms) {
     const { posts } = await getSpaceItems(c.id, CONFIG.space);
@@ -1190,10 +1243,15 @@ function cardMenu(item) {
   const editItem = ownItem(item)
     ? `<button class="menu-item" role="menuitem" data-edit="${esc(item.uri)}">${ICON_EDIT}<span>Edit</span></button>`
     : "";
-  // Owner-only delete (mingo-3go6), confirmed inline before it writes.
+  // Delete: the owner's own delete (mingo-3go6), or — for a non-owner who
+  // moderates this board — a moderator delete (mingo-n268), authorized by the
+  // community's moderator-role policy grant rather than the owner fast path.
+  // Both confirm inline before writing; data-moddelete flags the moderator copy.
   const deleteItem = ownItem(item)
     ? `<button class="menu-item danger" role="menuitem" data-delete="${esc(item.uri)}">${ICON_DELETE}<span>Delete</span></button>`
-    : "";
+    : canModDelete(item)
+      ? `<button class="menu-item danger" role="menuitem" data-delete="${esc(item.uri)}" data-moddelete="1">${ICON_DELETE}<span>Delete (moderator)</span></button>`
+      : "";
   const popId = `m-${hashStr(item.uri).toString(36)}`;
   return `<div class="fr-menu">
     <button class="kebab" aria-haspopup="true" aria-expanded="false" aria-controls="${popId}" aria-label="More actions" title="More">⋮</button>
@@ -1221,15 +1279,21 @@ async function viewCommunity(commId) {
   const c = comms.find((x) => x.id === commId);
   if (!c) { main.innerHTML = `<div class="card">Unknown community.</div>`; return; }
   const member = session.email ? await hasMembership(c.id) : false;
+  currentMods = await moderatedBoards();
   const actionBtn = !session.email
     ? `<button class="primary" id="signin2">Sign in to post</button>`
     : member
       ? `<button class="primary" id="newpost">+ New post</button>`
       : `<button class="primary" id="join">Join to post</button>`;
+  // A "Moderate" link into the per-board mod view — shown only to this board's
+  // moderators (mingo-n268).
+  const modLink = isMod(c.id)
+    ? `<a class="mod-link" href="#/c/${esc(c.id)}/mod" title="Moderate this board">🛡 Moderate</a>`
+    : "";
   main.innerHTML = `
     <div class="card view-header">
       <div class="vh-main">
-        <div class="view-title"><span class="cdot" style="--ch:${boardHue(c.id)}"></span><div class="h1">c/${esc(c.id)}${c.open ? " ✓" : ""}</div></div>
+        <div class="view-title"><span class="cdot" style="--ch:${boardHue(c.id)}"></span><div class="h1">c/${esc(c.id)}${c.open ? " ✓" : ""}</div>${modLink}</div>
         ${c.description ? `<div class="muted vh-sub">${esc(c.description)}</div>` : ""}
       </div>
       <div class="vh-action">${actionBtn}</div>
@@ -1295,6 +1359,7 @@ async function viewThread(commId, postId) {
   const main = $("#main");
   main.innerHTML = `<div id="thread" class="muted">loading…</div>`;
   const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
+  currentMods = await moderatedBoards(); // enables mod-delete on the post + its comments
   const post = posts.find((p) => p.id === postId);
   // A deleted post is gone from head state, so it simply isn't in `posts`. Its
   // comments are independent objects with no chain-side cascade (mingo-3go6), so
@@ -1305,7 +1370,9 @@ async function viewThread(commId, postId) {
       <div class="card muted">This post was deleted or doesn't exist.</div>`;
     return;
   }
-  const kids = comments.filter((c) => c.parent === post.uri);
+  // Stamp the board id so cardMenu/commentBox can offer moderator delete here.
+  post.comm = commId;
+  const kids = comments.filter((c) => c.parent === post.uri).map((c) => ({ ...c, comm: commId }));
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
     <div class="card feed-row thread-post">
@@ -1348,6 +1415,69 @@ async function viewThread(commId, postId) {
 }
 function commentBox(c, votes) {
   return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${editedTag(c)}${receiptLink(c)}${editLink(c)}${deleteLink(c)}</div><div data-body="${esc(c.uri)}">${esc(c.body)}</div></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// per-board moderator view (mingo-n268, route #/c/<board>/mod). A minimal,
+// moderator-only surface: recent posts AND comments in the board's space, each
+// with a remove control. Reachable only when the session user moderates the
+// board (the "Moderate" link in the board header, and this view's own guard).
+// Removals go through the same beginDelete/deleteContent path as everywhere
+// else — the moderator signs, the daemon authorizes via the moderator-role grant.
+// ---------------------------------------------------------------------------
+async function viewModerate(commId) {
+  const main = $("#main");
+  const comms = window.__comms || (await getCommunities());
+  const c = comms.find((x) => x.id === commId);
+  if (!c) { main.innerHTML = `<div class="card">Unknown community.</div>`; return; }
+  currentMods = await moderatedBoards();
+  if (!isMod(commId)) {
+    main.innerHTML = `<a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
+      <div class="card muted">You are not a moderator of c/${esc(commId)}.</div>`;
+    return;
+  }
+  main.innerHTML = `
+    <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
+    <div class="card view-header"><div class="vh-main">
+      <div class="view-title"><span class="cdot" style="--ch:${boardHue(c.id)}"></span><div class="h1">Moderate c/${esc(c.id)}</div></div>
+      <div class="muted vh-sub">Recent posts and comments — remove anything that breaks the rules.</div>
+    </div></div>
+    <div id="mod-list" class="muted">loading…</div>`;
+  const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
+  const items = modItems(posts, comments, commId);
+  $("#mod-list").outerHTML = `<div id="mod-list">${
+    items.length ? items.map((it) => modRow(it, votes)).join("") : `<div class="card muted">Nothing here yet.</div>`
+  }</div>`;
+  wireReceiptButtons();
+  wireDeleteButtons();
+  startLivePoll(() => pollModerate(commId));
+}
+// Posts + comments in a board, newest first, each stamped with the board id so
+// the delete affordance can resolve moderator status.
+function modItems(posts, comments, commId) {
+  return [...posts, ...comments]
+    .map((it) => ({ ...it, comm: commId }))
+    .sort((a, b) => (b.hlc || "").localeCompare(a.hlc || ""));
+}
+// A single moderation row: kind + author + body + a remove control. The item's
+// author still gets the plain owner-delete; everyone else's gets the moderator
+// remove (data-moddelete). data-body carries the inline confirm swap.
+function modRow(it, votes) {
+  receiptItems.set(it.uri, it);
+  const kind = it.schema === "comment.v1" ? "comment" : "post";
+  const del = ownItem(it)
+    ? `<button class="link delete-btn danger" data-delete="${esc(it.uri)}" title="delete">delete</button>`
+    : `<button class="link delete-btn danger" data-delete="${esc(it.uri)}" data-moddelete="1" title="remove as moderator">remove</button>`;
+  return `<div class="card feed-row">
+    <div class="post-meta"><span class="mod-kind">${kind}</span>${authorLink(it.authorRef, it.author)}<span class="fr-time">${timeAgo(it.ts)}</span>${editedTag(it)} · <button class="link receipt" data-receipt="${esc(it.uri)}" title="cryptographic receipt" aria-label="cryptographic receipt">${RECEIPT_ICON}<span class="rlbl">receipt</span></button> · ${del}</div>
+    <div class="post-body" data-body="${esc(it.uri)}">${esc((it.body || "").slice(0, 400))}</div>
+  </div>`;
+}
+async function pollModerate(commId) {
+  const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
+  const container = document.getElementById("mod-list");
+  if (!container) return;
+  liveAppend(container, modItems(posts, comments, commId), (it) => modRow(it, votes));
 }
 
 function wireVoteButtons() {
@@ -1425,16 +1555,24 @@ function wireEditButtons() {
     b.onclick = () => beginEdit(b.getAttribute("data-edit"));
   });
 }
-// The "delete" button (owner-only), for comment meta-lines where the kebab menu
-// isn't rendered. Registers the item so beginDelete can look it up (mingo-3go6).
+// The "delete" button for comment meta-lines where the kebab menu isn't
+// rendered. Owner-delete (mingo-3go6) or, for a non-owner who moderates the
+// board, a moderator delete (mingo-n268). Registers the item so beginDelete can
+// look it up.
 function deleteLink(item) {
-  if (!ownItem(item)) return "";
-  receiptItems.set(item.uri, item);
-  return ` · <button class="link delete-btn danger" data-delete="${esc(item.uri)}" title="delete">delete</button>`;
+  if (ownItem(item)) {
+    receiptItems.set(item.uri, item);
+    return ` · <button class="link delete-btn danger" data-delete="${esc(item.uri)}" title="delete">delete</button>`;
+  }
+  if (canModDelete(item)) {
+    receiptItems.set(item.uri, item);
+    return ` · <button class="link delete-btn danger" data-delete="${esc(item.uri)}" data-moddelete="1" title="remove as moderator">remove</button>`;
+  }
+  return "";
 }
 function wireDeleteButtons() {
   document.querySelectorAll("[data-delete]").forEach((b) => {
-    b.onclick = () => beginDelete(b.getAttribute("data-delete"));
+    b.onclick = () => beginDelete(b.getAttribute("data-delete"), b.hasAttribute("data-moddelete"));
   });
 }
 // Confirm-then-delete, mirroring beginEdit's inline swap: the body element
@@ -1442,29 +1580,37 @@ function wireDeleteButtons() {
 // the saved markup, Delete writes and re-renders once the daemon overlay has the
 // removal (same ~1.2s settle as edit/post). Works for posts and comments — both
 // carry a data-body element keyed by uri.
-function beginDelete(uri) {
+function beginDelete(uri, asMod = false) {
   const item = receiptItems.get(uri);
   if (!item) return;
   const bodyEl = document.querySelector(`[data-body="${CSS.escape(uri)}"]`);
   if (!bodyEl || bodyEl.querySelector(".edit-box")) return; // already editing/deleting
   const saved = bodyEl.innerHTML;
   const kind = item.schema === "comment.v1" ? "comment" : "post";
-  bodyEl.innerHTML = `<div class="edit-box"><div class="muted">Delete this ${kind}? This removes it for everyone and can't be undone.</div>
-    <div class="row-between" style="margin-top:8px"><span class="muted tiny">deleting</span>
-    <span><button class="edit-cancel">Cancel</button> <button class="primary danger delete-confirm">Delete</button></span></div></div>`;
+  // Moderator-appropriate copy when removing someone else's content (mingo-n268);
+  // the owner path keeps its own wording. The write is identical either way — the
+  // signer is the session user (the moderator), and the daemon authorizes the
+  // removal via the board's moderator-role grant, not the owner fast path.
+  const prompt = asMod
+    ? `Remove this ${kind} as a moderator? Everyone loses it.`
+    : `Delete this ${kind}? This removes it for everyone and can't be undone.`;
+  const confirmLabel = asMod ? "Remove" : "Delete";
+  bodyEl.innerHTML = `<div class="edit-box"><div class="muted">${prompt}</div>
+    <div class="row-between" style="margin-top:8px"><span class="muted tiny">${asMod ? "removing" : "deleting"}</span>
+    <span><button class="edit-cancel">Cancel</button> <button class="primary danger delete-confirm">${confirmLabel}</button></span></div></div>`;
   bodyEl.querySelector(".edit-cancel").onclick = () => { bodyEl.innerHTML = saved; };
   bodyEl.querySelector(".delete-confirm").onclick = async () => {
     if (!(await ensureCanWrite())) return;
     const btn = bodyEl.querySelector(".delete-confirm");
-    btn.disabled = true; btn.textContent = "Deleting…";
+    btn.disabled = true; btn.textContent = asMod ? "Removing…" : "Deleting…";
     try {
       await deleteContent(item);
-      toast(`${kind} deleted.`);
+      toast(asMod ? `${kind} removed.` : `${kind} deleted.`);
       await new Promise((r) => setTimeout(r, 1200));
       route(); // overlay serves head without the object; re-render drops it
     } catch (e) {
-      toast("delete failed: " + e.message);
-      btn.disabled = false; btn.textContent = "Delete";
+      toast((asMod ? "remove" : "delete") + " failed: " + e.message);
+      btn.disabled = false; btn.textContent = confirmLabel;
     }
   };
 }
@@ -1860,7 +2006,7 @@ async function pollThread(commId, post) {
   liveApplyVotes(votes);
   const container = document.getElementById("comments");
   if (!container) return;
-  const kids = comments.filter((c) => c.parent === post.uri);
+  const kids = comments.filter((c) => c.parent === post.uri).map((c) => ({ ...c, comm: post.comm }));
   liveAppend(container, kids, (c) => commentBox(c, votes));
 }
 
@@ -1869,11 +2015,13 @@ async function pollThread(commId, post) {
 // ---------------------------------------------------------------------------
 async function route() {
   stopLivePoll(); // leaving the current view — kill its poller before rendering
+  _modBoards = null; // re-resolve moderator status per navigation (cache is per-render)
   const h = location.hash || "#/";
   const parts = h.slice(2).split("/"); // after "#/"
   try {
     if (h === "#/" || h === "") return void (await viewHub());
     if (parts[0] === "c" && parts[2] === "p") return void (await viewThread(parts[1], parts[3]));
+    if (parts[0] === "c" && parts[2] === "mod") return void (await viewModerate(parts[1]));
     if (parts[0] === "c") return void (await viewCommunity(parts[1]));
     if (parts[0] === "settings") return void (await viewSettings());
     if (parts[0] === "passport") return void (await viewPassport(decodeURIComponent(parts[1] || "")));
