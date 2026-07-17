@@ -1,10 +1,11 @@
 ---
 # mingo-1pxk
 title: 'sandmill.org browserid: _browserid record + DNSSEC + on-chain /sys/dnssec/sandmill.org evidence'
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-07-17T11:37:01Z
-updated_at: 2026-07-17T11:37:01Z
+updated_at: 2026-07-17T12:07:54Z
 ---
 
 Prerequisite for email-rooted admin (danmills@sandmill.org). To attribute a danmills@sandmill.org write on the mingo chain, the daemon needs an on-chain RFC 9102 DNSSEC proof at /sys/dnssec/sandmill.org (mirrors what mingo.place has), and sandmill.org must have a _browserid record + DNSSEC.
@@ -19,3 +20,6 @@ Prerequisite for email-rooted admin (danmills@sandmill.org). To attribute a danm
 - [ ] Keep it fresh (RRSig expiry) like mingo.place — cron/automate.
 
 Once this is live, an admin op attributed to danmills@sandmill.org will resolve; then proceed with the admin migration.
+
+## DONE 2026-07-17
+sandmill.org already had DNSSEC + a valid _browserid record (works as a browserid primary IdP). Captured the RFC 9102 proof (sbo domain evidence sandmill.org) and submitted it; /sys/dnssec/sandmill.org is LIVE on chain (alongside mingo.place, browserid.me). danmills@sandmill.org is now attributable on the mingo chain.

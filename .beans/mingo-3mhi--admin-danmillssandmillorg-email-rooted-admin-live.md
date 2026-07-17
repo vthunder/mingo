@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-17T11:37:01Z
-updated_at: 2026-07-17T12:06:49Z
+updated_at: 2026-07-17T12:07:54Z
 blocked_by:
     - mingo-1pxk
 ---
@@ -31,9 +31,9 @@ Do NOT swap sys-key -> danmills in one step: if danmills can't yet authenticate 
 4. CUTOVER: sys-signed policy update -> `roles.admin = [{name: "danmills@sandmill.org"}]` only. Sys key is no longer admin. Keep it backed up as historical, but note: after this, admin recovery if danmills breaks = sandmill.org DNS recovery, else regenesis (accepted).
 
 ## Todos
-- [ ] `mingo set-root-admin` subcommand (dry-run default; --execute; supports add/replace admin members; sys-signed root-policy update). See build.
-- [ ] PREREQ: sandmill.org evidence on-chain (blocked-by the sandmill-evidence bean; needs user DNS).
-- [ ] Step 2: dual-admin update (sys-signed)
+- [x] `mingo set-root-admin` subcommand built (58ffa8c) + bare-string identity fix (8e5f1b0), used live for step 2.
+- [x] PREREQ: sandmill.org evidence on-chain — DONE (/sys/dnssec/sandmill.org live).
+- [x] Step 2: dual-admin update LIVE + verified — roles.admin = [{key:sys}, "danmills@sandmill.org"] at block 3626010, 6 grants/2 restrictions preserved. (Exposed + fixed a bug: Identity::Name is a bare string, not {name:…}.)
 - [ ] Step 3: verify danmills admin op end-to-end
 - [ ] Step 4: cutover to danmills-only admin
 - [ ] Update GENESIS.md to record email-rooted admin
