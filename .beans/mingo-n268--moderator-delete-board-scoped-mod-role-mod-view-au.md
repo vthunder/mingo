@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-07-16T21:22:25Z
-updated_at: 2026-07-17T06:43:18Z
+updated_at: 2026-07-17T09:28:31Z
 parent: mingo-6phv
 blocked_by:
     - mingo-gj9r
@@ -57,3 +57,7 @@ Verification: `node --check mingo-web/app.js` and `cargo build -p mingo-idp` bot
 `mingo appoint-moderator <commId> <subject>` CLI subcommand (commit 9ec9336): mints a `<commId>@mingo.place` issuer cert via mingo-idp /admin/provision, assembles an attestation.v1 (Owner=issuer, type=role:moderator:<commId>, subject) at /u/<issuer>/attestations/<subject>/, submits to the daemon. Dry-run by default; --execute to write. This is the "set the attestation from sys" mechanism (sbo CLI cannot — it attaches no attribution cert for an email issuer). With this, moderator-delete is end-to-end appointable+exercisable on the live chain.
 
 Still open: grant/revoke moderator UI in the SPA (board-creator-only; awaits user-created boards mingo-gj9r for the general case — for genesis boards, appointment is via this CLI).
+
+## Moderator delete VERIFIED LIVE (2026-07-17)
+
+mingo live-test S6 (moderator delete) PASSES on the production chain: appoint a role:moderator:cooks attestation via `mingo appoint-moderator`, and the moderator deletes another member true post — authorized by the community role:moderator delete grant. Required fixing a real daemon bug first (sbo-4tka: by-qualified attested lookup was blind to the /u/ namespace, so moderator roles + bans never resolved); fixed in sbo b6ac8ba and deployed. S7 (non-moderator delete denied) also passes. The end-to-end moderation flow works.
