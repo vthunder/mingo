@@ -21,6 +21,16 @@
 //!      browser consent.
 //!   4. Store the credential + identity under `~/.mingo/` (0600) for silent reuse.
 //!
+//! IdP requirement: the agent is minted at the delegator's **home IdP** (the
+//! U_cert issuer). That IdP must implement the agent delegation-chain mint
+//! (`/provision/mint`) — browserid.me and browserid-broker IdPs (e.g.
+//! mingo.place) do. A self-hosted *classic primary* (e.g. sandmill.org, which
+//! publishes its own `_browserid` key and only serves interactive
+//! `/browserid/provision`) has no agent mint endpoint, and the broker can't
+//! substitute (its mint requires the U_cert issuer to be its own domain and
+//! verifies against its own key). `mingo login` detects this and fails fast with
+//! guidance — see [`explain_mint_failure`].
+//!
 //! A signed write then presents `Auth-Cert` (the agent cert) + `Auth-Warrant`
 //! (the user-signed warrant); the daemon's `as:` path
 //! (`sbo_core::authorize::agent_effective_email`, via
@@ -318,11 +328,19 @@ async fn login_async(args: &LoginArgs) -> Result<()> {
     }
 
     let user = delegator_email(&credential)?;
-    println!("\n✓ authorized as {user}. Minting the agent identity…");
+    println!("\n✓ authorized as {user}. Minting the agent identity at {}…", credential.idp);
 
-    let mut agent = AgentIdentity::provision(&credential, args.handle.as_deref())
-        .await
-        .map_err(|e| anyhow!("provisioning agent identity: {e}"))?;
+    let mut agent = match AgentIdentity::provision(&credential, args.handle.as_deref()).await {
+        Ok(a) => a,
+        Err(e) => {
+            // The browser delegation already succeeded — don't waste it. Persist
+            // the credential so a later retry (e.g. with a mint-capable --idp)
+            // can reuse the same delegation instead of re-approving.
+            let cpath = credential_path()?;
+            let _ = write_private(&cpath, &serde_json::to_string_pretty(&credential)?);
+            return Err(explain_mint_failure(&credential, &args.broker, &user, &e, &cpath));
+        }
+    };
     println!("✓ agent identity: {} (acting for {user})", agent.email());
 
     println!("\nStep 2/2 — authorize a warrant for the mingo repo");
@@ -357,6 +375,57 @@ async fn login_async(args: &LoginArgs) -> Result<()> {
     println!("  identity:   {}", ipath.display());
     println!("\nTry:  mingo whoami");
     Ok(())
+}
+
+/// Host (with port) of a URL: `https://sandmill.org/` → `sandmill.org`.
+fn host_of(url: &str) -> &str {
+    let after = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    after.split('/').next().unwrap_or(after)
+}
+
+/// Turn a raw mint failure into an actionable diagnosis. The agent mint targets
+/// the delegator's **home IdP** (`credential.idp`, the U_cert issuer), which must
+/// implement the browserid agent delegation-chain endpoint (`/provision/mint`).
+/// A self-hosted *classic primary* IdP (e.g. sandmill.org: it publishes its own
+/// `_browserid` key and only offers interactive `/browserid/provision`, no agent
+/// mint) has nowhere to mint an agent — and the broker can't substitute, because
+/// its mint requires the U_cert issuer to equal its own domain and verifies the
+/// U_cert against its own key (the primary's cert is signed by the primary's key,
+/// not the broker's). So this is a home-IdP capability gap, not a wrong URL.
+fn explain_mint_failure(
+    credential: &AgentCredential,
+    broker: &str,
+    user: &str,
+    err: &browserid_agent::AgentError,
+    cpath: &std::path::Path,
+) -> anyhow::Error {
+    let idp_host = host_of(&credential.idp);
+    let broker_host = host_of(broker);
+    if idp_host == broker_host {
+        // Same IdP as the broker — a genuine broker-side failure, surface it raw.
+        return anyhow!("provisioning agent identity: {err}");
+    }
+    anyhow!(
+        "provisioning the agent failed at {idp} ({err}).\n\n\
+         Your identity '{user}' is rooted at the primary IdP '{idp_host}', which does not offer \
+         agent (command-line) provisioning — only browserid.me (or a browserid-broker IdP like \
+         mingo.place) implements the agent delegation-chain mint endpoint. The browser delegation \
+         succeeded, but '{idp_host}' has no mint endpoint for it, and the broker cannot mint on its \
+         behalf (the broker only mints identities it roots, and cannot verify a cert signed by \
+         '{idp_host}'s own key).\n\n\
+         Options:\n  \
+         - log in with a browserid.me-rooted identity (a browserid.me email), whose agent mints at \
+           browserid.me; or\n  \
+         - pass `--idp <url>` if another IdP can mint an agent for '{user}'; or\n  \
+         - add broker-hosted agent provisioning for primary identities in browserid-ng (a \
+           browserid.me change + redeploy).\n\n\
+         The approved delegation was saved to {cpath} so it can be reused on retry.",
+        idp = credential.idp,
+        cpath = cpath.display(),
+    )
 }
 
 fn tighten_perms(path: &std::path::Path) -> Result<()> {
@@ -680,6 +749,50 @@ mod tests {
         assert!(s.iter().any(|x| x.starts_with("path:")));
         // Post preset does not request delete.
         assert!(!s.contains(&"action:delete".to_string()));
+    }
+
+    #[test]
+    fn host_of_strips_scheme_and_path() {
+        assert_eq!(host_of("https://sandmill.org/"), "sandmill.org");
+        assert_eq!(host_of("https://browserid.me"), "browserid.me");
+        assert_eq!(host_of("http://127.0.0.1:7899/x"), "127.0.0.1:7899");
+    }
+
+    #[test]
+    fn mint_failure_explains_primary_idp_gap_but_stays_raw_for_broker() {
+        let err = browserid_agent::AgentError::Idp { status: 404, reason: "".into() };
+        // Delegator rooted at a primary IdP distinct from the broker: actionable.
+        let cred = AgentCredential {
+            secret_key: "x".into(),
+            delegation: "u~p".into(),
+            broker: "https://browserid.me".into(),
+            idp: "https://sandmill.org".into(),
+        };
+        let msg = explain_mint_failure(
+            &cred,
+            "https://browserid.me",
+            "danmills@sandmill.org",
+            &err,
+            std::path::Path::new("/tmp/credential.json"),
+        )
+        .to_string();
+        assert!(msg.contains("primary IdP 'sandmill.org'"));
+        assert!(msg.contains("--idp"));
+        // Same-domain-as-broker failure stays raw (no primary-IdP guidance).
+        let cred2 = AgentCredential {
+            idp: "https://browserid.me".into(),
+            ..cred
+        };
+        let msg2 = explain_mint_failure(
+            &cred2,
+            "https://browserid.me",
+            "someone@browserid.me",
+            &err,
+            std::path::Path::new("/tmp/credential.json"),
+        )
+        .to_string();
+        assert!(msg2.contains("provisioning agent identity"));
+        assert!(!msg2.contains("primary IdP"));
     }
 
     #[test]
