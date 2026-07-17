@@ -106,18 +106,42 @@ pub fn community_policy_open(
 ) -> Vec<u8> {
     let path = format!("/communities/{community_id}/");
     let spaces = format!("/communities/{community_id}/spaces/**");
+    let subtree = format!("/communities/{community_id}/**");
     let membership_type = format!("membership:{community_id}");
+    // A board-scoped moderator: the in-force subject of a `role:moderator:<id>`
+    // attestation issued BY the community issuer (only the authority may appoint
+    // moderators — unlike membership, which is self-issuable for open join).
+    let moderator_type = format!("role:moderator:{community_id}");
+    // The sys/admin key, for the hub's reserved takedown grant. This community
+    // policy SHADOWS the hub root for its subtree (nearest-policy-wins), so the
+    // root's admin `delete` does NOT reach in — the takedown authority must be
+    // restated here. Managed communities are sys-written, so sys keeps it; a
+    // future user-created (delegated/pinned) board would carry it as a mandated
+    // reserved grant (P3).
+    let sys_pubkey = format!("ed25519:{}", hex::encode(signing_key.public_key().bytes));
     let payload = serde_json::to_vec(&serde_json::json!({
-        "roles": { "member": [{ "attested": { "type": membership_type } }] },
+        "roles": {
+            "member": [{ "attested": { "type": membership_type } }],
+            "moderator": [{ "attested": { "type": moderator_type, "by": issuer } }]
+        },
         // Members may CREATE content; only the object's OWNER may UPDATE it.
         // Under global (path,id) uniqueness a space slot is shared across
         // authors, so a broad `post` (=create+update) grant would let any member
         // overwrite another member's post/comment/reaction. Splitting create
         // (members) from update (owner) closes that while keeping self-edits and
         // vote-toggles working for the author (sbo-qv95 follow-up).
+        //
+        // Moderators may DELETE others' content in this board (mingo-n268);
+        // authors already delete their own via the owner fast-path (mingo-3go6).
+        // sys holds a reserved DELETE on the whole subtree — the hub takedown /
+        // community-removal lever (illegal content, force-compliance). Members
+        // are NOT granted `govern`, so they cannot install a shadowing policy
+        // (P1 closes the sbo-vos1 capture vector).
         "grants": [
             { "to": { "role": "member" }, "can": ["create"], "on": spaces },
-            { "to": "owner", "can": ["update"], "on": spaces }
+            { "to": "owner", "can": ["update"], "on": spaces },
+            { "to": { "role": "moderator" }, "can": ["delete"], "on": spaces },
+            { "to": { "key": sys_pubkey }, "can": ["delete"], "on": subtree }
         ],
         "restrictions": [
             { "on": spaces, "require": { "not_attested": { "type": "ban", "by": issuer } } }
@@ -405,7 +429,13 @@ pub fn mingo_genesis(
             // update) checkpoint objects. Least privilege: this is the ONLY thing
             // it can do — it is not `admin`.
             { "to": { "key": checkpoint_pubkey }, "can": ["create"], "on": "/sys/checkpoints/**" },
-            { "to": { "role": "admin" }, "can": ["post", "transfer", "delete"], "on": "/**" }
+            // `govern` is the authority to install/replace/delete governing
+            // policy objects (SBO policy-delegation model, P1). It is deliberately
+            // NOT covered by `*`/`post`, so it must be granted by name — admin
+            // (the sys key) holds it on /**, which is what lets sys write the hub
+            // root policy and every community policy (each community policy is
+            // governed by its PARENT, i.e. this root policy). Members never get it.
+            { "to": { "role": "admin" }, "can": ["post", "transfer", "delete", "govern"], "on": "/**" }
         ],
         "restrictions": [
             { "on": "/communities/*/spaces/**", "require": { "not_attested": { "type": "ban" } } },
