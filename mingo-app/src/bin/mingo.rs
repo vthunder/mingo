@@ -64,6 +64,55 @@ enum Commands {
         out: String,
     },
 
+    /// Authenticate this CLI as yourself against browserid (bean
+    /// browserid-ng-wmgb). Runs the RFC 8628 device-code flow — prints a
+    /// verification URL you approve in the browser — then obtains a per-audience
+    /// warrant for the mingo repo so writes attribute to you via `as:`. The
+    /// credential is stored under ~/.mingo (0600) for silent reuse.
+    Login {
+        /// Broker / registrar origin (endorses provisioning, hosts consent).
+        #[arg(long, default_value = mingo_app::login::DEFAULT_BROKER)]
+        broker: String,
+        /// Override the target IdP (defaults to the one in the signed delegation).
+        #[arg(long)]
+        idp: Option<String>,
+        /// Warrant audience — must identify the mingo SBO database (bare
+        /// `sbo+raw://chain:appId/`; `sbo://` is rejected on chain).
+        #[arg(long, default_value = mingo_app::login::DEFAULT_AUDIENCE)]
+        audience: String,
+        /// Scope preset: `post` (normal user, default) or `admin` (operator CLI).
+        #[arg(long, default_value = "post")]
+        scope: String,
+        /// Desired agent handle (local-part). The IdP generates one if omitted.
+        #[arg(long)]
+        handle: Option<String>,
+    },
+
+    /// Show the logged-in identity (parent user + agent) and validate the stored
+    /// credential (cert freshness + held warrants).
+    Whoami,
+
+    /// Post to a community space as the logged-in user, proving end-to-end `as:`
+    /// attribution. DRY-RUN by default (prints the write plan); pass --execute to
+    /// submit to the daemon and read the object back to confirm its author.
+    Post {
+        /// Community id (e.g. cooks).
+        community: String,
+        /// Space id (e.g. general).
+        space: String,
+        /// Post body text.
+        text: String,
+        /// Warrant audience (must match the one authorized at login).
+        #[arg(long, default_value = mingo_app::login::DEFAULT_AUDIENCE)]
+        audience: String,
+        /// SBO daemon origin (submit + read-back).
+        #[arg(long, default_value = mingo_app::login::DEFAULT_DAEMON)]
+        daemon: String,
+        /// Actually submit the write (default is a dry-run print).
+        #[arg(long)]
+        execute: bool,
+    },
+
     /// Re-issue a community's policy as OPEN + community-scoped (anyone can join
     /// by self-issuing a `membership:<id>` attestation). Writes the signed wire
     /// to --out.
@@ -376,6 +425,41 @@ fn main() -> Result<()> {
                 "\nSubmit: curl --data-binary @{} -H 'Content-Type: application/octet-stream' <daemon>/v1/submit",
                 out
             );
+        }
+        Commands::Login {
+            broker,
+            idp,
+            audience,
+            scope,
+            handle,
+        } => {
+            mingo_app::login::login(&mingo_app::login::LoginArgs {
+                broker,
+                idp,
+                audience,
+                scope,
+                handle,
+            })?;
+        }
+        Commands::Whoami => {
+            mingo_app::login::whoami()?;
+        }
+        Commands::Post {
+            community,
+            space,
+            text,
+            audience,
+            daemon,
+            execute,
+        } => {
+            mingo_app::login::post(&mingo_app::login::PostArgs {
+                community,
+                space,
+                text,
+                audience,
+                daemon,
+                execute,
+            })?;
         }
         Commands::OpenCommunity {
             community_id,

@@ -17,5 +17,6 @@ pub mod appoint;
 pub mod community;
 pub mod genesis;
 pub mod livetest;
+pub mod login;
 pub mod seed;
 pub mod set_root_admin;

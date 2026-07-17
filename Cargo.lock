@@ -239,6 +239,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "browserid-agent"
+version = "0.1.0"
+source = "git+https://github.com/vthunder/browserid-ng?rev=e572cda#e572cda17ef210385f96d4367474d70a69b261ee"
+dependencies = [
+ "base64 0.22.1",
+ "browserid-core",
+ "chrono",
+ "rand",
+ "reqwest 0.12.25",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "browserid-core"
 version = "0.1.0"
 source = "git+https://github.com/vthunder/browserid-ng?rev=e572cda#e572cda17ef210385f96d4367474d70a69b261ee"
@@ -1396,6 +1412,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "browserid-agent",
  "browserid-core",
  "chrono",
  "clap",
@@ -1404,6 +1421,7 @@ dependencies = [
  "sbo-core",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
