@@ -5,7 +5,7 @@ status: todo
 type: feature
 priority: high
 created_at: 2026-07-17T11:37:01Z
-updated_at: 2026-07-17T11:37:31Z
+updated_at: 2026-07-17T12:06:49Z
 blocked_by:
     - mingo-1pxk
 ---
@@ -14,7 +14,7 @@ Root mingo admin in an EXTERNAL browserid identity (danmills@sandmill.org) inste
 
 ## Mechanism: M2 (direct email in policy) — verified 2026-07-17
 
-`roles.admin = [{ name: "danmills@sandmill.org" }]` in /sys/policies/root.
+`roles.admin = ["danmills@sandmill.org"]` in /sys/policies/root (Identity::Name is an untagged BARE STRING, not `{name:…}` — a `{name:…}` object is rejected by the daemon: "data did not match any variant of untagged enum Identity"; found live 2026-07-17).
 - Policy role matching (evaluate.rs identity_matches) is a pure canonicalized STRING COMPARE against the pre-resolved actor; it NEVER resolves through /sys/names. `canonical_name_ref` leaves a foreign @-email verbatim, so it matches an actor whose attributed email is danmills@sandmill.org (resolve_creator -> attributed_email via sandmill.org DNSSEC + broker). Unforgeable by mingo-idp (foreign domain).
 - The user's original idea (M1: keep role = "sys", re-point /sys/names/sys -> danmills) DOES NOT WORK: role matching ignores name records; `canonical_name_ref("sys","mingo.place") = "sys@mingo.place" != "danmills@sandmill.org"`. /sys/names resolution is only used for OWNER auth + attestation subjects, not roles. So the change must be a POLICY edit, not a name-record edit.
 

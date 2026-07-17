@@ -37,7 +37,8 @@ use crate::seed::{assemble_write, load_signing_key_file};
 pub struct SetRootAdminArgs {
     /// The FULL admin member list. Each entry is either a key
     /// (`ed25519:<hex>` or `key:<hex>` → `{"key": "ed25519:<hex>"}`) or an
-    /// email/name (`{"name": "<id>"}`). Repeatable.
+    /// email/name → a bare string (`"danmills@sandmill.org"`, the untagged
+    /// `Identity::Name` form). Repeatable.
     pub admin: Vec<String>,
     /// SBO daemon origin (read the current policy + submit the update).
     pub daemon: String,
@@ -55,7 +56,11 @@ pub struct SetRootAdminArgs {
 ///
 /// - `ed25519:<hex>` / `key:<hex>` → `{"key": "ed25519:<hex>"}` (the on-chain
 ///   admin-by-key form; a `key:` prefix is normalized to `ed25519:`).
-/// - anything else (contains `@`, or a bare name) → `{"name": "<id>"}`.
+/// - anything else (an email like `danmills@sandmill.org`, or a bare name like
+///   `sys`) → a bare JSON string. `Identity::Name` is an UNTAGGED string variant
+///   in sbo's policy schema (`"danmills@sandmill.org"`), NOT `{"name": …}` —
+///   emitting an object here makes the daemon reject the policy ("data did not
+///   match any variant of untagged enum Identity").
 pub fn parse_admin_member(spec: &str) -> Result<Value> {
     let spec = spec.trim();
     if spec.is_empty() {
@@ -74,7 +79,8 @@ pub fn parse_admin_member(spec: &str) -> Result<Value> {
         }
         Ok(serde_json::json!({ "key": format!("ed25519:{hex}") }))
     } else {
-        Ok(serde_json::json!({ "name": spec }))
+        // Identity::Name is an untagged bare string, not an object.
+        Ok(Value::String(spec.to_string()))
     }
 }
 
@@ -414,14 +420,15 @@ mod tests {
     }
 
     #[test]
-    fn email_and_bare_name_specs_become_name_members() {
+    fn email_and_bare_name_specs_become_bare_string_members() {
+        // Identity::Name is an untagged bare string, not {"name": …}.
         assert_eq!(
             parse_admin_member("danmills@sandmill.org").unwrap(),
-            serde_json::json!({ "name": "danmills@sandmill.org" })
+            serde_json::json!("danmills@sandmill.org")
         );
         assert_eq!(
             parse_admin_member("sys").unwrap(),
-            serde_json::json!({ "name": "sys" })
+            serde_json::json!("sys")
         );
     }
 
@@ -447,8 +454,8 @@ mod tests {
         assert_eq!(
             updated["roles"]["admin"],
             serde_json::json!([
-                { "key": SYS_KEY },
-                { "name": "danmills@sandmill.org" }
+                parse_admin_member(SYS_KEY).unwrap(),
+                "danmills@sandmill.org"
             ])
         );
         // Everything else is byte-identical.
