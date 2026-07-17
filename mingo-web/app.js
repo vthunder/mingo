@@ -88,8 +88,18 @@ async function getSpaceItems(commId, space) {
   const objs = await listPrefix(`/communities/${commId}/spaces/${space}/`);
   const posts = [], comments = [];
   for (const o of objs) {
-    if (o.content_schema === "post.v1") posts.push(toItem(o));
-    else if (o.content_schema === "comment.v1") comments.push(toItem(o));
+    const it = o.content_schema === "post.v1" ? toItem(o)
+      : o.content_schema === "comment.v1" ? toItem(o) : null;
+    if (!it) continue;
+    // A delete confirms by the object being ABSENT from head, so there's no
+    // confirmed state to reconcile against — the daemon still serves the object
+    // as `confirmed:false` (pending) through the delete's confirmation window.
+    // Suppress anything the user just deleted so it doesn't render as a permanent
+    // "pending…" card and can't reappear from that stale pending overlay entry
+    // (mingo-3go6). Once the delete confirms the object is gone from head anyway.
+    if (deletedUris.has(it.uri)) continue;
+    if (o.content_schema === "post.v1") posts.push(it);
+    else comments.push(it);
   }
   return { posts, comments };
 }
@@ -1516,6 +1526,12 @@ function wireVoteButtons() {
 // Feed rows are rendered as HTML strings, so stash each row's item here and let
 // the click handler look it up by uri (same pattern as data-vote, richer data).
 const receiptItems = new Map();
+// URIs the local user has deleted this session. A delete has no confirmed head
+// state to poll for (the object simply leaves head), so we track it client-side:
+// getSpaceItems filters these out so the row disappears on the next render and
+// never lingers as a "pending…" card or reappears from the stale pending overlay
+// entry the daemon serves during the delete's confirmation window (mingo-3go6).
+const deletedUris = new Set();
 function receiptLink(p) {
   receiptItems.set(p.uri, p);
   return ` · <button class="link receipt" data-receipt="${esc(p.uri)}" title="cryptographic receipt" aria-label="cryptographic receipt">${RECEIPT_ICON}<span class="rlbl">receipt</span></button>`;
@@ -1605,9 +1621,13 @@ function beginDelete(uri, asMod = false) {
     btn.disabled = true; btn.textContent = asMod ? "Removing…" : "Deleting…";
     try {
       await deleteContent(item);
+      // Mark it deleted so every render (this one and the live poll) drops it —
+      // the daemon still serves it as pending until the delete confirms, so we
+      // can't wait for a confirmed head read the way a post/edit does.
+      deletedUris.add(item.uri);
       toast(asMod ? `${kind} removed.` : `${kind} deleted.`);
       await new Promise((r) => setTimeout(r, 1200));
-      route(); // overlay serves head without the object; re-render drops it
+      route(); // re-render now omits the object (deletedUris); the row disappears
     } catch (e) {
       toast((asMod ? "remove" : "delete") + " failed: " + e.message);
       btn.disabled = false; btn.textContent = confirmLabel;
@@ -1970,18 +1990,33 @@ function liveApplyVotes(votes) {
   });
 }
 const shown = (container, uri) => !!container.querySelector(`[data-receipt="${CSS.escape(uri)}"]`);
-// Append rows/comments not already in the DOM. Clears a placeholder ("No posts
-// yet.") the first time a real item lands. Re-wires only after a change.
+// Reconcile the DOM against the fresh list: append rows/comments not already
+// shown, and REMOVE rows whose object is no longer in head (deleted — here or in
+// another session — or filtered by deletedUris). Removal is what makes a delete
+// vanish: a deleted object leaves head, drops out of `items`, and its row is
+// pulled here instead of lingering forever as a stale "pending…" card (mingo-3go6).
+// Clears a placeholder ("No posts yet.") the first time a real item lands, and
+// re-wires only after a change.
 function liveAppend(container, items, render) {
   if (!container) return;
-  let added = false;
+  const wanted = new Set(items.map((it) => it.uri));
+  let changed = false;
+  container.querySelectorAll("[data-receipt]").forEach((mark) => {
+    const uri = mark.getAttribute("data-receipt");
+    if (wanted.has(uri)) return;
+    // data-receipt sits on an action button inside the row; remove the row —
+    // the direct child of the container — not just the button.
+    let row = mark;
+    while (row.parentElement && row.parentElement !== container) row = row.parentElement;
+    if (row.parentElement === container) { row.remove(); changed = true; }
+  });
   for (const it of items) {
     if (shown(container, it.uri)) continue;
     if (!container.querySelector("[data-receipt]")) container.innerHTML = ""; // drop placeholder
     container.appendChild(el(render(it)));
-    added = true;
+    changed = true;
   }
-  if (added) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); wireCardMenus(); wireDeleteButtons(); }
+  if (changed) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); wireCardMenus(); wireDeleteButtons(); }
 }
 async function pollFeed(kind, commId) {
   const votes = await getVoteCounts();
