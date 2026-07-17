@@ -338,7 +338,7 @@ async fn login_async(args: &LoginArgs) -> Result<()> {
             // can reuse the same delegation instead of re-approving.
             let cpath = credential_path()?;
             let _ = write_private(&cpath, &serde_json::to_string_pretty(&credential)?);
-            return Err(explain_mint_failure(&credential, &args.broker, &user, &e, &cpath));
+            return Err(explain_mint_failure(&credential, &args.broker, &e));
         }
     };
     println!("✓ agent identity: {} (acting for {user})", agent.email());
@@ -398,9 +398,7 @@ fn host_of(url: &str) -> &str {
 fn explain_mint_failure(
     credential: &AgentCredential,
     broker: &str,
-    user: &str,
     err: &browserid_agent::AgentError,
-    cpath: &std::path::Path,
 ) -> anyhow::Error {
     let idp_host = host_of(&credential.idp);
     let broker_host = host_of(broker);
@@ -409,22 +407,8 @@ fn explain_mint_failure(
         return anyhow!("provisioning agent identity: {err}");
     }
     anyhow!(
-        "provisioning the agent failed at {idp} ({err}).\n\n\
-         Your identity '{user}' is rooted at the primary IdP '{idp_host}', which does not offer \
-         agent (command-line) provisioning — only browserid.me (or a browserid-broker IdP like \
-         mingo.place) implements the agent delegation-chain mint endpoint. The browser delegation \
-         succeeded, but '{idp_host}' has no mint endpoint for it, and the broker cannot mint on its \
-         behalf (the broker only mints identities it roots, and cannot verify a cert signed by \
-         '{idp_host}'s own key).\n\n\
-         Options:\n  \
-         - log in with a browserid.me-rooted identity (a browserid.me email), whose agent mints at \
-           browserid.me; or\n  \
-         - pass `--idp <url>` if another IdP can mint an agent for '{user}'; or\n  \
-         - add broker-hosted agent provisioning for primary identities in browserid-ng (a \
-           browserid.me change + redeploy).\n\n\
-         The approved delegation was saved to {cpath} so it can be reused on retry.",
-        idp = credential.idp,
-        cpath = cpath.display(),
+        "{idp_host} does not support provisioning agent identities\n\
+         hint: use an identity whose IdP supports agents, or --idp <url>"
     )
 }
 
@@ -768,31 +752,20 @@ mod tests {
             broker: "https://browserid.me".into(),
             idp: "https://sandmill.org".into(),
         };
-        let msg = explain_mint_failure(
-            &cred,
-            "https://browserid.me",
-            "danmills@sandmill.org",
-            &err,
-            std::path::Path::new("/tmp/credential.json"),
-        )
-        .to_string();
-        assert!(msg.contains("primary IdP 'sandmill.org'"));
-        assert!(msg.contains("--idp"));
-        // Same-domain-as-broker failure stays raw (no primary-IdP guidance).
+        let msg = explain_mint_failure(&cred, "https://browserid.me", &err).to_string();
+        assert_eq!(
+            msg,
+            "sandmill.org does not support provisioning agent identities\n\
+             hint: use an identity whose IdP supports agents, or --idp <url>"
+        );
+        // Same-domain-as-broker failure stays raw (no IdP-capability line).
         let cred2 = AgentCredential {
             idp: "https://browserid.me".into(),
             ..cred
         };
-        let msg2 = explain_mint_failure(
-            &cred2,
-            "https://browserid.me",
-            "someone@browserid.me",
-            &err,
-            std::path::Path::new("/tmp/credential.json"),
-        )
-        .to_string();
+        let msg2 = explain_mint_failure(&cred2, "https://browserid.me", &err).to_string();
         assert!(msg2.contains("provisioning agent identity"));
-        assert!(!msg2.contains("primary IdP"));
+        assert!(!msg2.contains("does not support"));
     }
 
     #[test]
