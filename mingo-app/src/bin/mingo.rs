@@ -121,6 +121,43 @@ enum Commands {
         #[arg(long, default_value = "MINGO_ADMIN_TOKEN")]
         admin_token_env: String,
     },
+
+    /// Appoint a board-scoped moderator on the live chain: issue a
+    /// `role:moderator:<commId>` `attestation.v1` attributed to the community
+    /// issuer `<commId>@mingo.place` (which the regenesis-v5 policy binds the
+    /// `role:moderator` capability to). DRY-RUN by default — prints the write
+    /// plan; pass --execute to mint the issuer cert and submit.
+    AppointModerator {
+        /// Community id (e.g. cooks). Its issuer <commId>@mingo.place owns the
+        /// attestation and is minted for the write.
+        comm_id: String,
+        /// The moderator's mingo identity — the attestation subject (e.g.
+        /// asha@mingo.place).
+        subject: String,
+        /// IdP origin (its host is the identity domain, e.g. mingo.place).
+        #[arg(long, default_value = "https://mingo.place")]
+        idp: String,
+        /// SBO daemon origin to submit to.
+        #[arg(long, default_value = "https://da.sandmill.org")]
+        daemon: String,
+        /// Env var holding the IdP admin token (X-Admin-Token).
+        #[arg(long, default_value = "MINGO_ADMIN_TOKEN")]
+        admin_token_env: String,
+        /// Attestation `value` (cosmetic; policy matches on type + issuer).
+        /// Defaults to "moderator".
+        #[arg(long)]
+        value: Option<String>,
+        /// Expiry as ISO-8601 (RFC-3339), or `none`/absent for no expiry.
+        #[arg(long)]
+        expires: Option<String>,
+        /// Actually mint the issuer cert + submit (default is a dry-run print).
+        #[arg(long)]
+        execute: bool,
+        /// Explicitly request a dry-run print (the default; accepted for clarity
+        /// and ignored — only --execute submits).
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Load a transient domain signing key from `{"secret_key":"<hex 32-byte seed>"}`
@@ -321,6 +358,28 @@ fn main() -> Result<()> {
                 execute,
                 admin_token_env,
                 broker_admin_token_env,
+            })?;
+        }
+        Commands::AppointModerator {
+            comm_id,
+            subject,
+            idp,
+            daemon,
+            admin_token_env,
+            value,
+            expires,
+            execute,
+            dry_run: _,
+        } => {
+            mingo_app::appoint::run(&mingo_app::appoint::AppointArgs {
+                comm_id,
+                subject,
+                idp,
+                daemon,
+                admin_token_env,
+                value,
+                expires,
+                execute,
             })?;
         }
     }
