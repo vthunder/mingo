@@ -1,6 +1,17 @@
-# Mingo genesis record — regenesis v3 (2026-07-16)
+# Mingo genesis record — regenesis v5 (2026-07-17)
 
-**History:** v1 2026-06-28 @3545910 (`a3f28de0…`, after the original sys key was lost) → v2 @3567386 (`7c429116…`, added the /sys/checkpoints checkpointer grant + sys-checkpointer name; table below was not updated at the time) → v3 @3619219 (`3c614c5d…`, wipe of the rejected synthetic seed corpus, mingo-4rvr) → **v4 @3622378** (`3c614c5d…`, SAME genesis wire re-anchored under the SBO global-(path,id)-uniqueness keying — sbo-qv95; the trie-key change (creator dropped) shifts every computed state root, so the chain is re-established from a fresh anchor on the new daemon).
+**History:** v1 2026-06-28 @3545910 (`a3f28de0…`, after the original sys key was lost) → v2 @3567386 (`7c429116…`, added the /sys/checkpoints checkpointer grant + sys-checkpointer name; table below was not updated at the time) → v3 @3619219 (`3c614c5d…`, wipe of the rejected synthetic seed corpus, mingo-4rvr) → v4 @3622378 (`3c614c5d…`, SAME genesis wire re-anchored under the SBO global-(path,id)-uniqueness keying — sbo-qv95; the trie-key change (creator dropped) shifts every computed state root, so the chain is re-established from a fresh anchor on the new daemon) → **v5 @3623864** (`ca27c611…`, onto the policy-delegation model: the hub root policy gains a `govern` grant for admin (sbo P1 — authority to write policy objects, not implied by `*`), and each community policy gains a board-scoped `role:moderator:<id>` **delete** grant on spaces/** plus a reserved sys-key **delete** on the whole community subtree (hub takedown / community-removal); members get create+owner-update and **no govern**, closing the sbo-vos1 policy-capture vector. Requires the sbo P1 daemon (rev `4b28d8e`). Beans mingo-qjkf / sbo-orvt / sbo-vos1).
+
+**v5 canonical identity:** `avail:turing:506:3623864:sha256:ca27c61143c18786fc9ffee4fee25b458e7881390601e2ab55e0d9df9dc585bc`
+(sys/domain/checkpointer keys unchanged from v4; TurboDA submission_id `b5038838-ff4b-418c-b803-0a90aae7285d`, tx `04d08be0…`, extrinsic 2.)
+
+## v5 DNS record (`_sbo.mingo.place`) — to update (app does not depend on it)
+
+```
+_sbo.mingo.place.  IN  TXT  "v=sbo1 repo=sbo+raw://avail:turing:506@3623864/ genesis=sha256:ca27c61143c18786fc9ffee4fee25b458e7881390601e2ab55e0d9df9dc585bc node=https://da.sandmill.org"
+```
+
+> **v4 record below is historical.** The daemon is configured directly (entrypoint.sh repos.json → `da.sandmill.org`), so discovery via this TXT record is not on the app's critical path; update it when convenient.
 
 The live mingo.place SBO database, re-genesised on a new (backed-up) sys key after the
 original was lost. Reuses **Avail turing app 506**; the old pre-genesis chain remains on
