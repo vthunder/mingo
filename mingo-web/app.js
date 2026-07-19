@@ -276,14 +276,14 @@ navigator.id.watch({
   },
 });
 
-// A background login delivers an assertion with no pending request(). Two ways
+// A background login delivers a presentation with no pending request(). Two ways
 // we get here: FedCM silent auto-reauthn, OR a returning navigator.id.request
 // whose popup the browser turned into a full-page REDIRECT (Chrome on iOS) —
 // the reload dropped our in-page promise, so the assertion lands here instead.
 async function silentLogin(assertion) {
   if (session.email) return; // already signed in via the RP's own session
   try {
-    const sess = await idpPost("/session/from-assertion", { assertion });
+    const sess = await idpPost("/session/from-presentation", { presentation: assertion });
     const email = sess.handle
       ? `${sess.handle}@${CONFIG.domain}`
       : sess.identity_mode === "email"
@@ -387,7 +387,7 @@ async function signIn() {
   try {
     const assertion = await requestAssertion({ sboSign: false });
     if (!assertion) return; // cancelled
-    const sess = await idpPost("/session/from-assertion", { assertion });
+    const sess = await idpPost("/session/from-presentation", { presentation: assertion });
 
     // Decide the identity to sign as: a returning handle user, a returning
     // external-email user, or a new user who picks in the chooser.

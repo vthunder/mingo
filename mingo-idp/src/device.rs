@@ -102,12 +102,15 @@ pub async fn device_cert(
     )
     .map_err(|e| AppError::Internal(format!("device cert: {e}")))?;
 
+    // The config (authorization) cert also covers the handle's `+tag`
+    // sub-addresses so it can sign warrants for plus-named agent identities
+    // (browserid design doc, Stage 3).
     let config_cert = DeviceCert::create(
         &st.config.domain,
         &config_pub,
         Purpose::Authorization,
         Subject::User,
-        vec![identity.clone()],
+        vec![identity.clone(), format!("{}+*@{}", handle, st.config.domain)],
         validity,
         &st.keypair,
         None,

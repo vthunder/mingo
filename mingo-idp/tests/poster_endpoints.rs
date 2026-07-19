@@ -1,8 +1,8 @@
-//! HTTP smoke test for the mingo-poster endpoints (mingo-3f3i): routing,
-//! session gating, and store integration. The enable/poll/submit paths call
-//! out to the registrar + daemon, so those are exercised live; here we cover
-//! everything reachable without external services — status gating and the
-//! "not enabled" submit guard.
+//! HTTP smoke test for the mingo-poster endpoints (mingo-3f3i). The poster is
+//! TEMPORARILY DISABLED during the device-cert migration (see src/poster.rs);
+//! these tests pin the disabled contract: /poster/status reports
+//! available:false (so the SPA hides the affordance) and the mutating
+//! endpoints answer 503 with a clear reason.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -60,26 +60,11 @@ fn session_cookie(state: &Shared, email: &str) -> (i64, String) {
 }
 
 #[tokio::test]
-async fn status_requires_a_session() {
+async fn status_reports_unavailable() {
     let (base, _state) = start().await;
-    let resp = reqwest::Client::new()
+    let client = reqwest::Client::new();
+    let body: Value = client
         .get(format!("{base}/poster/status"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401, "no session → unauthorized");
-}
-
-#[tokio::test]
-async fn status_reflects_stored_warrant() {
-    let (base, state) = start().await;
-    let (account_id, cookie) = session_cookie(&state, "dan@example.com");
-    let http = reqwest::Client::new();
-
-    // No warrant yet → disabled.
-    let body: Value = http
-        .get(format!("{base}/poster/status"))
-        .header("cookie", &cookie)
         .send()
         .await
         .unwrap()
@@ -87,78 +72,28 @@ async fn status_reflects_stored_warrant() {
         .await
         .unwrap();
     assert_eq!(body["enabled"], false);
-
-    // A live warrant → enabled; an expired one → disabled.
-    let future = chrono::Utc::now().timestamp() + 3600;
-    state
-        .store
-        .set_poster_warrant(account_id, "dan@example.com", "jws", "sbo://mingo", future)
-        .unwrap();
-    let body: Value = http
-        .get(format!("{base}/poster/status"))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["enabled"], true);
-    assert_eq!(body["expires_at"], future);
-
-    state
-        .store
-        .set_poster_warrant(account_id, "dan@example.com", "jws", "sbo://mingo", 1)
-        .unwrap();
-    let body: Value = http
-        .get(format!("{base}/poster/status"))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["enabled"], false, "expired warrant is not enabled");
+    assert_eq!(body["available"], false);
+    assert!(body["reason"].as_str().unwrap_or("").contains("device-cert"));
 }
 
 #[tokio::test]
-async fn submit_without_a_warrant_is_refused() {
+async fn mutating_endpoints_are_disabled() {
     let (base, state) = start().await;
     let (_id, cookie) = session_cookie(&state, "dan@example.com");
-    let resp = reqwest::Client::new()
-        .post(format!("{base}/poster/submit"))
-        .header("cookie", &cookie)
-        .json(&json!({
-            "path": "/communities/hub/spaces/general/",
-            "id": "note-1",
-            "schema": "post.v1",
-            "payload": [123, 125],
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400, "not enabled → bad request");
-    let body: Value = resp.json().await.unwrap();
-    assert!(
-        body["error"].as_str().unwrap().contains("not enabled"),
-        "{body}"
-    );
-}
-
-#[tokio::test]
-async fn poll_without_pending_is_none() {
-    let (base, state) = start().await;
-    let (_id, cookie) = session_cookie(&state, "dan@example.com");
-    let body: Value = reqwest::Client::new()
-        .post(format!("{base}/poster/poll"))
-        .header("cookie", &cookie)
-        .json(&json!({}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["status"], "none");
+    let client = reqwest::Client::new();
+    for path in ["/poster/enable", "/poster/poll", "/poster/disable", "/poster/submit"] {
+        let resp = client
+            .post(format!("{base}{path}"))
+            .header("cookie", &cookie)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 503, "{path} must report the migration");
+        let body: Value = resp.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap_or("").contains("device-cert"),
+            "{path}: {body}"
+        );
+    }
 }

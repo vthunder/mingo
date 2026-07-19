@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Authorize this device — mingo.place</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 16px/1.6 system-ui, -apple-system, sans-serif; max-width: 26rem;
+      margin: 4rem auto; padding: 0 1.25rem; text-align: center; }
+    .muted { opacity: .65; }
+    .err { color: #c53030; }
+    a { color: inherit; }
+    .spinner { width: 28px; height: 28px; margin: 1.5rem auto; border: 3px solid rgba(127,127,127,.3);
+      border-top-color: currentColor; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1 style="font-size:1.3rem">mingo.place</h1>
+  <div class="spinner" id="spin"></div>
+  <p id="msg" class="muted">Authorizing this device…</p>
+
+<script>
+// Device-authorization popup (browserid device-cert model). The login dialog
+// opened us with #email=…&device_pubkey=…&config_pubkey=…&return_origin=…;
+// we issue the two device certs first-party and post them back to the opener.
+(function () {
+  'use strict';
+  var KEY = 'browserid_device_authorize';
+  var msg = document.getElementById('msg');
+  var spin = document.getElementById('spin');
+  function fail(html) {
+    spin.style.display = 'none';
+    msg.className = 'err';
+    msg.innerHTML = html;
+  }
+
+  // Capture fragment params (sessionStorage survives a sign-in round trip;
+  // the fragment itself never reaches the server).
+  var frag = location.hash.length > 1 ? location.hash.slice(1) : '';
+  if (frag) {
+    var p = new URLSearchParams(frag);
+    if (p.get('email') && p.get('device_pubkey') && p.get('config_pubkey') && p.get('return_origin')) {
+      try {
+        sessionStorage.setItem(KEY, JSON.stringify({
+          email: p.get('email'),
+          device_pubkey: p.get('device_pubkey'),
+          config_pubkey: p.get('config_pubkey'),
+          return_origin: p.get('return_origin')
+        }));
+      } catch (e) {}
+    }
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+  var params = null;
+  try { params = JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) {}
+  if (!params) return fail('This page is opened by the browserid sign-in dialog; open it from there.');
+
+  var returnOrigin;
+  try {
+    returnOrigin = new URL(params.return_origin).origin;
+    if (!/^https?:$/.test(new URL(returnOrigin).protocol)) throw new Error('bad scheme');
+  } catch (e) { return fail('Invalid return origin.'); }
+
+  function send(payload) {
+    if (!window.opener) return fail('The sign-in dialog window is gone — close this and retry.');
+    window.opener.postMessage(payload, returnOrigin);
+    try { sessionStorage.removeItem(KEY); } catch (e) {}
+    window.close();
+  }
+
+  fetch('/whoami', { credentials: 'same-origin', headers: { accept: 'application/json' } })
+    .then(function (r) { return r.json(); })
+    .then(function (who) {
+      if (!who || !who.authenticated || !who.handle) {
+        return fail('You are not signed in to mingo.place in this browser (or have no handle yet). ' +
+          '<a href="/" target="_blank" rel="noreferrer">Open mingo.place</a>, sign in, ' +
+          'then close this window and click sign-in again.');
+      }
+      var identity = (who.handle + '@' + location.hostname).toLowerCase();
+      if (identity !== String(params.email).toLowerCase()) {
+        return fail('This browser is signed in as ' + identity + ', but the sign-in requested ' +
+          params.email + '. Switch accounts at mingo.place and try again.');
+      }
+      return fetch('/device_cert', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({
+          device_pubkey: { algorithm: 'Ed25519', publicKey: params.device_pubkey },
+          config_pubkey: { algorithm: 'Ed25519', publicKey: params.config_pubkey }
+        })
+      }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+        .then(function (res) {
+          if (!res.ok || !res.body.device_cert || !res.body.config_cert) {
+            var reason = (res.body && (res.body.error || res.body.message)) || 'issuance failed';
+            send({ type: 'browserid:device_error', reason: reason });
+            return fail('Could not authorize this device: ' + reason);
+          }
+          msg.textContent = 'Device authorized — returning…';
+          send({
+            type: 'browserid:device_certs',
+            device_cert: res.body.device_cert,
+            config_cert: res.body.config_cert
+          });
+        });
+    })
+    .catch(function (e) { fail('Error: ' + (e && e.message ? e.message : e)); });
+})();
+</script>
+</body>
+</html>

@@ -1,11 +1,11 @@
-//! Inbound assertion verification.
+//! Inbound presentation verification (device-cert model).
 //!
-//! The SPA hands us the assertion the *broker* issued for the user's external
-//! identity (audience = the app origin). We verify it to root a mingo session.
-//! This is HTTP-discovery based (fetch the issuer's `.well-known/browserid`),
-//! ported from the broker's `verifier.rs` so we depend only on `browserid-core`.
-//! The trustless part — the cert *we* issue for `<handle>@mingo.place` — is
-//! validated downstream by the broker via DNSSEC; this check only protects the
+//! The SPA hands us the 4-object access presentation the browserid dialog
+//! produced for the user's external identity (audience = the app origin). We
+//! verify it to root a mingo session. This is HTTP-discovery based (fetch the
+//! issuer's `.well-known/browserid`), so we depend only on `browserid-core`.
+//! The trustless part — the certs *we* issue for `<handle>@mingo.place` — is
+//! validated downstream by RPs via DNSSEC; this check only protects the
 //! integrity of our own session.
 
 use std::time::Duration;
@@ -13,7 +13,8 @@ use std::time::Duration;
 use browserid_core::discovery::{
     discover, DiscoveryConfig, SupportDocument, SupportDocumentFetcher,
 };
-use browserid_core::{BackedAssertion, Error as CoreError, Result as CoreResult};
+use browserid_core::device::{AccessPresentation, Subject};
+use browserid_core::{Error as CoreError, Result as CoreResult};
 
 /// HTTP support-document fetcher (HTTPS, optionally allowing HTTP for local dev).
 pub struct HttpFetcher {
@@ -85,24 +86,27 @@ pub fn fetch_domain_pubkey(
         .ok_or_else(|| format!("{} published no public key", domain))
 }
 
-/// A verified external presentation: the certified email, plus agent
-/// attribution when it was a warrant-backed agent presentation (v0.4).
+/// A verified external presentation: the certified email, plus the subject
+/// axis and warrant scopes when the presenter is an agent.
 pub struct VerifiedExternal {
     pub email: String,
-    /// `Some((parent, scopes))` iff the presenter is an agent — its
-    /// delegator authorized it at exactly this audience via a warrant.
-    pub agent: Option<(String, Vec<String>)>,
+    /// `Some(scopes)` iff the presenter is an agent — its delegator's config
+    /// cert authorized it at exactly this audience via a warrant.
+    pub agent: Option<Vec<String>>,
 }
 
-/// Verify a backed assertion and return the certified external identity.
+/// Verify a device-model access presentation
+/// (`access_cert~assertion~warrant~config_cert`) and return the certified
+/// external identity.
 ///
-/// Authorization (mirrors Persona / the broker): the cert issuer must be either
-/// the trusted broker, the email's own domain (native primary), or a domain the
-/// email's domain delegates to. Agent presentations (typed cert + warrant,
-/// spec v0.4 §5.3) verify the user-signed warrant against this audience —
-/// parse is fail-closed, so a warrant-less agent cert never gets this far.
-pub fn verify_external_assertion(
-    assertion: &str,
+/// Authorization (mirrors Persona / the broker): the issuer (shared by the
+/// access cert and config cert — the core join enforces that) must be either
+/// the trusted broker, the email's own domain (native primary), or a domain
+/// the email's domain delegates to. The core join also verifies the warrant
+/// against the config cert and the assertion against the fresh access key —
+/// a warrant-less presentation never parses.
+pub fn verify_external_presentation(
+    presentation: &str,
     audience: &str,
     trusted_broker: &str,
     require_https: bool,
@@ -110,17 +114,10 @@ pub fn verify_external_assertion(
     let fetcher = HttpFetcher::new(require_https);
     let config = DiscoveryConfig::default();
 
-    let backed = BackedAssertion::parse(assertion).map_err(|e| format!("parse: {}", e))?;
-    let cert = backed
-        .certificates()
-        .first()
-        .ok_or_else(|| "no certificate".to_string())?;
-
-    let issuer = cert.issuer().to_string();
-    let email = cert
-        .email()
-        .ok_or_else(|| "cert has no email".to_string())?
-        .to_string();
+    let pres = AccessPresentation::parse(presentation).map_err(|e| format!("parse: {}", e))?;
+    let ac = pres.access_cert.claims();
+    let issuer = ac.iss.clone();
+    let email = ac.identity.clone();
     let email_domain = email
         .split('@')
         .nth(1)
@@ -137,47 +134,32 @@ pub fn verify_external_assertion(
         ));
     }
 
-    if backed.assertion().audience() != audience {
-        return Err(format!(
-            "audience mismatch: expected {}, got {}",
-            audience,
-            backed.assertion().audience()
-        ));
-    }
-    if backed.assertion().is_expired() {
-        return Err("assertion expired".to_string());
-    }
-    if cert.is_expired() {
-        return Err("certificate expired".to_string());
-    }
-    backed
-        .assertion()
-        .verify(cert.public_key())
-        .map_err(|e| format!("assertion signature invalid: {}", e))?;
-
     let issuer_key = discover(&issuer, &fetcher, &config)
         .map_err(|e| format!("discover issuer {}: {}", issuer, e))?
         .document
         .public_key
         .ok_or_else(|| format!("issuer {} published no public key", issuer))?;
-    cert.verify(&issuer_key)
-        .map_err(|e| format!("certificate signature invalid: {}", e))?;
 
-    // Agent presentation: the warrant is load-bearing (spec §5.3). Verify it
-    // against the same issuer key (delegator and agent share one IdP) and
-    // surface the attribution.
-    let agent = if cert.is_agent() {
-        let warrant = backed
-            .warrant()
-            .ok_or_else(|| "agent certificate requires a warrant".to_string())?;
-        let scopes = warrant
-            .verify_for(cert, audience, &issuer_key)
-            .map_err(|e| format!("warrant invalid: {}", e))?;
-        let parent = cert.agent_parent().unwrap_or_default().to_string();
-        Some((parent, scopes))
-    } else {
-        None
+    // The core join: both certs verify against the issuer key, the assertion
+    // against the fresh access key, the warrant against the config cert, and
+    // identity/subject/audience must be consistent across all four objects.
+    let verified = pres
+        .verify(audience, |iss| {
+            if iss == issuer {
+                Ok(issuer_key.clone())
+            } else {
+                Err(CoreError::DiscoveryFailed {
+                    domain: iss.to_string(),
+                    reason: "issuer not authoritative for this presentation".to_string(),
+                })
+            }
+        })
+        .map_err(|e| format!("presentation invalid: {}", e))?;
+
+    let agent = match verified.subject {
+        Subject::Agent => Some(verified.scopes),
+        Subject::User => None,
     };
 
-    Ok(VerifiedExternal { email, agent })
+    Ok(VerifiedExternal { email: verified.email, agent })
 }

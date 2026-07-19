@@ -4,7 +4,6 @@
 //! integration tests can boot the real app in-process (e.g. the agent
 //! provisioning conformance test drives it with the `browserid-agent` SDK).
 
-pub mod agent;
 pub mod config;
 pub mod device;
 pub mod error;
@@ -29,40 +28,29 @@ pub use routes::{AppState, Shared};
 /// assets (provision/auth pages + shims); `spa_dir` the mingo-web SPA.
 pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router {
     let file = |name: &str| ServeFile::new(static_dir.join(name));
-    // Agent provisioning (mingo-ua8w; tdxf spec §4.3-4.5) — target-IdP
-    // mint/list/revoke/reserve of dual-signed requests. `/provision/reserve`
-    // is called cross-origin by the browser at browserid.me/agents, so this
-    // group gets permissive CORS (no cookies — the credential is the bundle).
-    let provision = Router::new()
-        .route("/provision/reserve", post(agent::reserve))
-        .route("/provision/mint", post(agent::mint))
-        .route("/provision/list", post(agent::list))
-        .route("/provision/revoke", post(agent::revoke))
+    // The headless access-cert mint is called cross-origin by the browserid
+    // dialog (uncredentialed fetch), so it gets permissive CORS.
+    let mint = Router::new()
+        .route("/access/mint", post(device::access_mint))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods([Method::POST, Method::OPTIONS])
-                .allow_headers([header::CONTENT_TYPE]),
+                .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
         );
     Router::new()
         .route("/.well-known/browserid", get(routes::well_known))
         .route(
-            "/session/from-assertion",
-            post(routes::session_from_assertion),
+            "/session/from-presentation",
+            post(routes::session_from_presentation),
         )
         .route("/whoami", get(routes::whoami))
         .route("/logout", post(routes::logout))
         .route("/claim_handle", post(routes::claim_handle))
         .route("/use_external", post(routes::use_external))
-        .route("/cert_key", post(routes::cert_key))
         // Device-cert model (DC conformance): session-authed batch device-cert
-        // issuance + a headless access-cert mint (the DeviceAgent SDK's target).
+        // issuance; the headless mint is in the CORS-wrapped group below.
         .route("/device_cert", post(device::device_cert))
-        .route("/access/mint", post(device::access_mint))
-        // Same-tab (first-party) provisioning return (mingo-ytrs): the broker
-        // navigates the TOP frame here to mint a handle cert under a first-party
-        // session (works where the hidden cross-site /provision iframe is ITP-blocked).
-        .route("/provision_return", get(routes::provision_return))
         // mingo-poster delegated signing (mingo-3f3i), same-origin + session-gated.
         .route("/poster/enable", post(poster::enable))
         .route("/poster/poll", post(poster::poll))
@@ -70,15 +58,11 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         .route("/poster/disable", post(poster::disable))
         .route("/poster/submit", post(poster::submit))
         .route("/admin/seed", post(routes::admin_seed))
-        .route("/admin/provision", post(routes::admin_provision))
         .route("/admin/delete-account", post(routes::admin_delete_account))
-        .merge(provision)
-        .route_service("/provision", file("provision.html"))
-        .route_service("/auth", file("auth.html"))
-        .route_service("/provision.js", file("provision.js"))
-        .route_service("/auth.js", file("auth.js"))
-        .route_service("/provisioning_api.js", file("provisioning_api.js"))
-        .route_service("/authentication_api.js", file("authentication_api.js"))
+        .merge(mint)
+        // Device-authorization popup: the browserid dialog opens it to obtain
+        // the session identity's device+config certs first-party.
+        .route_service("/device-authorize", file("device-authorize.html"))
         // The mingo-web SPA, served same-origin as a fallback.
         .fallback_service(ServeDir::new(spa_dir).append_index_html_on_directories(true))
         // Always revalidate served assets. The SPA (app.js) is security-critical
