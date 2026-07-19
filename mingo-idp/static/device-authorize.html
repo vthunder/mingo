@@ -47,7 +47,10 @@
           email: p.get('email'),
           device_pubkey: p.get('device_pubkey'),
           config_pubkey: p.get('config_pubkey'),
-          return_origin: p.get('return_origin')
+          return_origin: p.get('return_origin'),
+          // Redirect mode (popup-hostile browsers): navigate back to the
+          // dialog's resume URL instead of postMessage-ing an opener.
+          return_url: p.get('return_url') || null
         }));
       } catch (e) {}
     }
@@ -64,6 +67,22 @@
   } catch (e) { return fail('Invalid return origin.'); }
 
   function send(payload) {
+    // Redirect mode: hand the result back by navigating to the dialog's
+    // resume URL (fragment-carried; certs are public objects). The resume URL
+    // must belong to the return origin — same containment postMessage's
+    // targetOrigin provides in popup mode.
+    if (params.return_url) {
+      var ok = false;
+      try { ok = new URL(params.return_url).origin === returnOrigin; } catch (e) {}
+      if (!ok) return fail('Invalid return URL.');
+      try { sessionStorage.removeItem(KEY); } catch (e) {}
+      var frag = payload.type === 'browserid:device_certs'
+        ? '#device_cert=' + encodeURIComponent(payload.device_cert) +
+          '&config_cert=' + encodeURIComponent(payload.config_cert)
+        : '#device_error=' + encodeURIComponent(payload.reason || 'refused');
+      location.replace(params.return_url + frag);
+      return;
+    }
     if (!window.opener) return fail('The sign-in dialog window is gone — close this and retry.');
     window.opener.postMessage(payload, returnOrigin);
     try { sessionStorage.removeItem(KEY); } catch (e) {}
