@@ -47,11 +47,20 @@ pub type Shared = Arc<AppState>;
 // --------------------------------------------------------------------------
 // GET /.well-known/browserid
 // --------------------------------------------------------------------------
-pub async fn well_known(State(st): State<Shared>) -> Json<SupportDocument> {
+pub async fn well_known(State(st): State<Shared>) -> Json<serde_json::Value> {
     let doc = SupportDocument::new(st.keypair.public_key())
         .with_authentication("/auth")
         .with_provisioning("/provision");
-    Json(doc)
+    // Advertise the device-cert endpoints alongside the standard support-document
+    // fields. `SupportDocument` has no typed slots for these (they are a mingo/
+    // sandmill device-cert extension), so merge them into the serialized object.
+    let mut value = serde_json::to_value(&doc).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(map) = value.as_object_mut() {
+        // `device-cert`: session-authed batch issuance; `access-cert`: headless mint.
+        map.insert("device-cert".into(), serde_json::json!("/device_cert"));
+        map.insert("access-cert".into(), serde_json::json!("/access/mint"));
+    }
+    Json(value)
 }
 
 // --------------------------------------------------------------------------

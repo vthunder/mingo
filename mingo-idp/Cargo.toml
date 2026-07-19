@@ -17,7 +17,9 @@ path = "src/main.rs"
 # BrowserID protocol primitives (certificate signing, assertion verify, discovery).
 # Pinned git dependency on browserid-ng (e572cda = external warrant requests:
 # ProvisioningRequest::warrant_external + ExternalWarrantRequest, for mingo-poster).
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "e572cda" }
+# DEV: path dep on local browserid-ng main (device-cert code is unpushed).
+# PROD: revert to `{ git = "https://github.com/vthunder/browserid-ng", rev = "<pushed rev>" }`.
+browserid-core = { path = "../../browserid-ng/browserid-core" }
 
 # SBO reference impl — server-side agent-write assembly (Message/wire) + the
 # authorize/attribution helpers. Shares the workspace rev (the deployed daemon's).
@@ -46,3 +48,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Device-cert conformance test drives the real headless DeviceAgent SDK.
+# DEV path dep (see browserid-core note above); revert to the pushed git rev for prod.
+browserid-agent = { path = "../../browserid-ng/browserid-agent" }

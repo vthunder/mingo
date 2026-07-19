@@ -241,10 +241,9 @@ dependencies = [
 [[package]]
 name = "browserid-agent"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=e572cda#e572cda17ef210385f96d4367474d70a69b261ee"
 dependencies = [
  "base64 0.22.1",
- "browserid-core",
+ "browserid-core 0.1.0",
  "chrono",
  "rand",
  "reqwest 0.12.25",
@@ -252,6 +251,22 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "browserid-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "flate2",
+ "jsonwebtoken",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1413,7 +1428,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "browserid-agent",
- "browserid-core",
+ "browserid-core 0.1.0",
  "chrono",
  "clap",
  "hex",
@@ -1431,7 +1446,8 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "browserid-core",
+ "browserid-agent",
+ "browserid-core 0.1.0",
  "chrono",
  "reqwest 0.12.25",
  "rusqlite",
@@ -2011,7 +2027,7 @@ version = "0.1.0"
 source = "git+https://github.com/vthunder/sbo?rev=a92886c#a92886cfdf8118dde8e38912d9a8a8265fa2464c"
 dependencies = [
  "base64 0.22.1",
- "browserid-core",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=e572cda)",
  "dirs",
  "dnssec-prover",
  "ed25519-dalek",

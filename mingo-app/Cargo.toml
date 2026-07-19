@@ -25,11 +25,15 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 base64 = "0.22"
 # Agent-flavored seed writes: warrants signed by persona identity keys, agent
 # certs parsed for sanity (same pinned rev as mingo-idp).
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "e572cda" }
+# DEV: path dep on local browserid-ng main (device-cert code is unpushed).
+# PROD: revert to `{ git = "https://github.com/vthunder/browserid-ng", rev = "<pushed rev>" }`.
+browserid-core = { path = "../../browserid-ng/browserid-core" }
 # CLI auth (mingo login): reuse the headless device-code/provision/warrant SDK
 # rather than reimplementing the flow (bean browserid-ng-wmgb). Same git rev as
 # browserid-core so the shared browserid-core types unify.
-browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "e572cda" }
+# DEV: path dep on local browserid-ng main (device-cert code is unpushed).
+# PROD: revert to `{ git = "https://github.com/vthunder/browserid-ng", rev = "<pushed rev>" }`.
+browserid-agent = { path = "../../browserid-ng/browserid-agent" }
 chrono = { version = "0.4", features = ["serde"] }
 # The agent SDK is async; the login/whoami/post commands drive it on a local runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
