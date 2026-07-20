@@ -1,7 +1,7 @@
 //! Device-cert model login for the mingo CLI (ADDITIVE alongside `login.rs`).
 //!
 //! In the device-cert model a headless client is a *device* holding an
-//! IdP-signed **agent device cert** (`purpose=authentication, subject=agent`).
+//! IdP-signed **agent device cert** (`purpose=authentication`, an opaque holder).
 //! It mints a short-lived **access cert** headlessly (`browserid_agent::DeviceAgent`),
 //! and to act at an RP it presents the 4-object bundle
 //! `access_cert~assertion~warrant~config_cert` — the warrant + config cert coming
@@ -124,7 +124,7 @@ pub fn whoami() -> Result<()> {
     let c = device_cert.claims();
     println!("logged in (device-cert model)");
     println!("  identity:   {}", device_cert.claims().identities.join(", "));
-    println!("  subject:    {:?}", device_cert.subject());
+    println!("  holder:     {}", device_cert.holder().as_str());
     println!("  purpose:    {:?}", device_cert.purpose());
     println!("  idp:        {}", credential.idp);
     let now = chrono::Utc::now().timestamp();
@@ -162,7 +162,7 @@ pub async fn present_for(audience: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use browserid_core::device::{Purpose, Subject, Warrant as DeviceWarrant};
+    use browserid_core::device::{Holder, HolderMatcher, Purpose, Warrant as DeviceWarrant};
     use browserid_core::{device::AccessPresentation, KeyPair};
     use chrono::Duration;
 
@@ -183,7 +183,7 @@ mod tests {
             "mingo.place",
             &device.public_key(),
             Purpose::Authentication,
-            Subject::Agent,
+            Holder::new("svc.cli").unwrap(),
             vec![identity.into()],
             Duration::days(90),
             &idp,
@@ -194,7 +194,7 @@ mod tests {
             "mingo.place",
             &config.public_key(),
             Purpose::Authorization,
-            Subject::Agent,
+            Holder::new("svc.cli").unwrap(),
             vec![identity.into()],
             Duration::days(90),
             &idp,
@@ -203,7 +203,7 @@ mod tests {
         .unwrap();
         let warrant = DeviceWarrant::create(
             identity,
-            Subject::Agent,
+            HolderMatcher::new("svc.cli").unwrap(),
             audience,
             vec!["post".into()],
             Duration::days(90),

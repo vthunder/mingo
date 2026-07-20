@@ -13,7 +13,7 @@ use std::time::Duration;
 use browserid_core::discovery::{
     discover, DiscoveryConfig, SupportDocument, SupportDocumentFetcher,
 };
-use browserid_core::device::{AccessPresentation, Subject};
+use browserid_core::device::AccessPresentation;
 use browserid_core::{Error as CoreError, Result as CoreResult};
 
 /// HTTP support-document fetcher (HTTPS, optionally allowing HTTP for local dev).
@@ -86,12 +86,14 @@ pub fn fetch_domain_pubkey(
         .ok_or_else(|| format!("{} published no public key", domain))
 }
 
-/// A verified external presentation: the certified email, plus the subject
-/// axis and warrant scopes when the presenter is an agent.
+/// A verified external presentation: the certified email, plus the warrant
+/// scopes when the presentation is scoped ("agent"-style).
 pub struct VerifiedExternal {
     pub email: String,
-    /// `Some(scopes)` iff the presenter is an agent — its delegator's config
-    /// cert authorized it at exactly this audience via a warrant.
+    /// `Some(scopes)` iff the warrant carried a non-empty scope set — a scoped
+    /// (delegated/"agent") grant at exactly this audience. `None` for an
+    /// unscoped (plain-login/"user") warrant. The old user/agent subject axis is
+    /// gone; the scope set is what distinguishes the two now.
     pub agent: Option<Vec<String>>,
 }
 
@@ -142,7 +144,7 @@ pub fn verify_external_presentation(
 
     // The core join: both certs verify against the issuer key, the assertion
     // against the fresh access key, the warrant against the config cert, and
-    // identity/subject/audience must be consistent across all four objects.
+    // identity/holder/audience must be consistent across all four objects.
     let verified = pres
         .verify(audience, |iss| {
             if iss == issuer {
@@ -156,10 +158,9 @@ pub fn verify_external_presentation(
         })
         .map_err(|e| format!("presentation invalid: {}", e))?;
 
-    let agent = match verified.subject {
-        Subject::Agent => Some(verified.scopes),
-        Subject::User => None,
-    };
+    // The user/agent axis is gone; a non-empty warrant scope set marks a
+    // scoped ("agent") grant, an empty one a plain login ("user").
+    let agent = (!verified.scopes.is_empty()).then(|| verified.scopes.clone());
 
     Ok(VerifiedExternal { email: verified.email, agent })
 }

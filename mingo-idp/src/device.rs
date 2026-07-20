@@ -18,14 +18,15 @@
 //!     access cert over the fresh access key. This is what the
 //!     `browserid_agent::DeviceAgent` SDK calls.
 //!
-//! The mint endpoint is subject-agnostic: it echoes whatever subject the device
-//! cert carries (`user` | `agent`) into the access cert, so an agent device cert
-//! (issued via a future agent path) mints agent access certs here for free.
+//! The mint COPIES the device cert's opaque `holder` verbatim into the access
+//! cert (holder-authorization model), and rejects an access request whose holder
+//! disagrees — the requester can never choose a different holder than its device
+//! cert carries.
 
 use axum::extract::State;
 use axum::Json;
 use browserid_core::device::{
-    AccessCert, AccessRequest, DeviceCert, Purpose, Subject, ACCESS_CERT_VALIDITY_HOURS,
+    AccessCert, AccessRequest, DeviceCert, Holder, Purpose, ACCESS_CERT_VALIDITY_HOURS,
     DEVICE_CERT_VALIDITY_DAYS,
 };
 use browserid_core::PublicKey;
@@ -52,6 +53,22 @@ pub struct DeviceCertResp {
     pub config_cert: String,
     /// The `<handle>@mingo.place` identity both certs authorize.
     pub identity: String,
+}
+
+/// Derive a stable, opaque holder id for a device slot from its device key.
+/// Deterministic (same key → same holder, so a re-issue keeps the slot), unique
+/// per device, and dotted so the browser can form a `<prefix>.*` login matcher.
+fn holder_for_device(device_pub: &PublicKey) -> String {
+    let clean: String = device_pub
+        .to_base64()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    // clean is a 43-char ed25519 base64; slices are safe, but guard anyway.
+    let pre = &clean[..6.min(clean.len())];
+    let id = &clean[6.min(clean.len())..16.min(clean.len())];
+    format!("br{pre}.{id}")
 }
 
 fn parse_pubkey(p: &PubKeyJson) -> Result<PublicKey, AppError> {
@@ -90,11 +107,20 @@ pub async fn device_cert(
     let config_pub = parse_pubkey(&req.config_pubkey)?;
     let validity = chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS);
 
+    // One opaque broker-assigned holder per device slot (holder-authorization
+    // model), carried by BOTH the authentication and authorization cert. mingo
+    // is a primary IdP with no per-user namespace registry, so it assigns the
+    // holder locally, deterministically from the device key (stable per slot,
+    // so a re-issue keeps the same holder). Dotted `br<prefix>.<id>` lets the
+    // browser derive `<prefix>.*` login-warrant matchers.
+    let holder = Holder::new(holder_for_device(&device_pub))
+        .map_err(|e| AppError::Internal(format!("holder: {e}")))?;
+
     let device_cert = DeviceCert::create(
         &st.config.domain,
         &device_pub,
         Purpose::Authentication,
-        Subject::User,
+        holder.clone(),
         vec![identity.clone()],
         validity,
         &st.keypair,
@@ -109,7 +135,7 @@ pub async fn device_cert(
         &st.config.domain,
         &config_pub,
         Purpose::Authorization,
-        Subject::User,
+        holder.clone(),
         vec![identity.clone(), format!("{}+*@{}", handle, st.config.domain)],
         validity,
         &st.keypair,
@@ -184,19 +210,21 @@ pub async fn access_mint(
         return Err(AppError::BadRequest("access request: wrong domain".into()));
     }
 
-    // 3. The identity must be authorized by the device cert; subject must match.
+    // 3. The identity must be authorized by the device cert; the access
+    //    request's holder must match the device cert's (the mint copies it).
     if !device_cert.authorizes_identity(&ar.identity) {
         return Err(AppError::Forbidden);
     }
-    if ar.subject != device_cert.subject() {
-        return Err(AppError::BadRequest("access request: subject mismatch".into()));
+    if ar.holder != *device_cert.holder() {
+        return Err(AppError::BadRequest("access request: holder mismatch".into()));
     }
 
-    // 4. Mint the access cert over the fresh access key, echoing the subject.
+    // 4. Mint the access cert over the fresh access key, copying the device
+    //    cert's holder verbatim (isolation guarantee).
     let access_cert = AccessCert::create(
         domain,
         &ar.identity,
-        ar.subject,
+        device_cert.holder().clone(),
         &ar.access_key,
         chrono::Duration::hours(ACCESS_CERT_VALIDITY_HOURS),
         &st.keypair,

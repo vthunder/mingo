@@ -464,14 +464,14 @@ mod tests {
     fn issued_device_cert_verifies_against_idp_key() {
         // The trustless contract: a device cert we issue for <handle>@mingo.place
         // verifies under the public key we publish (the one in the _browserid TXT).
-        use browserid_core::device::{DeviceCert, Purpose, Subject};
+        use browserid_core::device::{DeviceCert, Holder, Purpose};
         let idp = KeyPair::generate();
         let user = KeyPair::generate();
         let cert = DeviceCert::create(
             "mingo.place",
             &user.public_key(),
             Purpose::Authentication,
-            Subject::User,
+            Holder::new("br000000.main").unwrap(),
             vec!["dan@mingo.place".to_string()],
             chrono::Duration::days(90),
             &idp,

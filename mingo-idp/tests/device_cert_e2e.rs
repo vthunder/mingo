@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use browserid_agent::{DeviceAgent, DeviceCredential};
 use browserid_core::device::{
-    AccessPresentation, DeviceCert, Purpose, Subject, Warrant as DeviceWarrant,
+    AccessPresentation, DeviceCert, HolderMatcher, Purpose, Warrant as DeviceWarrant,
     WARRANT_VALIDITY_DAYS,
 };
 use browserid_core::keys::{KeyPair, PublicKey};
@@ -120,12 +120,14 @@ async fn device_cert_issuance_and_headless_mint_and_present() {
 
     let device_cert = DeviceCert::parse(v["device_cert"].as_str().unwrap()).unwrap();
     let config_cert = DeviceCert::parse(v["config_cert"].as_str().unwrap()).unwrap();
-    // Both signed by the IdP; correct purpose/subject/identity.
+    // Both signed by the IdP; correct purpose/holder/identity.
     device_cert.verify(&idp.pubkey).unwrap();
     config_cert.verify(&idp.pubkey).unwrap();
     assert_eq!(device_cert.purpose(), Purpose::Authentication);
     assert_eq!(config_cert.purpose(), Purpose::Authorization);
-    assert_eq!(device_cert.subject(), Subject::User);
+    // One holder per device slot: both certs carry it, and it's a dotted br id.
+    assert_eq!(device_cert.holder(), config_cert.holder());
+    assert!(device_cert.holder().as_str().starts_with("br"));
     assert!(device_cert.authorizes_identity(&identity));
 
     // Session-less issuance is refused.
@@ -154,9 +156,10 @@ async fn device_cert_issuance_and_headless_mint_and_present() {
     agent.mint().await.expect("headless access-cert mint");
 
     // 3. A config-cert-signed warrant for the audience (the principal's grant).
+    // Grant the exact holder the IdP minted (an `<id>` matcher covering it).
     let warrant = DeviceWarrant::create(
         &identity,
-        Subject::User,
+        HolderMatcher::new(device_cert.holder().as_str()).unwrap(),
         AUDIENCE,
         vec!["post".into()],
         Duration::days(WARRANT_VALIDITY_DAYS),
@@ -179,7 +182,7 @@ async fn device_cert_issuance_and_headless_mint_and_present() {
         })
         .unwrap();
     assert_eq!(verified.email, identity);
-    assert_eq!(verified.subject, Subject::User);
+    assert_eq!(verified.holder.as_str(), device_cert.holder().as_str());
     assert_eq!(verified.scopes, vec!["post".to_string()]);
     assert_eq!(verified.issuer, idp.domain);
 }
