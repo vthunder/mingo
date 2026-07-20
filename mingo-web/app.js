@@ -19,6 +19,10 @@ const CONFIG = Object.assign(
     idp: location.origin,
     domain: "mingo.place",
     space: "general",
+    // The SBO database reference this mingo instance writes to. Device-model
+    // signing binds each write's warrant to this audience (the daemon checks it
+    // identifies the target db). Bare form matches across regenesis.
+    dbAudience: "sbo+raw://avail:turing:506/",
   },
   window.MINGO_CONFIG || {},
   qs.get("daemon") ? { daemon: qs.get("daemon") } : {},
@@ -593,12 +597,12 @@ function ensureSigner() {
   setTimeout(() => reject(new Error("signer popup did not become ready")), 15000);
   return promise;
 }
-async function signEnvelope(email, envelope) {
+async function signEnvelope(email, envelope, audience) {
   await ensureSigner();
   const id = ++signSeq;
   return new Promise((resolve, reject) => {
     pendingSign.set(id, { resolve, reject });
-    signerWin.postMessage({ type: "sbo:sign", id, email, envelope }, CONFIG.broker);
+    signerWin.postMessage({ type: "sbo:sign", id, email, envelope, audience }, CONFIG.broker);
     setTimeout(() => { if (pendingSign.has(id)) { pendingSign.delete(id); reject(new Error("sign timeout")); } }, 20000);
   });
 }
@@ -645,14 +649,16 @@ async function ensureDnssecFresh(domain) {
   return dnssecRefreshInFlight;
 }
 
-// The `iss` claim of a browserid cert (JWT). Attribution requires an on-chain
-// DNSSEC proof for THIS domain — the cert's issuer, which is the email's own
-// domain for a primary IdP (dan@mingo.place → mingo.place) but the BROKER for
-// a fallback-certified email (vthunder@gmail.com → browserid.me). Refreshing
-// the owner's email domain instead would miss the broker's proof entirely.
-function certIssuer(certJwt) {
+// The issuer of a device-model PRESENTATION (access_cert~assertion~warrant~
+// config_cert) — the `iss` of its access cert. Attribution needs an on-chain
+// DNSSEC proof for THIS domain: the email's own domain for a primary IdP
+// (dan@mingo.place → mingo.place) but the BROKER for a fallback-certified
+// email (vthunder@gmail.com → browserid.me). Refreshing the owner's email
+// domain instead would miss the broker's proof entirely.
+function certIssuer(presentation) {
   try {
-    const payload = certJwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const accessCert = presentation.split("~")[0];
+    const payload = accessCert.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
     return JSON.parse(atob(payload)).iss || null;
   } catch { return null; }
 }
@@ -692,7 +698,7 @@ async function writeContent({ path, id, schema, payload, hlc, prev, owner, conte
 
   // Email-rooted write: sign with the broker's cert-bound key for the identity.
   spec.owner = owner || session.email;
-  const res = await signEnvelope(session.email, spec);
+  const res = await signEnvelope(session.email, spec, CONFIG.dbAudience);
   // Ensure the CERT ISSUER's on-chain DNSSEC proof is valid through inclusion so
   // attribution resolves — the issuer (from the just-signed cert) is the email's
   // own domain for a primary, but the BROKER for a fallback-certified email, so
