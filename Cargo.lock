@@ -255,9 +255,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "browserid-agent"
+version = "0.1.0"
+source = "git+https://github.com/vthunder/browserid-ng?rev=645d7c9#645d7c91ae51fd00dc472bf4b8c7c127d36b7ae5"
+dependencies = [
+ "base64 0.22.1",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=645d7c9)",
+ "chrono",
+ "rand",
+ "reqwest 0.12.25",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "browserid-core"
 version = "0.1.0"
 source = "git+https://github.com/vthunder/browserid-ng?rev=3b6189e#3b6189e0603a98b87c510f44b41d60dae2bf2847"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "flate2",
+ "jsonwebtoken",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "browserid-core"
+version = "0.1.0"
+source = "git+https://github.com/vthunder/browserid-ng?rev=645d7c9#645d7c91ae51fd00dc472bf4b8c7c127d36b7ae5"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "flate2",
+ "jsonwebtoken",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "browserid-core"
+version = "0.1.0"
+source = "git+https://github.com/vthunder/browserid-ng?rev=b8526f6#b8526f6c2d914fd5937bdaf91e9412c849cf567b"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1429,13 +1479,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "browserid-agent",
+ "browserid-agent 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=3b6189e)",
  "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=3b6189e)",
  "chrono",
  "clap",
  "hex",
  "reqwest 0.12.25",
- "sbo-core",
+ "sbo-core 0.1.0 (git+https://github.com/vthunder/sbo?rev=a92886c)",
  "serde",
  "serde_json",
  "tokio",
@@ -1448,11 +1498,12 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "browserid-agent",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=3b6189e)",
+ "browserid-agent 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=645d7c9)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=645d7c9)",
  "chrono",
  "reqwest 0.12.25",
  "rusqlite",
+ "sbo-core 0.1.0 (git+https://github.com/vthunder/sbo?rev=55314e9)",
  "serde",
  "serde_json",
  "tempfile",
@@ -2025,6 +2076,29 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 [[package]]
 name = "sbo-core"
 version = "0.1.0"
+source = "git+https://github.com/vthunder/sbo?rev=55314e9#55314e91e9b071ea38ba1aff64a3c2956e74eee0"
+dependencies = [
+ "base64 0.22.1",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=b8526f6)",
+ "dirs",
+ "dnssec-prover",
+ "ed25519-dalek",
+ "hex",
+ "hickory-resolver",
+ "rand",
+ "reqwest 0.11.27",
+ "sbo-crypto 0.1.0 (git+https://github.com/vthunder/sbo?rev=55314e9)",
+ "sbo-types 0.1.0 (git+https://github.com/vthunder/sbo?rev=55314e9)",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "sbo-core"
+version = "0.1.0"
 source = "git+https://github.com/vthunder/sbo?rev=a92886c#a92886cfdf8118dde8e38912d9a8a8265fa2464c"
 dependencies = [
  "base64 0.22.1",
@@ -2036,13 +2110,25 @@ dependencies = [
  "hickory-resolver",
  "rand",
  "reqwest 0.11.27",
- "sbo-crypto",
- "sbo-types",
+ "sbo-crypto 0.1.0 (git+https://github.com/vthunder/sbo?rev=a92886c)",
+ "sbo-types 0.1.0 (git+https://github.com/vthunder/sbo?rev=a92886c)",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "sbo-crypto"
+version = "0.1.0"
+source = "git+https://github.com/vthunder/sbo?rev=55314e9#55314e91e9b071ea38ba1aff64a3c2956e74eee0"
+dependencies = [
+ "blst",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "sha2",
 ]
 
 [[package]]
@@ -2055,6 +2141,14 @@ dependencies = [
  "hex",
  "serde",
  "sha2",
+]
+
+[[package]]
+name = "sbo-types"
+version = "0.1.0"
+source = "git+https://github.com/vthunder/sbo?rev=55314e9#55314e91e9b071ea38ba1aff64a3c2956e74eee0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

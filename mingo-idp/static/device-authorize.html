@@ -55,6 +55,18 @@
           return_url: p.get('return_url') || null
         }));
       } catch (e) {}
+    } else if (p.get('agent_email') && p.get('agent_pubkey') && p.get('holder') && p.get('return_origin')) {
+      // Agent mode (merged provisioning): the broker's approval page asks this
+      // IdP to sign an AGENT device cert — `<handle>+<tag>` identity, the
+      // agent's own key, the broker-assigned holder.
+      try {
+        sessionStorage.setItem(KEY, JSON.stringify({
+          agent_email: p.get('agent_email'),
+          agent_pubkey: p.get('agent_pubkey'),
+          holder: p.get('holder'),
+          return_origin: p.get('return_origin')
+        }));
+      } catch (e) {}
     }
     history.replaceState(null, '', location.pathname + location.search);
   }
@@ -98,6 +110,37 @@
         return fail('You are not signed in to mingo.place in this browser (or have no handle yet). ' +
           '<a href="/" target="_blank" rel="noreferrer">Open mingo.place</a>, sign in, ' +
           'then close this window and click sign-in again.');
+      }
+      if (params.agent_email) {
+        // Agent mode: the agent identity must be the signed-in handle itself
+        // (an as-you service) or a `+tag` sub-address of it.
+        var agentEmail = String(params.agent_email).toLowerCase();
+        var selfIdentity = (who.handle + '@' + location.hostname).toLowerCase();
+        var expectPrefix = (who.handle + '+').toLowerCase();
+        if (agentEmail !== selfIdentity && agentEmail.indexOf(expectPrefix) !== 0) {
+          return fail('This browser is signed in as ' + selfIdentity +
+            ', which cannot authorize the agent ' + agentEmail + '. Switch accounts at mingo.place and try again.');
+        }
+        msg.textContent = 'Certifying agent ' + agentEmail + '…';
+        return fetch('/agent_device_cert', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify({
+            agent_pubkey: { algorithm: 'Ed25519', publicKey: params.agent_pubkey },
+            agent_email: agentEmail,
+            holder: params.holder
+          })
+        }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+          .then(function (res) {
+            if (!res.ok || !res.body.device_cert) {
+              var reason = (res.body && (res.body.error || res.body.message)) || 'issuance failed';
+              send({ type: 'browserid:device_error', reason: reason });
+              return fail('Could not certify the agent: ' + reason);
+            }
+            msg.textContent = 'Agent certified — returning…';
+            send({ type: 'browserid:agent_device_cert', device_cert: res.body.device_cert });
+          });
       }
       var identity = (who.handle + '@' + location.hostname).toLowerCase();
       if (identity !== String(params.email).toLowerCase()) {

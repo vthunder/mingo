@@ -14,11 +14,19 @@ name = "mingo-idp"
 path = "src/main.rs"
 
 [dependencies]
-# BrowserID protocol primitives (certificate signing, assertion verify, discovery).
-# Pinned git dependency on browserid-ng (e572cda = external warrant requests:
-# ProvisioningRequest::warrant_external + ExternalWarrantRequest, for mingo-poster).
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "3b6189e" }
-
+# BrowserID protocol primitives (device-cert model: DeviceCert/AccessCert/
+# Warrant/AccessPresentation). Pinned git dependency on browserid-ng
+# (645d7c9 = holder model + merged one-approval provisioning + as-you services).
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "645d7c9" }
+# Headless device-cert agent SDK — the mingo-poster holds a per-user
+# DeviceCredential and assembles envelope-key-bound presentations with it.
+browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "645d7c9" }
+# SBO message/wire assembly for server-side posting (poster). Pinned to the
+# holder-model sbo (matches the deployed daemon). NOTE: deliberately NOT the
+# workspace sbo-core pin (a92886c, classic) — mingo-app still builds against
+# that; this crate only uses sbo types that don't cross the browserid-core
+# boundary (Message/wire/SigningKey).
+sbo-core = { git = "https://github.com/vthunder/sbo", rev = "55314e9", default-features = false }
 
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
@@ -39,5 +47,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"
-# Device-cert conformance test drives the real headless DeviceAgent SDK.
-browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "3b6189e" }

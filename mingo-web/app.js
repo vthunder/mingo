@@ -320,10 +320,11 @@ const idpGet = async (path) => {
 };
 
 // ---------------------------------------------------------------------------
-// mingo-poster: let mingo sign SBO writes server-side (mingo-3f3i). When
-// enabled, writes go to /poster/submit instead of the client-side signing
-// popups — the fix for mobile Safari, where window.open is unreliable. Posts
-// still attribute on-chain to the user ("mingo-poster acting for you").
+// mingo-poster: let mingo sign SBO writes server-side. When enabled, writes go
+// to /poster/submit instead of the client-side signing popups — the fix for
+// mobile Safari, where window.open is unreliable. Device model (agent/D): the
+// poster is an as-you service holding YOUR identity on its own isolated
+// holder, so posts attribute on-chain directly to you.
 // ---------------------------------------------------------------------------
 const poster = { enabled: false };
 
@@ -357,7 +358,7 @@ async function pollPoster({ tries = 60, intervalMs = 6000 } = {}) {
     let r;
     try { r = await idpPost("/poster/poll", {}); } catch { continue; }
     if (r.status === "approved") { poster.enabled = true; return true; }
-    if (r.status === "denied" || r.status === "expired" || r.status === "none") return false;
+    if (r.status === "denied" || r.status === "expired" || r.status === "failed" || r.status === "none") return false;
   }
   return false;
 }

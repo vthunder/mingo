@@ -51,6 +51,9 @@ pub fn build_router(state: Shared, static_dir: &Path, spa_dir: &Path) -> Router 
         // Device-cert model (DC conformance): session-authed batch device-cert
         // issuance; the headless mint is in the CORS-wrapped group below.
         .route("/device_cert", post(device::device_cert))
+        // Agent-mode issuance (merged provisioning): the broker approval page's
+        // device-authorize hop signs a `<handle>+<tag>` agent cert first-party.
+        .route("/agent_device_cert", post(device::agent_device_cert))
         // mingo-poster delegated signing (mingo-3f3i), same-origin + session-gated.
         .route("/poster/enable", post(poster::enable))
         .route("/poster/poll", post(poster::poll))

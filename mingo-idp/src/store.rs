@@ -76,6 +76,10 @@ const SCHEMA: &str = r#"
         warrant     TEXT NOT NULL,
         audience    TEXT NOT NULL,
         expires_at  INTEGER NOT NULL,
+        device_seed TEXT,
+        device_cert TEXT,
+        holder      TEXT,
+        idp         TEXT,
         created_at  INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS poster_pending (
@@ -84,6 +88,7 @@ const SCHEMA: &str = r#"
         code              TEXT NOT NULL,
         verification_uri  TEXT,
         expires_at        INTEGER,
+        device_seed       TEXT,
         created_at        INTEGER NOT NULL
     );
 "#;
@@ -106,6 +111,15 @@ impl Store {
             [],
         );
         let _ = conn.execute("ALTER TABLE poster_pending ADD COLUMN expires_at INTEGER", []);
+        // Device-model poster (agent/D phase): each enable generates a fresh
+        // per-user device keypair; the approved pickup stores the IdP-signed
+        // device cert, its holder, the minting IdP, and the warrant TAIL
+        // (`warrant~config_cert`) in place of the classic bare warrant.
+        let _ = conn.execute("ALTER TABLE poster_pending ADD COLUMN device_seed TEXT", []);
+        let _ = conn.execute("ALTER TABLE poster_warrants ADD COLUMN device_seed TEXT", []);
+        let _ = conn.execute("ALTER TABLE poster_warrants ADD COLUMN device_cert TEXT", []);
+        let _ = conn.execute("ALTER TABLE poster_warrants ADD COLUMN holder TEXT", []);
+        let _ = conn.execute("ALTER TABLE poster_warrants ADD COLUMN idp TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -378,19 +392,21 @@ impl Store {
         code: &str,
         verification_uri: &str,
         expires_at: i64,
+        device_seed: &str,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO poster_pending (account_id, user_email, code, verification_uri, expires_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO poster_pending (account_id, user_email, code, verification_uri, expires_at, device_seed, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(account_id) DO UPDATE SET
-                 user_email = ?2, code = ?3, verification_uri = ?4, expires_at = ?5, created_at = ?6",
+                 user_email = ?2, code = ?3, verification_uri = ?4, expires_at = ?5, device_seed = ?6, created_at = ?7",
             params![
                 account_id,
                 user_email,
                 code,
                 verification_uri,
                 expires_at,
+                device_seed,
                 Self::now()
             ],
         )?;
@@ -404,7 +420,7 @@ impl Store {
     ) -> rusqlite::Result<Option<PosterPending>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT user_email, code, verification_uri, expires_at
+            "SELECT user_email, code, verification_uri, expires_at, device_seed
              FROM poster_pending WHERE account_id = ?1",
             params![account_id],
             |r| {
@@ -413,6 +429,7 @@ impl Store {
                     code: r.get(1)?,
                     verification_uri: r.get(2)?,
                     expires_at: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    device_seed: r.get(4)?,
                 })
             },
         )
@@ -428,7 +445,10 @@ impl Store {
         Ok(())
     }
 
-    /// Store (or replace) the user-signed warrant mingo holds for an account.
+    /// Store (or replace) the poster credential mingo holds for an account:
+    /// the per-user device key + IdP-signed device cert (with its holder and
+    /// minting IdP) and the user-approved warrant tail (`warrant~config_cert`).
+    #[allow(clippy::too_many_arguments)]
     pub fn set_poster_warrant(
         &self,
         account_id: i64,
@@ -436,23 +456,32 @@ impl Store {
         warrant: &str,
         audience: &str,
         expires_at: i64,
+        device_seed: &str,
+        device_cert: &str,
+        holder: &str,
+        idp: &str,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO poster_warrants (account_id, user_email, warrant, audience, expires_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO poster_warrants (account_id, user_email, warrant, audience, expires_at, device_seed, device_cert, holder, idp, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(account_id) DO UPDATE SET
-                 user_email = ?2, warrant = ?3, audience = ?4, expires_at = ?5, created_at = ?6",
-            params![account_id, user_email, warrant, audience, expires_at, Self::now()],
+                 user_email = ?2, warrant = ?3, audience = ?4, expires_at = ?5,
+                 device_seed = ?6, device_cert = ?7, holder = ?8, idp = ?9, created_at = ?10",
+            params![account_id, user_email, warrant, audience, expires_at,
+                device_seed, device_cert, holder, idp, Self::now()],
         )?;
         Ok(())
     }
 
-    /// The stored warrant for an account, if mingo-poster is enabled.
+    /// The stored poster credential for an account, if mingo-poster is enabled.
+    /// Classic rows (no device columns) read back as `None` fields — treated as
+    /// not enabled by the poster, which re-enables on demand.
     pub fn get_poster_warrant(&self, account_id: i64) -> rusqlite::Result<Option<PosterWarrant>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT user_email, warrant, audience, expires_at FROM poster_warrants WHERE account_id = ?1",
+            "SELECT user_email, warrant, audience, expires_at, device_seed, device_cert, holder, idp
+             FROM poster_warrants WHERE account_id = ?1",
             params![account_id],
             |r| {
                 Ok(PosterWarrant {
@@ -460,6 +489,10 @@ impl Store {
                     warrant: r.get(1)?,
                     audience: r.get(2)?,
                     expires_at: r.get(3)?,
+                    device_seed: r.get(4)?,
+                    device_cert: r.get(5)?,
+                    holder: r.get(6)?,
+                    idp: r.get(7)?,
                 })
             },
         )
@@ -476,13 +509,24 @@ impl Store {
     }
 }
 
-/// A user-signed warrant mingo holds to post on an account's behalf.
+/// The poster credential mingo holds to post on an account's behalf
+/// (device model): per-user device key + IdP-signed device cert + the
+/// user-approved warrant tail (`warrant~config_cert`).
 #[derive(Debug, Clone)]
 pub struct PosterWarrant {
     pub user_email: String,
+    /// `warrant~config_cert` — the presentation tail the user's approval signed.
     pub warrant: String,
     pub audience: String,
     pub expires_at: i64,
+    /// base64url seed of the per-user poster device key. `None` = classic row.
+    pub device_seed: Option<String>,
+    /// The IdP-signed device cert over that key. `None` = classic row.
+    pub device_cert: Option<String>,
+    /// The broker-assigned `services` holder the cert + warrant bind to.
+    pub holder: Option<String>,
+    /// Base URL of the IdP that mints access certs for this credential.
+    pub idp: Option<String>,
 }
 
 /// An in-flight `/poster/enable` consent request awaiting approval pickup.
@@ -495,6 +539,8 @@ pub struct PosterPending {
     pub verification_uri: Option<String>,
     /// When the registrar lets the request lapse (0 for pre-migration rows).
     pub expires_at: i64,
+    /// base64url seed of the keypair generated for this enable attempt.
+    pub device_seed: Option<String>,
 }
 
 fn agent_identity_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentIdentity> {
@@ -531,9 +577,9 @@ mod tests {
 
         // Pending request: set, read, overwrite (upsert), clear.
         assert!(s.get_poster_pending(acct.id).unwrap().is_none());
-        s.set_poster_pending(acct.id, "dan@example.com", "wrq_a", "https://reg/consent/wrq_a", 100)
+        s.set_poster_pending(acct.id, "dan@example.com", "wrq_a", "https://reg/consent/wrq_a", 100, "seedA")
             .unwrap();
-        s.set_poster_pending(acct.id, "dan@example.com", "wrq_b", "https://reg/consent/wrq_b", 200)
+        s.set_poster_pending(acct.id, "dan@example.com", "wrq_b", "https://reg/consent/wrq_b", 200, "seedB")
             .unwrap();
         assert_eq!(
             s.get_poster_pending(acct.id).unwrap(),
@@ -542,21 +588,28 @@ mod tests {
                 code: "wrq_b".into(),
                 verification_uri: Some("https://reg/consent/wrq_b".into()),
                 expires_at: 200,
+                device_seed: Some("seedB".into()),
             })
         );
         s.clear_poster_pending(acct.id).unwrap();
         assert!(s.get_poster_pending(acct.id).unwrap().is_none());
 
-        // Warrant: set, read, upsert-replace, delete.
+        // Credential: set, read, upsert-replace, delete.
         assert!(s.get_poster_warrant(acct.id).unwrap().is_none());
-        s.set_poster_warrant(acct.id, "dan@example.com", "jws1", "sbo://mingo", 100)
+        s.set_poster_warrant(acct.id, "dan@example.com", "w1~cc", "sbo+raw://x/", 100,
+            "seed1", "cert1", "svc.h1", "https://mingo.test")
             .unwrap();
-        s.set_poster_warrant(acct.id, "dan@example.com", "jws2", "sbo://mingo", 200)
+        s.set_poster_warrant(acct.id, "dan@example.com", "w2~cc", "sbo+raw://x/", 200,
+            "seed2", "cert2", "svc.h2", "https://mingo.test")
             .unwrap();
         let w = s.get_poster_warrant(acct.id).unwrap().unwrap();
-        assert_eq!(w.warrant, "jws2");
+        assert_eq!(w.warrant, "w2~cc");
         assert_eq!(w.expires_at, 200);
-        assert_eq!(w.audience, "sbo://mingo");
+        assert_eq!(w.audience, "sbo+raw://x/");
+        assert_eq!(w.device_seed.as_deref(), Some("seed2"));
+        assert_eq!(w.device_cert.as_deref(), Some("cert2"));
+        assert_eq!(w.holder.as_deref(), Some("svc.h2"));
+        assert_eq!(w.idp.as_deref(), Some("https://mingo.test"));
         s.delete_poster_warrant(acct.id).unwrap();
         assert!(s.get_poster_warrant(acct.id).unwrap().is_none());
     }

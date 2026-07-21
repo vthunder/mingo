@@ -160,6 +160,95 @@ pub async fn device_cert(
 }
 
 // --------------------------------------------------------------------------
+// POST /agent_device_cert  (session-authed)
+//   { agent_pubkey, agent_email, holder } -> { success, device_cert, identity }
+//
+// Agent-mode issuance (merged one-approval provisioning, agent/D phase): the
+// broker's approval page hops here (device-authorize popup, agent mode) so the
+// PRIMARY signs the agent's authentication cert — required because a
+// presentation's config cert and access cert must share one issuer, and the
+// warrant for a `<handle>+<tag>@mingo.place` agent is signed by the
+// mingo-issued config cert. The holder is broker-assigned (opaque passthrough,
+// required — an agent's holder is never minted here), and the agent identity
+// must sub-address the session's own handle.
+// --------------------------------------------------------------------------
+#[derive(Deserialize)]
+pub struct AgentDeviceCertReq {
+    pub agent_pubkey: PubKeyJson,
+    /// Full agent identity `<handle>+<tag>@<domain>` — must sub-address the
+    /// session's handle.
+    pub agent_email: String,
+    /// The broker-assigned holder (opaque passthrough, signed verbatim).
+    pub holder: String,
+}
+
+#[derive(Serialize)]
+pub struct AgentDeviceCertResp {
+    pub success: bool,
+    pub device_cert: String,
+    pub identity: String,
+}
+
+pub async fn agent_device_cert(
+    State(st): State<Shared>,
+    cookies: Cookies,
+    Json(req): Json<AgentDeviceCertReq>,
+) -> Result<Json<AgentDeviceCertResp>, AppError> {
+    let account_id = require_session(&st, &cookies)?;
+    let handle = st
+        .store
+        .get_account(account_id)?
+        .and_then(|a| a.handle)
+        .ok_or_else(|| AppError::BadRequest("claim a handle before issuing agent certs".into()))?;
+
+    let agent_email = req.agent_email.trim().to_lowercase();
+    let (local, domain) = agent_email
+        .split_once('@')
+        .ok_or_else(|| AppError::BadRequest("agent_email must be an email".into()))?;
+    if domain != st.config.domain {
+        return Err(AppError::BadRequest(format!(
+            "agent_email must be @{}",
+            st.config.domain
+        )));
+    }
+    // The agent identity is either the session's handle ITSELF (an as-you
+    // service: acts as the user, isolated by its holder) or a `+tag`
+    // sub-address of it (a named agent; stripping the tag yields the owner).
+    let own = handle.to_lowercase();
+    let prefix = format!("{own}+");
+    let is_self = local == own;
+    let is_subaddress = local.starts_with(&prefix) && local.len() > prefix.len();
+    if !is_self && !is_subaddress {
+        return Err(AppError::Forbidden);
+    }
+
+    let agent_pub = parse_pubkey(&req.agent_pubkey)?;
+    if req.holder.trim().is_empty() {
+        return Err(AppError::BadRequest("holder required".into()));
+    }
+    let holder = Holder::new(req.holder.trim().to_string())
+        .map_err(|e| AppError::BadRequest(format!("holder: {e}")))?;
+
+    let device_cert = DeviceCert::create(
+        &st.config.domain,
+        &agent_pub,
+        Purpose::Authentication,
+        holder,
+        vec![agent_email.clone()],
+        chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS),
+        &st.keypair,
+        None,
+    )
+    .map_err(|e| AppError::Internal(format!("agent device cert: {e}")))?;
+
+    Ok(Json(AgentDeviceCertResp {
+        success: true,
+        device_cert: device_cert.encoded().to_string(),
+        identity: agent_email,
+    }))
+}
+
+// --------------------------------------------------------------------------
 // POST /access/mint  (headless)  { device_cert, access_request }
 //   -> { success, access_cert }
 //
