@@ -57,13 +57,21 @@
       } catch (e) {}
     } else if (p.get('agent_email') && p.get('agent_pubkey') && p.get('holder') && p.get('return_origin')) {
       // Agent mode (merged provisioning): the broker's approval page asks this
-      // IdP to sign an AGENT device cert — `<handle>+<tag>` identity, the
-      // agent's own key, the broker-assigned holder.
+      // IdP to sign an AGENT device cert — the handle identity itself (as-you)
+      // or a `<handle>+<tag>` sub-address, the agent's own key, the
+      // broker-assigned holder. Combined mode: when the approving browser has
+      // no config cert for the user yet, the same visit also issues the USER's
+      // device+config pair (email + device_pubkey + config_pubkey [+
+      // user_holder] ride along).
       try {
         sessionStorage.setItem(KEY, JSON.stringify({
           agent_email: p.get('agent_email'),
           agent_pubkey: p.get('agent_pubkey'),
           holder: p.get('holder'),
+          user_email: p.get('email') || null,
+          user_device_pubkey: p.get('device_pubkey') || null,
+          user_config_pubkey: p.get('config_pubkey') || null,
+          user_holder: p.get('user_holder') || null,
           return_origin: p.get('return_origin')
         }));
       } catch (e) {}
@@ -122,25 +130,58 @@
             ', which cannot authorize the agent ' + agentEmail + '. Switch accounts at mingo.place and try again.');
         }
         msg.textContent = 'Certifying agent ' + agentEmail + '…';
-        return fetch('/agent_device_cert', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'content-type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify({
-            agent_pubkey: { algorithm: 'Ed25519', publicKey: params.agent_pubkey },
-            agent_email: agentEmail,
-            holder: params.holder
-          })
-        }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
-          .then(function (res) {
-            if (!res.ok || !res.body.device_cert) {
-              var reason = (res.body && (res.body.error || res.body.message)) || 'issuance failed';
-              send({ type: 'browserid:device_error', reason: reason });
-              return fail('Could not certify the agent: ' + reason);
-            }
-            msg.textContent = 'Agent certified — returning…';
-            send({ type: 'browserid:agent_device_cert', device_cert: res.body.device_cert });
-          });
+        // Combined mode: issue the USER's own device+config pair first when
+        // asked (the broker keystore has no config cert for them yet), so the
+        // approval can sign the warrant without a separate sign-in round trip.
+        var userCerts = Promise.resolve(null);
+        if (params.user_email && params.user_device_pubkey && params.user_config_pubkey) {
+          if (String(params.user_email).toLowerCase() !== selfIdentity) {
+            return fail('This browser is signed in as ' + selfIdentity + ', not ' + params.user_email + '.');
+          }
+          userCerts = fetch('/device_cert', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify(Object.assign({
+              device_pubkey: { algorithm: 'Ed25519', publicKey: params.user_device_pubkey },
+              config_pubkey: { algorithm: 'Ed25519', publicKey: params.user_config_pubkey }
+            }, params.user_holder ? { holder: params.user_holder } : {}))
+          }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+            .then(function (res) {
+              if (!res.ok || !res.body.device_cert || !res.body.config_cert) {
+                throw new Error((res.body && (res.body.error || res.body.message)) || 'user cert issuance failed');
+              }
+              return res.body;
+            });
+        }
+        return userCerts.then(function (user) {
+          return fetch('/agent_device_cert', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({
+              agent_pubkey: { algorithm: 'Ed25519', publicKey: params.agent_pubkey },
+              agent_email: agentEmail,
+              holder: params.holder
+            })
+          }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+            .then(function (res) {
+              if (!res.ok || !res.body.device_cert) {
+                var reason = (res.body && (res.body.error || res.body.message)) || 'issuance failed';
+                send({ type: 'browserid:device_error', reason: reason });
+                return fail('Could not certify the agent: ' + reason);
+              }
+              msg.textContent = 'Agent certified — returning…';
+              send(Object.assign(
+                { type: 'browserid:agent_device_cert', device_cert: res.body.device_cert },
+                user ? { user_device_cert: user.device_cert, user_config_cert: user.config_cert } : {}
+              ));
+            });
+        }).catch(function (e) {
+          var reason = (e && e.message) ? e.message : String(e);
+          send({ type: 'browserid:device_error', reason: reason });
+          fail('Could not authorize: ' + reason);
+        });
       }
       var identity = (who.handle + '@' + location.hostname).toLowerCase();
       if (identity !== String(params.email).toLowerCase()) {
