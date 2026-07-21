@@ -47,6 +47,8 @@
           email: p.get('email'),
           device_pubkey: p.get('device_pubkey'),
           config_pubkey: p.get('config_pubkey'),
+          // The client broker's stable browser holder — passthrough to /device_cert.
+          holder: p.get('holder') || null,
           return_origin: p.get('return_origin'),
           // Redirect mode (popup-hostile browsers): navigate back to the
           // dialog's resume URL instead of postMessage-ing an opener.
@@ -106,10 +108,10 @@
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(Object.assign({
           device_pubkey: { algorithm: 'Ed25519', publicKey: params.device_pubkey },
           config_pubkey: { algorithm: 'Ed25519', publicKey: params.config_pubkey }
-        })
+        }, params.holder ? { holder: params.holder } : {}))
       }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
         .then(function (res) {
           if (!res.ok || !res.body.device_cert || !res.body.config_cert) {

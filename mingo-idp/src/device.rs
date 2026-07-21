@@ -42,6 +42,10 @@ use crate::routes::{require_session, PubKeyJson, Shared};
 pub struct DeviceCertReq {
     pub device_pubkey: PubKeyJson,
     pub config_pubkey: PubKeyJson,
+    /// The client broker's stable per-browser holder — opaque passthrough,
+    /// signed verbatim. Optional (backward-compat): absent → derive one locally.
+    #[serde(default)]
+    pub holder: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -107,13 +111,17 @@ pub async fn device_cert(
     let config_pub = parse_pubkey(&req.config_pubkey)?;
     let validity = chrono::Duration::days(DEVICE_CERT_VALIDITY_DAYS);
 
-    // One opaque broker-assigned holder per device slot (holder-authorization
-    // model), carried by BOTH the authentication and authorization cert. mingo
-    // is a primary IdP with no per-user namespace registry, so it assigns the
-    // holder locally, deterministically from the device key (stable per slot,
-    // so a re-issue keeps the same holder). Dotted `br<prefix>.<id>` lets the
-    // browser derive `<prefix>.*` login-warrant matchers.
-    let holder = Holder::new(holder_for_device(&device_pub))
+    // One opaque holder per device slot (holder-authorization model), carried by
+    // BOTH the authentication and authorization cert. The client broker supplies
+    // this browser's stable holder (reused across identities), which mingo treats
+    // as OPAQUE PASSTHROUGH and signs verbatim. Absent → derive one locally from
+    // the device key (stable per slot; older clients / backward-compat). Dotted
+    // `<prefix>.<id>` lets the browser derive `<prefix>.*` login-warrant matchers.
+    let holder_str = match req.holder.as_deref() {
+        Some(h) if !h.is_empty() => h.to_string(),
+        _ => holder_for_device(&device_pub),
+    };
+    let holder = Holder::new(holder_str)
         .map_err(|e| AppError::Internal(format!("holder: {e}")))?;
 
     let device_cert = DeviceCert::create(
