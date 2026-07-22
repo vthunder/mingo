@@ -49,6 +49,10 @@
           config_pubkey: p.get('config_pubkey'),
           // The client broker's stable browser holder — passthrough to /device_cert.
           holder: p.get('holder') || null,
+          // Hold mode (cold logins): stay open after posting the certs so the
+          // dialog can request ONE re-issue under the account's canonical
+          // browsers holder once its session join reveals it.
+          hold: p.get('hold') || null,
           return_origin: p.get('return_origin'),
           // Redirect mode (popup-hostile browsers): navigate back to the
           // dialog's resume URL instead of postMessage-ing an opener.
@@ -188,28 +192,71 @@
         return fail('This browser is signed in as ' + identity + ', but the sign-in requested ' +
           params.email + '. Switch accounts at mingo.place and try again.');
       }
-      return fetch('/device_cert', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(Object.assign({
-          device_pubkey: { algorithm: 'Ed25519', publicKey: params.device_pubkey },
-          config_pubkey: { algorithm: 'Ed25519', publicKey: params.config_pubkey }
-        }, params.holder ? { holder: params.holder } : {}))
-      }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
-        .then(function (res) {
-          if (!res.ok || !res.body.device_cert || !res.body.config_cert) {
-            var reason = (res.body && (res.body.error || res.body.message)) || 'issuance failed';
-            send({ type: 'browserid:device_error', reason: reason });
-            return fail('Could not authorize this device: ' + reason);
-          }
-          msg.textContent = 'Device authorized — returning…';
-          send({
-            type: 'browserid:device_certs',
-            device_cert: res.body.device_cert,
-            config_cert: res.body.config_cert
+      // Issue the (device, config) pair for `holder`; resolves the response body.
+      function issuePair(holder) {
+        return fetch('/device_cert', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify(Object.assign({
+            device_pubkey: { algorithm: 'Ed25519', publicKey: params.device_pubkey },
+            config_pubkey: { algorithm: 'Ed25519', publicKey: params.config_pubkey }
+          }, holder ? { holder: holder } : {}))
+        }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); });
+      }
+      return issuePair(params.holder).then(function (res) {
+        if (!res.ok || !res.body.device_cert || !res.body.config_cert) {
+          var reason = (res.body && (res.body.error || res.body.message)) || 'issuance failed';
+          send({ type: 'browserid:device_error', reason: reason });
+          return fail('Could not authorize this device: ' + reason);
+        }
+        var payload = {
+          type: 'browserid:device_certs',
+          device_cert: res.body.device_cert,
+          config_cert: res.body.config_cert
+        };
+        // Hold mode (popup only): post the certs but stay open for one
+        // optional re-issue — the dialog's session join may reveal the
+        // account's canonical browsers holder, and re-signing the same keys
+        // under it avoids orphaning a duplicate namespace (cold login).
+        if (params.hold && !params.return_url && window.opener) {
+          msg.textContent = 'Device authorized — finishing sign-in…';
+          window.opener.postMessage(payload, returnOrigin);
+          var closer = setTimeout(function () { window.close(); }, 60 * 1000);
+          window.addEventListener('message', function onHold(ev) {
+            if (ev.origin !== returnOrigin) return;
+            var d = ev.data;
+            if (!d || typeof d !== 'object') return;
+            if (d.type === 'browserid:done') {
+              clearTimeout(closer);
+              window.removeEventListener('message', onHold);
+              try { sessionStorage.removeItem(KEY); } catch (e) {}
+              window.close();
+            } else if (d.type === 'browserid:reissue' && d.holder) {
+              clearTimeout(closer);
+              window.removeEventListener('message', onHold);
+              msg.textContent = 'Updating device registration…';
+              issuePair(String(d.holder)).then(function (res2) {
+                if (!res2.ok || !res2.body.device_cert || !res2.body.config_cert) {
+                  var reason2 = (res2.body && (res2.body.error || res2.body.message)) || 'issuance failed';
+                  window.opener.postMessage({ type: 'browserid:device_error', reason: reason2 }, returnOrigin);
+                } else {
+                  window.opener.postMessage({
+                    type: 'browserid:device_certs',
+                    device_cert: res2.body.device_cert,
+                    config_cert: res2.body.config_cert
+                  }, returnOrigin);
+                }
+                try { sessionStorage.removeItem(KEY); } catch (e) {}
+                window.close();
+              });
+            }
           });
-        });
+          return;
+        }
+        msg.textContent = 'Device authorized — returning…';
+        send(payload);
+      });
     })
     .catch(function (e) { fail('Error: ' + (e && e.message ? e.message : e)); });
 })();
