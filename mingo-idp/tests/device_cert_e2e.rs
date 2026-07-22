@@ -151,6 +151,7 @@ async fn device_cert_issuance_and_headless_mint_and_present() {
         agent_device_cert: device_cert.encoded().to_string(),
         idp: idp.base.clone(),
         access_mint: None,
+        identity: None,
     };
     let mut agent = DeviceAgent::new(credential).unwrap();
     assert_eq!(agent.email(), identity);

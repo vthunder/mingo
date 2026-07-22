@@ -221,6 +221,7 @@ mod tests {
                 agent_device_cert: device_cert.encoded().to_string(),
                 idp: "https://mingo.place".into(),
                 access_mint: None,
+                identity: None,
             }),
             grants: vec![StoredGrant {
                 audience: audience.into(),

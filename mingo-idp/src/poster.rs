@@ -504,6 +504,9 @@ pub async fn submit(
         agent_device_cert: cert_jws,
         idp,
         access_mint: w.access_mint.clone(),
+        // The poster acts AS the user; its cert names them (as-you), so the
+        // cert's own identity is correct — no override.
+        identity: Some(w.user_email.clone()),
     };
     let mut agent = DeviceAgent::new(credential)
         .map_err(|e| AppError::Internal(format!("poster credential: {e}")))?;
