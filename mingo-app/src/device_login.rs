@@ -122,8 +122,20 @@ pub fn whoami() -> Result<()> {
     let device_cert = DeviceCert::parse(&credential.agent_device_cert)
         .map_err(|e| anyhow!("stored device cert is unreadable (re-login): {e}"))?;
     let c = device_cert.claims();
+    // The ACTING identity is the credential's (what the warrant names) — the
+    // cert may name only the base identity, which authorizes its +tags via
+    // the protocol subaddress rule.
+    let acting = credential
+        .identity
+        .clone()
+        .unwrap_or_else(|| device_cert.claims().identities.join(", "));
     println!("logged in (device-cert model)");
-    println!("  identity:   {}", device_cert.claims().identities.join(", "));
+    println!("  identity:   {acting}");
+    if credential.identity.is_some()
+        && !device_cert.claims().identities.iter().any(|i| i == &acting)
+    {
+        println!("  certified:  via {}", device_cert.claims().identities.join(", "));
+    }
     println!("  holder:     {}", device_cert.holder().as_str());
     println!("  purpose:    {:?}", device_cert.purpose());
     println!("  idp:        {}", credential.idp);
