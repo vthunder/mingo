@@ -241,6 +241,7 @@ const session = {
 // flow reads the same as before. The dialog reads `sboSign` / `provisionEmail`
 // straight from these options (same as the old query-param URL did).
 let _pendingAssertion = null;
+let lastLoginDetails = null; // dialog response details for the most recent login
 function requestAssertion(opts) {
   return new Promise((resolve, reject) => {
     _pendingAssertion = { resolve, reject };
@@ -267,13 +268,16 @@ function requestAssertion(opts) {
 navigator.id.watch({
   loggedInUser: session.email || null,
   onready: function () {},
-  onlogin: function (assertion) {
+  onlogin: function (assertion, details) {
+    // `details` (newer include.js) is the dialog's full response — notably
+    // sbo_sign_granted, the explicit consent decision.
+    lastLoginDetails = details || null;
     if (_pendingAssertion) {
       const p = _pendingAssertion;
       _pendingAssertion = null;
       p.resolve(assertion);
     } else {
-      silentLogin(assertion); // background (e.g. FedCM) login — re-establish the session
+      silentLogin(assertion, details); // background (FedCM / redirect-return) login
     }
   },
   onlogout: function () {
@@ -289,7 +293,20 @@ navigator.id.watch({
 // we get here: FedCM silent auto-reauthn, OR a returning navigator.id.request
 // whose popup the browser turned into a full-page REDIRECT (Chrome on iOS) —
 // the reload dropped our in-page promise, so the assertion lands here instead.
-async function silentLogin(assertion) {
+async function silentLogin(assertion, details) {
+  // The signing-grant decision must stick even when the dialog came back as a
+  // full-page REDIRECT (mobile popup fallback: the in-page promise died with
+  // the navigation, so the assertion lands here) — and a DECLINE must not.
+  if (details && "sbo_sign_granted" in details) {
+    if (details.sbo_sign_granted) {
+      if (localStorage.getItem("mingo_signing_ready") !== "1") {
+        localStorage.setItem("mingo_signing_ready", "1");
+        toast("Signing enabled — you can post now.");
+      }
+    } else {
+      localStorage.removeItem("mingo_signing_ready");
+    }
+  }
   if (session.email) return; // already signed in via the RP's own session
   try {
     const sess = await idpPost("/session/from-presentation", { presentation: assertion });
@@ -490,6 +507,12 @@ async function ensureSigningReady() {
       try {
         const assertion = await p;
         if (!assertion) { toast("Signing not enabled"); return resolve(false); }
+        // Trust the dialog's explicit decision when reported: a login that
+        // came back with the consent DECLINED must not mark signing ready.
+        if (lastLoginDetails && lastLoginDetails.sbo_sign_granted === false) {
+          toast("Signing not enabled");
+          return resolve(false);
+        }
         localStorage.setItem("mingo_signing_ready", "1");
         resolve(true);
       } catch (e) { toast("Could not enable signing: " + e.message); resolve(false); }
