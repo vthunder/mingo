@@ -1,56 +1,37 @@
-//! `mingo login` / `mingo whoami` / `mingo post` — first-class command-line auth
-//! against browserid, reusing the existing agent-identity + device-grant +
-//! per-audience warrant primitives (bean browserid-ng-wmgb, option 1). Nothing
-//! here is new auth: the RFC 8628 device-code flow, the delegated
-//! `AgentCredential`, and the scoped warrant are all browserid's; this module is
-//! the CLI *product* layer (a login command, local credential storage, and a
-//! demonstration `as:` write).
+//! `mingo login` / `whoami` / `post` — the CLI's authenticated identity,
+//! on the browserid **holder model** (device-cert protocol).
 //!
-//! The flow:
-//!   1. Device-code provisioning — generate a provisioning keypair locally, POST
-//!      its public half to the broker's `/agent-provision/request`, print the
-//!      `verification_uri_complete` (`/account?provision=<code>`) + user_code, and
-//!      poll `/agent-provision/poll` until the human approves in the browser
-//!      (their identity key signs a `U_cert~P_cert` delegation over the pubkey).
-//!      The poll returns the delegation → an [`AgentCredential`].
-//!   2. Mint an agent identity from that credential ([`AgentIdentity::provision`]):
-//!      `agent = <handle>@<idp>`, `parent = <the logged-in user>`.
-//!   3. Obtain a per-audience **warrant** for the mingo repo
-//!      (`sbo+raw://avail:turing:506/`) carrying `as:<user>` so the daemon
-//!      attributes writes to the user (the delegator). A second, deliberate
-//!      browser consent.
-//!   4. Store the credential + identity under `~/.mingo/` (0600) for silent reuse.
+//! The CLI is an **as-you agent**: one merged provisioning request at the
+//! broker (`/agent-provision/request`, no handle) asks to hold the user's
+//! identity ITSELF — writes stay owned by and attributed to the user —
+//! isolated by a broker-assigned holder in their `agents` namespace, plus a
+//! warrant grant at the mingo SBO db in the SAME approval. The user opens one
+//! URL, approves once, and a single poll returns the device cert AND the
+//! `warrant~config_cert` grant (browserid-agent's `request_provision`/`wait`).
 //!
-//! IdP requirement: the agent is minted at the delegator's **home IdP** (the
-//! U_cert issuer). That IdP must implement the agent delegation-chain mint
-//! (`/provision/mint`) — browserid.me and browserid-broker IdPs (e.g.
-//! mingo.place) do. A self-hosted *classic primary* (e.g. sandmill.org, which
-//! publishes its own `_browserid` key and only serves interactive
-//! `/browserid/provision`) has no agent mint endpoint, and the broker can't
-//! substitute (its mint requires the U_cert issuer to be its own domain and
-//! verifies against its own key). `mingo login` detects this and fails fast with
-//! guidance — see [`explain_mint_failure`].
+//! Posting mints a short-lived access cert headlessly (`DeviceAgent`), signs
+//! the SBO envelope with the SAME access key (envelope-key binding), and
+//! attaches the 4-object presentation as `Auth-Cert` — mirroring
+//! `mingo-idp/src/poster.rs::submit`. There is no `as:` scope and no separate
+//! agent identity: attribution lands on the user directly, and the classic
+//! `AgentCredential`/`AgentIdentity` chain is gone.
 //!
-//! A signed write then presents `Auth-Cert` (the agent cert) + `Auth-Warrant`
-//! (the user-signed warrant); the daemon's `as:` path
-//! (`sbo_core::authorize::agent_effective_email`, via
-//! `sbo-daemon/src/validate.rs::resolve_agent_effective`) resolves the effective
-//! author to the delegator. This is exactly the server-side mingo-poster shape
-//! (`mingo-idp/src/poster.rs`), moved client-side.
+//! Storage: `~/.mingo/device-credential.json` (see [`crate::device_login`]).
+//! The classic `credential.json`/`identity.json` files are ignored.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use base64::Engine as _;
-use browserid_agent::{AgentCredential, AgentIdentity};
-use browserid_core::KeyPair;
+use browserid_agent::{request_provision, GrantRequest};
 use sbo_core::crypto::{ContentHash, Signature, SigningKey};
 use sbo_core::message::{Action, Id, Message, ObjectType, Path};
 use sbo_core::wire;
 use serde::Deserialize;
 
-/// Production broker/registrar (endorses provisioning, hosts the consent pages).
+use crate::device_login::{StoredDeviceLogin, StoredGrant};
+
+/// Production broker/registrar (hosts the merged-provisioning approval page).
 pub const DEFAULT_BROKER: &str = "https://browserid.me";
 /// The mingo SBO database a warrant must be audienced to. A **bare**
 /// `sbo+raw://chain:appId/` reference (NOT `sbo://…` — DNS audiences are rejected
@@ -60,14 +41,11 @@ pub const DEFAULT_AUDIENCE: &str = "sbo+raw://avail:turing:506/";
 /// Live SBO daemon (reads + `/v1/submit`).
 pub const DEFAULT_DAEMON: &str = "https://da.sandmill.org";
 
-const B64URL: base64::engine::general_purpose::GeneralPurpose =
-    base64::engine::general_purpose::URL_SAFE_NO_PAD;
-
 // ===========================================================================
-// Local credential storage (~/.mingo/{credential,identity}.json, 0600)
+// Local credential storage (~/.mingo, 0600)
 // ===========================================================================
 
-fn mingo_home() -> Result<PathBuf> {
+pub(crate) fn mingo_home() -> Result<PathBuf> {
     let home = std::env::var("MINGO_HOME")
         .ok()
         .map(PathBuf::from)
@@ -76,16 +54,8 @@ fn mingo_home() -> Result<PathBuf> {
     Ok(home)
 }
 
-fn credential_path() -> Result<PathBuf> {
-    Ok(mingo_home()?.join("credential.json"))
-}
-
-fn identity_path() -> Result<PathBuf> {
-    Ok(mingo_home()?.join("identity.json"))
-}
-
 /// Write `contents` to `path` with 0600 perms, creating the parent dir (0700).
-fn write_private(path: &std::path::Path, contents: &str) -> Result<()> {
+pub(crate) fn write_private(path: &std::path::Path, contents: &str) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     if let Some(dir) = path.parent() {
         std::fs::DirBuilder::new()
@@ -107,61 +77,13 @@ fn write_private(path: &std::path::Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Load the stored login: the [`AgentCredential`] (holds the provisioning
-/// secret) plus the rehydrated [`AgentIdentity`] (agent key + cert + warrants).
-/// The reusable entry point every authenticated command starts from.
-pub fn load_login_credential() -> Result<(AgentCredential, AgentIdentity)> {
-    let cpath = credential_path()?;
-    let ipath = identity_path()?;
-    if !cpath.exists() || !ipath.exists() {
-        bail!(
-            "not logged in (no {} / {}). Run `mingo login` first.",
-            cpath.display(),
-            ipath.display()
-        );
-    }
-    let credential = AgentCredential::load(&cpath)
-        .map_err(|e| anyhow!("reading {}: {e}", cpath.display()))?;
-    let agent = AgentIdentity::load(&ipath, &credential)
-        .map_err(|e| anyhow!("reading {}: {e}", ipath.display()))?;
-    Ok((credential, agent))
-}
-
-// ===========================================================================
-// Delegator (the logged-in user) extraction
-// ===========================================================================
-
-/// Decode a JWT's payload claims (no signature check — the delegation is already
-/// verified end to end by the broker that signed it and by the daemon on replay).
-fn jwt_claims(jwt: &str) -> Option<serde_json::Value> {
-    let payload = jwt.split('.').nth(1)?;
-    serde_json::from_slice(&B64URL.decode(payload).ok()?).ok()
-}
-
-/// The **delegator** email (the logged-in user) — the `iss` of the `P_cert` in
-/// the credential's `U_cert~P_cert` delegation bundle. This is the identity the
-/// user approved provisioning as, and the one a post attributes to via `as:`.
-pub fn delegator_email(credential: &AgentCredential) -> Result<String> {
-    let (_u, p) = credential
-        .delegation
-        .split_once('~')
-        .ok_or_else(|| anyhow!("malformed delegation (expected U_cert~P_cert)"))?;
-    let claims = jwt_claims(p).ok_or_else(|| anyhow!("cannot decode delegation P_cert"))?;
-    claims
-        .get("iss")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| anyhow!("delegation P_cert has no issuer (delegator)"))
-}
-
 // ===========================================================================
 // Warrant scopes
 // ===========================================================================
 
 /// Scope preset requested for the warrant. `Post` is the normal-user default;
-/// `Admin` is reserved for the operator-CLI use case (bean browserid-ng-wmgb
-/// §admin-CLI) and left un-minted here beyond a broad action set — the daemon /
-/// on-chain policy still gates what admin can actually do.
+/// `Admin` adds `action:delete` — the daemon / on-chain policy still gates
+/// what admin can actually do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScopePreset {
     Post,
@@ -178,24 +100,21 @@ impl ScopePreset {
     }
 }
 
-/// The warrant scopes for `user`. Mirrors `mingo-idp/src/poster.rs::default_scopes`
-/// (the shape the daemon already validates): `action:post`, the mingo content
-/// schemas, the community + user path scopes, and `as:<user>` (which needs at
-/// least one `path:` scope to be honored — the daemon's on-behalf guardrail,
-/// satisfied here).
-pub fn scopes_for(preset: ScopePreset, user: &str) -> Vec<String> {
+/// The warrant scopes the CLI requests. Mirrors mingo-idp's poster
+/// `default_scopes`, minus `as:` (the holder model attributes to the user
+/// directly — the warrant identifier IS them) and without a per-user path
+/// (the identity isn't known until the user approves; ownership checks bound
+/// writes to them regardless).
+pub fn scopes_for(preset: ScopePreset) -> Vec<String> {
     let mut scopes = vec![
         "action:post".to_string(),
         "schema:post.v1".to_string(),
         "schema:comment.v1".to_string(),
         "schema:reaction.v1".to_string(),
         "path:/communities/**".to_string(),
-        format!("path:/u/{user}/**"),
-        format!("as:{user}"),
+        "path:/u/**".to_string(),
     ];
     if preset == ScopePreset::Admin {
-        // Broaden the action set for the operator CLI; the daemon + root policy
-        // remain the real authority (this is not a bypass, just a wider request).
         scopes.push("action:delete".to_string());
     }
     scopes
@@ -210,214 +129,91 @@ pub struct LoginArgs {
     pub idp: Option<String>,
     pub audience: String,
     pub scope: String,
+    /// Optional named-agent handle (e.g. `dan+claude`). Default (`None`) is an
+    /// as-you agent: the CLI holds the approving identity itself.
     pub handle: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct DeviceRequestResp {
-    #[allow(dead_code)]
-    success: bool,
-    code: String,
-    verification_uri: String,
-    verification_uri_complete: String,
-    user_code: String,
-    fingerprint: String,
-    expires_in: i64,
-    interval: i64,
-}
-
-/// Run the device-code provisioning against `broker` and return the resulting
-/// [`AgentCredential`]. Blocks (async, but with a foreground poll loop) until the
-/// human approves at the printed URL, or the request expires.
-async fn device_provision(
-    http: &reqwest::Client,
-    broker: &str,
-    label: &str,
-) -> Result<AgentCredential> {
-    let provisioning_key = KeyPair::generate();
-    let pubkey_b64 = provisioning_key.public_key().to_base64();
-
-    let req = http
-        .post(format!("{}/agent-provision/request", broker.trim_end_matches('/')))
-        .json(&serde_json::json!({
-            "provisioning_pubkey": { "algorithm": "Ed25519", "publicKey": pubkey_b64 },
-            "label": label,
-        }))
-        .send()
-        .await
-        .context("POST /agent-provision/request")?;
-    let status = req.status();
-    if !status.is_success() {
-        let body = req.text().await.unwrap_or_default();
-        bail!("device provision request failed ({status}): {body}");
-    }
-    let resp: DeviceRequestResp = req.json().await.context("decoding request response")?;
-
-    println!("\nTo authorize this CLI, open:\n");
-    println!("    {}\n", resp.verification_uri_complete);
-    println!(
-        "  or go to {} and enter code:  {}",
-        resp.verification_uri, resp.user_code
-    );
-    println!("  confirm the key fingerprint matches:  {}\n", resp.fingerprint);
-    println!("Waiting for approval (expires in {}s)…", resp.expires_in);
-
-    let interval = resp.interval.max(1) as u64;
-    let deadline = std::time::Instant::now() + Duration::from_secs(resp.expires_in.max(0) as u64);
-    loop {
-        tokio::time::sleep(Duration::from_secs(interval)).await;
-        let poll = http
-            .post(format!("{}/agent-provision/poll", broker.trim_end_matches('/')))
-            .json(&serde_json::json!({ "code": resp.code }))
-            .send()
-            .await
-            .context("POST /agent-provision/poll")?;
-        if poll.status().as_u16() == 410 {
-            bail!("provisioning request expired before approval");
-        }
-        let value: serde_json::Value = poll.json().await.unwrap_or_default();
-        match value["status"].as_str() {
-            Some("pending") => {}
-            Some("denied") => bail!("provisioning was denied in the browser"),
-            Some("failed") => {
-                bail!(
-                    "provisioning failed: {}",
-                    value["reason"].as_str().unwrap_or("no reason given")
-                )
-            }
-            Some("completed") => {
-                let cred = &value["credential"];
-                let delegation = cred["delegation"]
-                    .as_str()
-                    .ok_or_else(|| anyhow!("poll response missing credential.delegation"))?
-                    .to_string();
-                let broker_url = cred["broker"].as_str().unwrap_or(broker).to_string();
-                let idp = cred["idp"]
-                    .as_str()
-                    .ok_or_else(|| anyhow!("poll response missing credential.idp"))?
-                    .to_string();
-                return Ok(AgentCredential {
-                    secret_key: B64URL.encode(provisioning_key.secret_bytes()),
-                    delegation,
-                    broker: broker_url,
-                    idp,
-                });
-            }
-            _ => bail!("unexpected poll status: {value}"),
-        }
-        if std::time::Instant::now() > deadline {
-            bail!("provisioning request expired before approval");
-        }
-    }
 }
 
 async fn login_async(args: &LoginArgs) -> Result<()> {
     let preset = ScopePreset::parse(&args.scope)?;
-    let http = reqwest::Client::new();
 
     let hostname = std::env::var("HOSTNAME")
         .ok()
-        .or_else(|| hostname_fallback())
+        .or_else(hostname_fallback)
         .unwrap_or_else(|| "cli".to_string());
     let label = format!("mingo CLI on {hostname}");
+    let scopes = scopes_for(preset);
+    let grants = vec![GrantRequest { audience: args.audience.clone(), scopes: scopes.clone() }];
 
-    println!("Step 1/2 — authorize the CLI (device provisioning)");
-    let mut credential = device_provision(&http, &args.broker, &label).await?;
-    if let Some(idp) = &args.idp {
-        credential.idp = idp.clone();
-    }
-
-    let user = delegator_email(&credential)?;
-    println!("\n✓ authorized as {user}. Minting the agent identity at {}…", credential.idp);
-
-    let mut agent = match AgentIdentity::provision(&credential, args.handle.as_deref()).await {
-        Ok(a) => a,
-        Err(e) => {
-            // The browser delegation already succeeded — don't waste it. Persist
-            // the credential so a later retry (e.g. with a mint-capable --idp)
-            // can reuse the same delegation instead of re-approving.
-            let cpath = credential_path()?;
-            let _ = write_private(&cpath, &serde_json::to_string_pretty(&credential)?);
-            return Err(explain_mint_failure(&credential, &args.broker, &e));
-        }
-    };
-    println!("✓ agent identity: {} (acting for {user})", agent.email());
-
-    println!("\nStep 2/2 — authorize a warrant for the mingo repo");
+    println!("Requesting authorization (one approval covers identity + access)…");
     println!("  audience: {}", args.audience);
-    let scopes = scopes_for(preset, &user);
     for s in &scopes {
         println!("    scope: {s}");
     }
-    agent
-        .obtain_warrant(&args.audience, Some(scopes), |handle| {
-            println!("\n  ==> approve the warrant at: {}\n", handle.verification_uri);
-            println!("  Waiting for warrant approval…");
-        })
+    let pending = request_provision(
+        &args.broker,
+        args.handle.as_deref(),
+        Some("agents"),
+        &grants,
+        Some(&label),
+    )
+    .await
+    .map_err(|e| anyhow!("starting provisioning at {}: {e}", args.broker))?;
+
+    println!("\nTo authorize this CLI, open:\n");
+    println!("    {}\n", pending.verification_uri_complete);
+    println!(
+        "  or go to {} and enter code:  {}",
+        pending.verification_uri, pending.user_code
+    );
+    println!("  confirm the key fingerprint matches:  {}\n", pending.fingerprint);
+    println!("Waiting for approval (expires in {}s)…", pending.expires_in_seconds);
+
+    let provisioned = pending
+        .wait()
         .await
-        .map_err(|e| anyhow!("obtaining warrant: {e}"))?;
+        .map_err(|e| anyhow!("provisioning: {e}"))?;
 
-    // Persist: credential (with the provisioning secret) + identity (agent key,
-    // cert, warrants). Both 0600.
-    let cpath = credential_path()?;
-    let ipath = identity_path()?;
-    write_private(&cpath, &serde_json::to_string_pretty(&credential)?)?;
-    agent
-        .save(&ipath)
-        .map_err(|e| anyhow!("saving identity to {}: {e}", ipath.display()))?;
-    // save() uses default perms; tighten to 0600.
-    tighten_perms(&ipath)?;
+    let mut credential = provisioned.credential;
+    if let Some(idp) = &args.idp {
+        credential.idp = idp.clone();
+    }
+    let grants: Vec<StoredGrant> = provisioned
+        .grants
+        .iter()
+        .filter_map(|(audience, tail)| {
+            let (warrant, config_cert) = tail.split_once('~')?;
+            Some(StoredGrant {
+                audience: audience.clone(),
+                warrant: warrant.to_string(),
+                config_cert: config_cert.to_string(),
+            })
+        })
+        .collect();
+    if grants.is_empty() {
+        bail!("approval delivered no warrant grant — re-run `mingo login`");
+    }
 
-    println!("\n✓ logged in as {user}");
-    println!("  agent:      {}", agent.email());
-    println!("  audience:   {}", args.audience);
-    println!("  credential: {}", cpath.display());
-    println!("  identity:   {}", ipath.display());
+    let mut stored = StoredDeviceLogin::load().unwrap_or_default();
+    stored.credential = Some(credential);
+    stored.grants = grants;
+    stored.save()?;
+
+    // Rehydrate to report (also validates what we stored).
+    let agent = stored.agent()?;
+    println!("\n✓ logged in as {}", agent.email());
+    println!("  idp:        {}", stored.credential.as_ref().map(|c| c.idp.as_str()).unwrap_or("?"));
+    for g in &stored.grants {
+        println!("  grant:      {}", g.audience);
+    }
     println!("\nTry:  mingo whoami");
     Ok(())
 }
 
-/// Host (with port) of a URL: `https://sandmill.org/` → `sandmill.org`.
-fn host_of(url: &str) -> &str {
-    let after = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    after.split('/').next().unwrap_or(after)
-}
-
-/// Turn a raw mint failure into an actionable diagnosis. The agent mint targets
-/// the delegator's **home IdP** (`credential.idp`, the U_cert issuer), which must
-/// implement the browserid agent delegation-chain endpoint (`/provision/mint`).
-/// A self-hosted *classic primary* IdP (e.g. sandmill.org: it publishes its own
-/// `_browserid` key and only offers interactive `/browserid/provision`, no agent
-/// mint) has nowhere to mint an agent — and the broker can't substitute, because
-/// its mint requires the U_cert issuer to equal its own domain and verifies the
-/// U_cert against its own key (the primary's cert is signed by the primary's key,
-/// not the broker's). So this is a home-IdP capability gap, not a wrong URL.
-fn explain_mint_failure(
-    credential: &AgentCredential,
-    broker: &str,
-    err: &browserid_agent::AgentError,
-) -> anyhow::Error {
-    let idp_host = host_of(&credential.idp);
-    let broker_host = host_of(broker);
-    if idp_host == broker_host {
-        // Same IdP as the broker — a genuine broker-side failure, surface it raw.
-        return anyhow!("provisioning agent identity: {err}");
-    }
-    anyhow!(
-        "{idp_host} does not support provisioning agent identities\n\
-         hint: use an identity whose IdP supports agents, or --idp <url>"
-    )
-}
-
-fn tighten_perms(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let perms = std::fs::Permissions::from_mode(0o600);
-    std::fs::set_permissions(path, perms)
-        .with_context(|| format!("chmod 600 {}", path.display()))?;
-    Ok(())
+pub fn login(args: &LoginArgs) -> Result<()> {
+    tokio::runtime::Runtime::new()
+        .context("starting async runtime")?
+        .block_on(login_async(args))
 }
 
 /// Best-effort hostname without pulling a dependency: read /etc/hostname.
@@ -428,62 +224,20 @@ fn hostname_fallback() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-pub fn login(args: &LoginArgs) -> Result<()> {
-    tokio::runtime::Runtime::new()
-        .context("starting async runtime")?
-        .block_on(login_async(args))
-}
-
 // ===========================================================================
 // `mingo whoami`
 // ===========================================================================
 
 pub fn whoami() -> Result<()> {
-    let (credential, agent) = load_login_credential()?;
-    let cert = agent.certificate();
-    let user = cert
-        .agent_parent()
-        .map(str::to_string)
-        .or_else(|| delegator_email(&credential).ok())
-        .unwrap_or_else(|| "<unknown>".to_string());
-
-    let exp = cert.claims().exp;
-    let now = chrono::Utc::now().timestamp();
-    let cert_state = if exp <= now {
-        "expired (re-mints automatically on next use)".to_string()
-    } else {
-        let mins = (exp - now) / 60;
-        format!("valid for ~{mins} more minutes")
-    };
-
-    println!("logged in as:  {user}");
-    println!("  agent:       {}", agent.email());
-    println!("  broker:      {}", credential.broker);
-    println!("  idp:         {}", credential.idp);
-    println!("  agent cert:  {cert_state}");
-    let auds = agent.warranted_audiences();
-    if auds.is_empty() {
-        println!("  warrants:    none — run `mingo login` to authorize an audience");
-    } else {
-        println!("  warrants for:");
-        for a in auds {
-            println!("    {a}");
-        }
-    }
-    if !cert.is_agent() {
-        println!(
-            "  note: stored cert is not an agent cert — attribution via `as:` will not apply"
-        );
-    }
-    Ok(())
+    crate::device_login::whoami()
 }
 
 // ===========================================================================
-// Signing writes as the logged-in user (`as:` attribution)
+// Signing writes as the logged-in user (device presentation)
 // ===========================================================================
 
-/// One SBO write to be signed as the logged-in user. The daemon resolves the
-/// effective author to `owner` (the delegator) via the warrant's `as:` scope.
+/// One SBO write signed as the logged-in user. Under the holder model the
+/// warrant identifier IS the user, so `owner` is them directly (no `as:`).
 pub struct WriteSpec {
     pub action: Action,
     pub path: String,
@@ -491,44 +245,42 @@ pub struct WriteSpec {
     pub schema: String,
     pub content_type: String,
     pub payload: Vec<u8>,
-    /// The object owner — the delegating (logged-in) user.
+    /// The object owner — the logged-in user.
     pub owner: String,
     pub hlc: Option<String>,
 }
 
-/// Sign `spec` as the logged-in user: sign the SBO envelope with the **agent**
-/// key and attach `Auth-Cert` (the agent cert) + `Auth-Warrant` (the user-signed
-/// warrant for `audience`). Produces the exact wire the daemon accepts on the
-/// `as:` path — `Auth-Evidence` is omitted so the daemon resolves both issuers'
-/// on-chain `/sys/dnssec/<issuer>` proofs (the same choice mingo-poster makes).
-pub fn sign_as_logged_in_user(
-    agent: &AgentIdentity,
+/// Sign `spec` as the logged-in user: mint an access cert at the credential's
+/// IdP, sign the envelope with the SAME access key (envelope-key binding), and
+/// attach the 4-object presentation as `Auth-Cert`. `Auth-Evidence` is omitted
+/// so the daemon resolves the issuer's on-chain `/sys/dnssec` proof (same
+/// choice mingo-poster makes).
+pub async fn sign_as_logged_in_user(
+    stored: &StoredDeviceLogin,
     audience: &str,
     spec: &WriteSpec,
 ) -> Result<Vec<u8>> {
-    let warrant = agent
-        .warrant_for(audience)
-        .ok_or_else(|| anyhow!("no warrant held for audience {audience} — run `mingo login`"))?;
-    let cert = agent.certificate();
-    assemble_agent_wire(
-        agent.keypair().secret_bytes(),
-        &cert.encoded().to_string(),
-        &warrant.encoded().to_string(),
-        spec,
-    )
+    let mut agent = stored.agent()?;
+    if agent.warranted_audiences().iter().all(|a| *a != audience) {
+        bail!("no grant held for {audience} — re-run `mingo login`");
+    }
+    let (presentation, access_seed) = agent
+        .assertion_with_access_seed(audience)
+        .await
+        .map_err(|e| anyhow!("minting access cert: {e}"))?;
+    assemble_device_wire(&access_seed, &presentation, spec)
 }
 
-/// Pure envelope assembly (unit-testable without a live provisioning flow):
-/// sign the SBO message with the agent key (`agent_secret`, a 32-byte Ed25519
-/// seed) and attach `Auth-Cert` + `Auth-Warrant`. Mirrors
-/// `mingo-idp/src/poster.rs::assemble_agent_write`.
-fn assemble_agent_wire(
-    agent_secret: &[u8; 32],
-    cert_encoded: &str,
-    warrant_encoded: &str,
+/// Pure envelope assembly (unit-testable): sign the SBO message with the
+/// ACCESS key (`access_seed`) and attach the presentation as `Auth-Cert` —
+/// the daemon's device-attribution path requires the envelope signer key to
+/// equal the presentation's access-cert key.
+fn assemble_device_wire(
+    access_seed: &[u8; 32],
+    presentation: &str,
     spec: &WriteSpec,
 ) -> Result<Vec<u8>> {
-    let key = SigningKey::from_bytes(agent_secret);
+    let key = SigningKey::from_bytes(access_seed);
     let content_hash = ContentHash::sha256(&spec.payload);
     let mut msg = Message {
         action: spec.action.clone(),
@@ -548,9 +300,9 @@ fn assemble_agent_wire(
         related: None,
         hlc: spec.hlc.clone(),
         prev: None,
-        auth_cert: Some(cert_encoded.to_string()),
+        auth_cert: Some(presentation.to_string()),
         auth_evidence: None,
-        auth_warrant: Some(warrant_encoded.to_string()),
+        auth_warrant: None,
     };
     msg.sign(&key);
     Ok(wire::serialize(&msg))
@@ -579,22 +331,9 @@ struct ObjectView {
 }
 
 pub fn post(args: &PostArgs) -> Result<()> {
-    let (credential, mut agent) = load_login_credential()?;
-    let user = cert_user(&credential, &agent);
-
-    // Ensure a warrant covers this audience+action (obtains one via the browser
-    // consent if missing — normally already held from `mingo login`).
-    if agent.warrant_for(&args.audience).is_none() {
-        println!("No warrant held for {} — requesting one…", args.audience);
-        let scopes = scopes_for(ScopePreset::Post, &user);
-        tokio::runtime::Runtime::new()?
-            .block_on(agent.obtain_warrant(&args.audience, Some(scopes), |h| {
-                println!("\n  ==> approve at: {}\n", h.verification_uri);
-            }))
-            .map_err(|e| anyhow!("obtaining warrant: {e}"))?;
-        // Persist the freshly obtained warrant.
-        let _ = agent.save(identity_path()?).map_err(|e| anyhow!("{e}"));
-    }
+    let stored = StoredDeviceLogin::load()?;
+    let agent = stored.agent()?; // errors with a re-login hint when absent
+    let user = agent.email().to_string();
 
     let now_ms = chrono::Utc::now().timestamp_millis();
     let path = format!("/communities/{}/spaces/{}/", args.community, args.space);
@@ -614,16 +353,17 @@ pub fn post(args: &PostArgs) -> Result<()> {
         owner: user.clone(),
         hlc: None,
     };
-    let wire_bytes = sign_as_logged_in_user(&agent, &args.audience, &spec)?;
+    let wire_bytes = tokio::runtime::Runtime::new()
+        .context("starting async runtime")?
+        .block_on(sign_as_logged_in_user(&stored, &args.audience, &spec))?;
 
     println!("Write plan:");
     println!("  path:      {path}");
     println!("  id:        {id}");
-    println!("  owner:     {user}   (effective author via warrant `as:`)");
-    println!("  signer:    {}  (agent key)", agent.email());
+    println!("  owner:     {user}   (the warrant identifier — attribution lands on you)");
     println!("  audience:  {}", args.audience);
     println!("  schema:    post.v1");
-    println!("  wire:      {} bytes (Auth-Cert + Auth-Warrant attached)", wire_bytes.len());
+    println!("  wire:      {} bytes (device presentation in Auth-Cert)", wire_bytes.len());
 
     if !args.execute {
         println!("\nDry run — nothing submitted. Re-run with --execute to post to {}.", args.daemon);
@@ -648,7 +388,7 @@ pub fn post(args: &PostArgs) -> Result<()> {
     println!("✓ accepted by the DA layer: {body}");
 
     // Read back from head to confirm attribution. DA inclusion is asynchronous,
-    // so poll a bounded window; a timeout is not a failure of the `as:` path.
+    // so poll a bounded window; a timeout is not a failure.
     println!("\nConfirming attribution (reading {path}{id} back)…");
     for attempt in 1..=20 {
         std::thread::sleep(Duration::from_secs(6));
@@ -660,14 +400,9 @@ pub fn post(args: &PostArgs) -> Result<()> {
                     view.creator, view.owner_ref, view.confirmed
                 );
                 if attributed == user {
-                    println!(
-                        "\n✓ attribution confirmed: the object is authored by {user} (the logged-in user), \
-                         proving the client-side `as:` path landed."
-                    );
+                    println!("\n✓ attribution confirmed: authored by {user} (the logged-in user).");
                 } else {
-                    println!(
-                        "\n⚠ object present but attributed to '{attributed}', not '{user}'."
-                    );
+                    println!("\n⚠ object present but attributed to '{attributed}', not '{user}'.");
                 }
                 return Ok(());
             }
@@ -707,117 +442,66 @@ fn read_object(
     Ok(Some(resp.json::<ObjectView>().context("decoding object view")?))
 }
 
-/// The logged-in user email — the cert's agent-parent, falling back to the
-/// delegation's delegator.
-fn cert_user(credential: &AgentCredential, agent: &AgentIdentity) -> String {
-    agent
-        .certificate()
-        .agent_parent()
-        .map(str::to_string)
-        .or_else(|| delegator_email(credential).ok())
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use browserid_core::{Certificate, KeyPair, Warrant};
+    use browserid_core::device::{
+        AccessCert, AccessPresentation, DeviceCert, Holder, HolderMatcher, Purpose,
+        Warrant as DeviceWarrant,
+    };
+    use browserid_core::{Assertion, KeyPair};
     use chrono::Duration;
 
     #[test]
-    fn scopes_post_preset_carries_as_and_path_and_action() {
-        let s = scopes_for(ScopePreset::Post, "danmills@sandmill.org");
+    fn scopes_post_preset_has_no_as_scope() {
+        let s = scopes_for(ScopePreset::Post);
         assert!(s.contains(&"action:post".to_string()));
-        assert!(s.contains(&"as:danmills@sandmill.org".to_string()));
-        // The `as:` guardrail requires at least one path scope.
         assert!(s.iter().any(|x| x.starts_with("path:")));
-        // Post preset does not request delete.
+        // Holder model: no `as:` — attribution lands on the user directly.
+        assert!(!s.iter().any(|x| x.starts_with("as:")));
         assert!(!s.contains(&"action:delete".to_string()));
     }
 
     #[test]
-    fn host_of_strips_scheme_and_path() {
-        assert_eq!(host_of("https://sandmill.org/"), "sandmill.org");
-        assert_eq!(host_of("https://browserid.me"), "browserid.me");
-        assert_eq!(host_of("http://127.0.0.1:7899/x"), "127.0.0.1:7899");
-    }
-
-    #[test]
-    fn mint_failure_explains_primary_idp_gap_but_stays_raw_for_broker() {
-        let err = browserid_agent::AgentError::Idp { status: 404, reason: "".into() };
-        // Delegator rooted at a primary IdP distinct from the broker: actionable.
-        let cred = AgentCredential {
-            secret_key: "x".into(),
-            delegation: "u~p".into(),
-            broker: "https://browserid.me".into(),
-            idp: "https://sandmill.org".into(),
-        };
-        let msg = explain_mint_failure(&cred, "https://browserid.me", &err).to_string();
-        assert_eq!(
-            msg,
-            "sandmill.org does not support provisioning agent identities\n\
-             hint: use an identity whose IdP supports agents, or --idp <url>"
-        );
-        // Same-domain-as-broker failure stays raw (no IdP-capability line).
-        let cred2 = AgentCredential {
-            idp: "https://browserid.me".into(),
-            ..cred
-        };
-        let msg2 = explain_mint_failure(&cred2, "https://browserid.me", &err).to_string();
-        assert!(msg2.contains("provisioning agent identity"));
-        assert!(!msg2.contains("does not support"));
-    }
-
-    #[test]
     fn scopes_admin_preset_adds_delete() {
-        let s = scopes_for(ScopePreset::Admin, "op@sandmill.org");
+        let s = scopes_for(ScopePreset::Admin);
         assert!(s.contains(&"action:delete".to_string()));
     }
 
-    // Build a real agent cert + user-signed warrant and assert the assembled
-    // envelope matches what the daemon's `as:` path expects: agent-signed, with
-    // Auth-Cert (an agent cert, parent = the user) + Auth-Warrant (audience +
-    // `as:<user>` scopes), Owner = the user (the delegator / effective author).
+    // Build a real device presentation and assert the assembled envelope
+    // matches the daemon's device-attribution shape: signed by the ACCESS key
+    // (envelope-key binding), presentation in Auth-Cert, no Auth-Warrant,
+    // Owner = the user (the warrant identifier).
     #[test]
-    fn assembled_envelope_matches_daemon_as_path_shape() {
+    fn assembled_envelope_matches_daemon_device_shape() {
         let idp = KeyPair::generate();
-        let user = KeyPair::generate();
-        let agent_kp = KeyPair::generate();
-        let user_email = "danmills@sandmill.org";
-        let agent_email = "svc+abcd@browserid.me";
+        let access = KeyPair::generate();
+        let config = KeyPair::generate();
+        let user_email = "dan@mingo.place";
         let audience = DEFAULT_AUDIENCE;
+        let holder = "agpfx.cli1";
 
-        let parent_cert = Certificate::create(
-            "browserid.me",
-            user_email,
-            &user.public_key(),
-            Duration::hours(24),
-            &idp,
+        let access_cert = AccessCert::create(
+            "mingo.place", user_email, Holder::new(holder).unwrap(), &access.public_key(),
+            Duration::hours(24), &idp, None,
         )
         .unwrap();
-        let agent_cert = Certificate::create_agent(
-            "browserid.me",
-            agent_email,
-            user_email,
-            &agent_kp.public_key(),
-            Duration::hours(24),
-            &idp,
-            Some("https://browserid.me".to_string()),
+        let config_cert = DeviceCert::create(
+            "mingo.place", &config.public_key(), Purpose::Authorization,
+            Holder::new(holder).unwrap(), vec![user_email.to_string()],
+            Duration::days(90), &idp, None,
         )
         .unwrap();
-        assert!(agent_cert.is_agent());
-        assert_eq!(agent_cert.agent_parent(), Some(user_email));
-
-        let scopes = scopes_for(ScopePreset::Post, user_email);
-        let warrant = Warrant::create(
-            &parent_cert,
-            agent_email,
-            audience,
-            Some(scopes.clone()),
-            Duration::days(90),
-            &user,
+        let warrant = DeviceWarrant::create(
+            user_email, HolderMatcher::new(holder).unwrap(), audience,
+            scopes_for(ScopePreset::Post), Duration::days(90), &config, None,
         )
         .unwrap();
+        let assertion = Assertion::create(audience, Duration::minutes(5), &access).unwrap();
+        let presentation = AccessPresentation {
+            access_cert, assertion, warrant, config_cert,
+        }
+        .encode();
 
         let spec = WriteSpec {
             action: Action::Post,
@@ -830,40 +514,23 @@ mod tests {
             hlc: None,
         };
 
-        let wire_bytes = assemble_agent_wire(
-            agent_kp.secret_bytes(),
-            &agent_cert.encoded().to_string(),
-            &warrant.encoded().to_string(),
-            &spec,
-        )
-        .unwrap();
+        let wire_bytes =
+            assemble_device_wire(access.secret_bytes(), &presentation, &spec).unwrap();
 
         // Re-parse and assert the daemon-visible shape.
         let msg = sbo_core::wire::parse(&wire_bytes).expect("wire parses");
-        // Signed by the agent key.
-        assert_eq!(
-            msg.signing_key,
-            SigningKey::from_bytes(agent_kp.secret_bytes()).public_key()
-        );
-        // Signature is valid over the envelope.
+        // Envelope-key binding: signed by the presentation's access key.
+        assert_eq!(msg.signing_key, SigningKey::from_bytes(access.secret_bytes()).public_key());
         sbo_core::message::verify_message(&msg).expect("signature verifies");
-        // Owner = the delegator (the effective author under `as:`).
+        // Owner = the user (the warrant identifier under the holder model).
         assert_eq!(msg.owner.as_ref().map(|o| o.to_string()), Some(user_email.to_string()));
-        // Both agent-write credentials are attached.
-        let attached_cert = msg.auth_cert.expect("auth_cert present");
-        let attached_warrant = msg.auth_warrant.expect("auth_warrant present");
-        // The attached warrant names this agent, this audience, and carries `as:`.
-        let w = Warrant::parse(&attached_warrant).unwrap();
-        assert_eq!(w.agent(), agent_email);
-        assert_eq!(w.audience(), audience);
-        assert!(w
-            .claims()
-            .scopes
-            .as_ref()
-            .unwrap()
-            .contains(&format!("as:{user_email}")));
-        // The attached cert is the agent cert (parent = the user).
-        let c = Certificate::parse(&attached_cert).unwrap();
-        assert_eq!(c.agent_parent(), Some(user_email));
+        // The presentation rides Auth-Cert; the classic Auth-Warrant is unused.
+        let attached = msg.auth_cert.expect("auth_cert present");
+        assert!(msg.auth_warrant.is_none());
+        let pres = AccessPresentation::parse(&attached).expect("presentation parses");
+        let verified = pres
+            .verify(audience, |_| Ok(idp.public_key()))
+            .expect("presentation verifies");
+        assert_eq!(verified.email, user_email);
     }
 }

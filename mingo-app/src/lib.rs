@@ -15,6 +15,7 @@
 
 pub mod appoint;
 pub mod community;
+pub mod device_login;
 pub mod genesis;
 pub mod livetest;
 pub mod login;

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
-use browserid_core::keys::{KeyPair, PublicKey};
+use browserid_core::keys::KeyPair;
 use browserid_core::discovery::SupportDocument;
 use serde::{Deserialize, Serialize};
 use tower_cookies::cookie::{time::Duration as CookieDuration, SameSite};

@@ -27,7 +27,7 @@
 
 use std::time::Duration as StdDuration;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use axum::extract::State;
 use axum::Json;
 use base64::Engine as _;

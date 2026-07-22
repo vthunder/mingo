@@ -50,12 +50,13 @@ service's key. The live key is pinned at `~/.sbo/mingo-idp-key.json`
 
 ## Build & run (local dev)
 ```bash
-cargo build --manifest-path reference_impl/mingo-idp/Cargo.toml
+# NB: dev machines set a shared cargo target dir (~/.cargo/config.toml), so the
+# binary is NOT under ./target — `cargo run` resolves it wherever it lives.
 # MINGO_APP_ORIGIN MUST equal the origin the SPA is loaded from — it's the
 # audience the broker stamps into the assertion we verify.
 MINGO_ALLOW_HTTP=1 MINGO_IDP_BIND=127.0.0.1:7891 \
   MINGO_APP_ORIGIN=http://127.0.0.1:7891 \
-  reference_impl/mingo-idp/target/debug/mingo-idp
+  cargo run -p mingo-idp
 ```
 Open the SPA at `http://127.0.0.1:7891/` (`?daemon=…&broker=…&idp=…` to point at
 local services). For the full silent-provision path locally, register `mingo.place`

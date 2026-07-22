@@ -30,7 +30,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
 use serde::Deserialize;
 
-use browserid_core::{Certificate, KeyPair, Warrant};
+use browserid_core::KeyPair;
 use sbo_core::crypto::{ContentHash, Signature, SigningKey};
 use sbo_core::message::{Action, Id, Message, ObjectType, Path};
 use sbo_core::wire;
@@ -929,8 +929,8 @@ pub fn run(args: &SeedArgs) -> Result<()> {
     }
     if !plan.agent_authors.is_empty() {
         println!(
-            "  2c. Provision {BOT_HANDLE}@{domain} + one agent cert & author-signed warrant per: {}",
-            plan.agent_authors.join(", ")
+            "  2c. (agent-signed seeding retired — {} planned agent item(s) will be author-signed)",
+            plan.items.iter().filter(|i| i.via_agent).count()
         );
     }
     if let Some(k) = &args.sys_key {
@@ -1003,29 +1003,6 @@ pub struct Provisioned {
     pub cert: String,
 }
 
-/// Per-author digest-bot credentials: the agent cert (agent.parent = author)
-/// and the author-signed warrant — the pair every `via_agent` write carries.
-struct AgentGrant {
-    cert: String,
-    warrant: String,
-}
-
-/// The warrant scopes an author grants digest-bot — mirrors mingo-idp
-/// `default_scopes` (poster.rs): post-only, mingo paths/schemas, `as:` the
-/// author so the effective on-chain author is them.
-fn bot_scopes(author_email: &str) -> Vec<String> {
-    vec![
-        "action:post".into(),
-        "schema:post.v1".into(),
-        "schema:comment.v1".into(),
-        "schema:reaction.v1".into(),
-        "schema:attestation.v1".into(),
-        "path:/communities/**".into(),
-        format!("path:/u/{author_email}/**"),
-        format!("as:{author_email}"),
-    ]
-}
-
 fn execute(args: &SeedArgs, plan: &Plan, domain: &str, now_ms: i64) -> Result<()> {
     let admin_token = std::env::var(&args.admin_token_env).with_context(|| {
         format!(
@@ -1073,40 +1050,19 @@ fn execute(args: &SeedArgs, plan: &Plan, domain: &str, now_ms: i64) -> Result<()
         personas.insert(handle.clone(), p);
     }
 
-    // 2c. Digest-bot agent grants: one bot key; per agent-author, an
-    // agent-shaped cert (agent.parent = author, minted by the IdP) and a
-    // warrant signed by the AUTHOR's identity key. Exactly the mingo-poster
-    // shape, under a distinct identity that never impersonates it.
-    let mut bot: Option<SigningKey> = None;
-    let mut grants: BTreeMap<String, AgentGrant> = BTreeMap::new();
+    // 2c. Digest-bot agent grants — RETIRED with the classic protocol. The
+    // classic chain (agent cert with `parent =` author + author-signed warrant
+    // + the daemon's `as:` path) was removed by the device-cert/holder
+    // migration; agent-flavored provenance seeding returns with the
+    // holder-model provenance work (see the "Surface agent/service provenance
+    // on posts" bean). Until then, planned `via_agent` items are signed by
+    // their author directly.
     if !plan.agent_authors.is_empty() {
-        let bot_kp = KeyPair::generate();
-        let bot_key = SigningKey::from_bytes(bot_kp.secret_bytes());
-        for handle in &plan.agent_authors {
-            let author = personas
-                .get(handle)
-                .ok_or_else(|| anyhow!("agent author {handle} not provisioned"))?;
-            let cert = provision_bot_cert(
-                &client, &args.idp, &admin_token, &bot_kp, &author.email,
-            )?;
-            let parent_cert = Certificate::parse(&author.cert)
-                .map_err(|e| anyhow!("parsing {}'s cert: {e}", author.email))?;
-            let warrant = Warrant::create(
-                &parent_cert,
-                &format!("{BOT_HANDLE}@{domain}"),
-                &args.audience,
-                Some(bot_scopes(&author.email)),
-                chrono::Duration::days(90),
-                &author.kp,
-            )
-            .map_err(|e| anyhow!("signing {}'s warrant: {e}", author.email))?;
-            grants.insert(
-                handle.clone(),
-                AgentGrant { cert, warrant: warrant.encoded().to_string() },
-            );
-            println!("✓ agent grant: {} → {BOT_HANDLE}@{domain}", author.email);
-        }
-        bot = Some(bot_key);
+        println!(
+            "⚠ agent-signed seeding is retired pending the holder-model provenance port — \
+             {} agent-authored item(s) will be signed by their authors directly",
+            plan.items.iter().filter(|i| i.via_agent).count()
+        );
     }
 
     // 3. Widen each community's spaces/general _config so backdated HLCs pass.
@@ -1124,7 +1080,7 @@ fn execute(args: &SeedArgs, plan: &Plan, domain: &str, now_ms: i64) -> Result<()
 
     // 4. Submit everything, in dependency order. On failure, abort — but
     // still restore the configs first.
-    let result = submit_items(&client, args, plan, &personas, bot.as_ref(), &grants);
+    let result = submit_items(&client, args, plan, &personas);
 
     // 5. Restore the genesis 24h configs (even when a submit failed).
     if let Some(sys) = &sys_key {
@@ -1155,48 +1111,27 @@ fn submit_items(
     args: &SeedArgs,
     plan: &Plan,
     personas: &BTreeMap<String, Provisioned>,
-    bot: Option<&SigningKey>,
-    grants: &BTreeMap<String, AgentGrant>,
 ) -> Result<()> {
     for item in &plan.items {
         let p = personas
             .get(&item.signer)
             .ok_or_else(|| anyhow!("no provisioned persona for {}", item.signer))?;
         debug_assert_eq!(p.email, item.owner);
-        // via_agent: digest-bot signs, carrying its per-author agent cert +
-        // the author's warrant; Owner stays the author (the `as:` scope makes
-        // them the effective on-chain author). Otherwise the author signs.
-        let wire_bytes = if item.via_agent {
-            let bot_key = bot.ok_or_else(|| anyhow!("agent item but no bot key"))?;
-            let g = grants
-                .get(&item.signer)
-                .ok_or_else(|| anyhow!("no agent grant for {}", item.signer))?;
-            assemble_write(
-                bot_key,
-                Some(&g.cert),
-                Some(&g.warrant),
-                &item.path,
-                &item.id,
-                item.schema,
-                item.content_type,
-                item.payload.clone(),
-                Some(&item.owner),
-                item.hlc.as_deref(),
-            )?
-        } else {
-            assemble_write(
-                &p.key,
-                Some(&p.cert),
-                None,
-                &item.path,
-                &item.id,
-                item.schema,
-                item.content_type,
-                item.payload.clone(),
-                Some(&item.owner),
-                item.hlc.as_deref(),
-            )?
-        };
+        // Classic `via_agent` (digest-bot + author warrant + `as:`) is retired
+        // with the protocol; every item is author-signed until the
+        // holder-model provenance port.
+        let wire_bytes = assemble_write(
+            &p.key,
+            Some(&p.cert),
+            None,
+            &item.path,
+            &item.id,
+            item.schema,
+            item.content_type,
+            item.payload.clone(),
+            Some(&item.owner),
+            item.hlc.as_deref(),
+        )?;
         submit(client, &args.daemon, &wire_bytes, &item.label)?;
         println!("✓ {} ({}{})", item.label, item.path, item.id);
         std::thread::sleep(std::time::Duration::from_millis(SUBMIT_PACING_MS));
@@ -1391,41 +1326,6 @@ fn provision_external(
         kp,
         cert: parsed.cert,
     })
-}
-
-/// Mint the digest-bot's per-author AGENT cert at the IdP: `/admin/provision`
-/// with `agent_parent` returns a cert shaped exactly like mingo-poster's
-/// (`agent.parent = author`), which the daemon requires for warrant writes.
-fn provision_bot_cert(
-    client: &reqwest::blocking::Client,
-    idp: &str,
-    admin_token: &str,
-    bot_kp: &KeyPair,
-    author_email: &str,
-) -> Result<String> {
-    let resp = client
-        .post(format!("{}/admin/provision", idp.trim_end_matches('/')))
-        .header("X-Admin-Token", admin_token)
-        .json(&serde_json::json!({
-            "external_email": format!("{BOT_HANDLE}.seed@sandmill.org"),
-            "handle": BOT_HANDLE,
-            "pubkey": { "algorithm": "Ed25519", "publicKey": bot_kp.public_key().to_base64() },
-            "agent_parent": author_email,
-        }))
-        .send()
-        .with_context(|| format!("bot cert for {author_email}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().unwrap_or_default();
-        bail!("ABORT — bot cert for '{author_email}' failed: HTTP {status}: {body}");
-    }
-    let parsed: ProvisionResp = resp
-        .json()
-        .with_context(|| format!("parsing bot cert response for {author_email}"))?;
-    if !parsed.success {
-        bail!("ABORT — bot cert for '{author_email}' returned success=false");
-    }
-    Ok(parsed.cert)
 }
 
 // ===========================================================================
@@ -1780,82 +1680,6 @@ mod tests {
             .iter()
             .filter(|i| !matches!(i.kind, ItemKind::Post | ItemKind::Comment))
             .all(|i| !i.via_agent));
-    }
-
-    #[test]
-    fn agent_write_carries_valid_warrant_chain() {
-        // Fake IdP + broker keys stand in for mingo.place / browserid.me.
-        let idp = KeyPair::generate();
-        let author_kp = KeyPair::generate();
-        let author_cert = browserid_core::Certificate::create(
-            "mingo.place",
-            "asha@mingo.place",
-            &author_kp.public_key(),
-            chrono::Duration::hours(24),
-            &idp,
-        )
-        .unwrap();
-        let bot_kp = KeyPair::generate();
-        let bot_cert = browserid_core::Certificate::create_agent(
-            "mingo.place",
-            "digest-bot@mingo.place",
-            "asha@mingo.place",
-            &bot_kp.public_key(),
-            chrono::Duration::hours(24),
-            &idp,
-            Some("https://browserid.me".into()), // matches /admin/provision's registrar stamp
-        )
-        .unwrap();
-        assert!(bot_cert.is_agent());
-        assert_eq!(bot_cert.agent_parent(), Some("asha@mingo.place"));
-
-        // The seeder's real warrants carry NO status ref (the daemon doesn't
-        // require one, and fabricating indices into the production status list
-        // would collide with real revocations). browserid-core's RP-side
-        // verify_for DOES require one, so give the test warrant a dummy.
-        let warrant = Warrant::create_with_status(
-            &author_cert,
-            "digest-bot@mingo.place",
-            "sbo+raw://avail:turing:506/",
-            Some(bot_scopes("asha@mingo.place")),
-            chrono::Duration::days(90),
-            &author_kp,
-            Some(browserid_core::StatusRef {
-                uri: "https://browserid.me/warrant-status/demo".into(),
-                idx: 0,
-            }),
-        )
-        .unwrap();
-
-        let bot_key = SigningKey::from_bytes(bot_kp.secret_bytes());
-        let wire_bytes = assemble_write(
-            &bot_key,
-            Some(bot_cert.encoded()),
-            Some(warrant.encoded()),
-            "/communities/cooks/spaces/general/",
-            "c-roundup1",
-            "comment.v1",
-            "application/json",
-            br#"{"body":"digest","parent":"/communities/cooks/spaces/general/p-x","created_at":1}"#.to_vec(),
-            Some("asha@mingo.place"),
-            None,
-        )
-        .unwrap();
-        let msg = wire::parse(&wire_bytes).unwrap();
-        sbo_core::message::verify_message(&msg).expect("bot signature verifies");
-        assert_eq!(msg.owner.as_ref().unwrap().as_str(), "asha@mingo.place");
-        // The embedded warrant parses and binds author → agent, and its
-        // parent-cert is the author's own cert (what the receipt panel decodes).
-        let w = Warrant::parse(msg.auth_warrant.as_deref().unwrap()).unwrap();
-        assert_eq!(w.delegator(), "asha@mingo.place");
-        assert_eq!(w.agent(), "digest-bot@mingo.place");
-        assert_eq!(w.claims().parent_cert, author_cert.encoded());
-        // Full chain: parent cert verifies under the IdP key, warrant under
-        // the author's key, agent binding + audience match.
-        let scopes = w
-            .verify_for(&bot_cert, "sbo+raw://avail:turing:506/", &idp.public_key())
-            .expect("warrant chain verifies");
-        assert!(scopes.contains(&"as:asha@mingo.place".to_string()));
     }
 
     #[test]

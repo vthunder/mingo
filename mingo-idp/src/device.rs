@@ -221,6 +221,11 @@ pub async fn agent_device_cert(
     if !is_self && !is_subaddress {
         return Err(AppError::Forbidden);
     }
+    // Same charset/reservation rules as handle claiming — a signed cert must
+    // never carry an un-normalizable local-part.
+    if crate::routes::normalize_agent_name(local)? != local {
+        return Err(AppError::BadRequest("agent name is not normalized".into()));
+    }
 
     let agent_pub = parse_pubkey(&req.agent_pubkey)?;
     if req.holder.trim().is_empty() {
