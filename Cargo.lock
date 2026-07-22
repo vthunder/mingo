@@ -241,10 +241,10 @@ dependencies = [
 [[package]]
 name = "browserid-agent"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=d35ec19#d35ec19f50882c9510a7d61314bafbb93b193d17"
+source = "git+https://github.com/vthunder/browserid-ng?rev=0f02966#0f029663c0d0f1afdcb884f6242a52bacf849a9c"
 dependencies = [
  "base64 0.22.1",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=d35ec19)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=0f02966)",
  "chrono",
  "rand",
  "reqwest 0.12.25",
@@ -257,7 +257,7 @@ dependencies = [
 [[package]]
 name = "browserid-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=b8526f6#b8526f6c2d914fd5937bdaf91e9412c849cf567b"
+source = "git+https://github.com/vthunder/browserid-ng?rev=0f02966#0f029663c0d0f1afdcb884f6242a52bacf849a9c"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -274,7 +274,7 @@ dependencies = [
 [[package]]
 name = "browserid-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=d35ec19#d35ec19f50882c9510a7d61314bafbb93b193d17"
+source = "git+https://github.com/vthunder/browserid-ng?rev=b8526f6#b8526f6c2d914fd5937bdaf91e9412c849cf567b"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1430,7 +1430,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "browserid-agent",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=d35ec19)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=0f02966)",
  "chrono",
  "clap",
  "hex",
@@ -1449,7 +1449,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "browserid-agent",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=d35ec19)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=0f02966)",
  "chrono",
  "reqwest 0.12.25",
  "rusqlite",

@@ -53,7 +53,10 @@ pub async fn well_known(State(st): State<Shared>) -> Json<serde_json::Value> {
     let doc = SupportDocument::new(st.keypair.public_key())
         .with_device_cert("/device_cert")
         .with_access_cert("/access/mint")
-        .with_device_authorization("/device-authorize");
+        .with_device_authorization("/device-authorize")
+        // Named (+tag) agent certs are signed here too (agent mode) — the
+        // broker's approval page checks for this before offering the option.
+        .with_agent_device_authorization("/device-authorize");
     Json(serde_json::to_value(&doc).unwrap_or_else(|_| serde_json::json!({})))
 }
 
