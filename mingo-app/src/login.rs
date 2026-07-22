@@ -351,7 +351,10 @@ pub fn post(args: &PostArgs) -> Result<()> {
         content_type: "application/json".to_string(),
         payload,
         owner: user.clone(),
-        hlc: None,
+        // The HLC is what readers sort/timestamp by (and what the space
+        // _config bounds against DA block time) — a post without one lands
+        // unsorted and undated in mingo-web. Mirror the poster: now.0.
+        hlc: Some(format!("{now_ms}.0")),
     };
     let wire_bytes = tokio::runtime::Runtime::new()
         .context("starting async runtime")?

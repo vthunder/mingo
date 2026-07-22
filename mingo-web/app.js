@@ -228,6 +228,11 @@ function canModDelete(item) {
 const session = {
   get email() { return localStorage.getItem("mingo_email") || null; },
   set email(v) { v ? localStorage.setItem("mingo_email", v) : localStorage.removeItem("mingo_email"); },
+  // The EXTERNAL root identity (what a browserid dialog can vouch for
+  // directly — a @mingo.place display identity would recurse into this IdP's
+  // own authorize lane). Remembered for directed re-logins.
+  get external() { return localStorage.getItem("mingo_external") || null; },
+  set external(v) { v ? localStorage.setItem("mingo_external", v) : localStorage.removeItem("mingo_external"); },
 };
 
 // Sign-in via the STANDARD browserid client (include.js, loaded in index.html),
@@ -288,6 +293,7 @@ async function silentLogin(assertion) {
   if (session.email) return; // already signed in via the RP's own session
   try {
     const sess = await idpPost("/session/from-presentation", { presentation: assertion });
+    if (sess.email) session.external = sess.email;
     const email = sess.handle
       ? `${sess.handle}@${CONFIG.domain}`
       : sess.identity_mode === "email"
@@ -388,11 +394,16 @@ async function submitViaPoster({ path, id, schema, payload, hlc, prev, owner, co
 // pick a handle (in-page). (4) Silently provision <handle>@mingo.place — the
 // broker discovers mingo.place's IdP and, because the session exists, mints the
 // cert into custody without a second login.
-async function signIn() {
+async function signIn(opts) {
   try {
-    const assertion = await requestAssertion({ sboSign: false });
+    // Directed mode (session recovery): we know exactly who we expect — skip
+    // the chooser and prompt for that identity.
+    const directed = opts && opts.directed && session.external;
+    const assertion = await requestAssertion(
+      directed ? { sboSign: false, provisionEmail: session.external } : { sboSign: false });
     if (!assertion) return; // cancelled
     const sess = await idpPost("/session/from-presentation", { presentation: assertion });
+    if (sess.email) session.external = sess.email;
 
     // Decide the identity to sign as: a returning handle user, a returning
     // external-email user, or a new user who picks in the chooser.
@@ -500,6 +511,7 @@ async function signOut() {
   try { navigator.id.logout(); } catch (e) {}
   localStorage.removeItem("mingo_signing_ready"); // re-grant on next sign-in
   session.email = null;
+  session.external = null;
   _modBoards = null; currentMods = new Set(); // drop cached moderator status
   renderAuth();
   route();
@@ -2135,19 +2147,23 @@ async function maybeResumeAuthorize() {
     if (who && who.authenticated && who.handle) { location.replace(ret); return true; }
   } catch {}
   return new Promise((resolve) => {
+    const who = session.external;
     const overlay = el(`<div class="modal-overlay"><div class="modal card">
       <div class="h2">Sign in to continue</div>
-      <p class="muted" style="margin-top:8px">Authorizing your device needs a live
-        mingo session. Sign in and you'll be sent right back to finish.</p>
+      <p class="muted" style="margin-top:8px">Your mingo session expired, so
+        authorizing needs a quick re-login${who ? ` as <strong>${esc(who)}</strong>` : ""}.
+        You'll be sent right back to finish.</p>
       <div class="row-between" style="margin-top:12px">
         <button id="ra-cancel">Cancel</button>
-        <button class="primary" id="ra-go">Sign in</button>
+        <button class="primary" id="ra-go">${who ? "Sign back in" : "Sign in"}</button>
       </div></div></div>`);
     document.body.appendChild(overlay);
     overlay.querySelector("#ra-cancel").onclick = () => { overlay.remove(); resolve(false); };
     overlay.querySelector("#ra-go").onclick = async () => {
       try {
-        await signIn();
+        await signIn({ directed: true });
+        const who2 = await idpGet("/whoami").catch(() => null);
+        if (!who2 || !who2.authenticated) return; // cancelled/failed — stay here
         overlay.remove();
         location.replace(ret);
         resolve(true);
