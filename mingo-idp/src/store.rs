@@ -80,6 +80,7 @@ const SCHEMA: &str = r#"
         device_cert TEXT,
         holder      TEXT,
         idp         TEXT,
+        access_mint TEXT,
         created_at  INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS poster_pending (
@@ -120,6 +121,7 @@ impl Store {
         let _ = conn.execute("ALTER TABLE poster_warrants ADD COLUMN device_cert TEXT", []);
         let _ = conn.execute("ALTER TABLE poster_warrants ADD COLUMN holder TEXT", []);
         let _ = conn.execute("ALTER TABLE poster_warrants ADD COLUMN idp TEXT", []);
+        let _ = conn.execute("ALTER TABLE poster_warrants ADD COLUMN access_mint TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -460,16 +462,17 @@ impl Store {
         device_cert: &str,
         holder: &str,
         idp: &str,
+        access_mint: Option<&str>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO poster_warrants (account_id, user_email, warrant, audience, expires_at, device_seed, device_cert, holder, idp, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO poster_warrants (account_id, user_email, warrant, audience, expires_at, device_seed, device_cert, holder, idp, access_mint, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(account_id) DO UPDATE SET
                  user_email = ?2, warrant = ?3, audience = ?4, expires_at = ?5,
-                 device_seed = ?6, device_cert = ?7, holder = ?8, idp = ?9, created_at = ?10",
+                 device_seed = ?6, device_cert = ?7, holder = ?8, idp = ?9, access_mint = ?10, created_at = ?11",
             params![account_id, user_email, warrant, audience, expires_at,
-                device_seed, device_cert, holder, idp, Self::now()],
+                device_seed, device_cert, holder, idp, access_mint, Self::now()],
         )?;
         Ok(())
     }
@@ -480,7 +483,7 @@ impl Store {
     pub fn get_poster_warrant(&self, account_id: i64) -> rusqlite::Result<Option<PosterWarrant>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT user_email, warrant, audience, expires_at, device_seed, device_cert, holder, idp
+            "SELECT user_email, warrant, audience, expires_at, device_seed, device_cert, holder, idp, access_mint
              FROM poster_warrants WHERE account_id = ?1",
             params![account_id],
             |r| {
@@ -493,6 +496,7 @@ impl Store {
                     device_cert: r.get(5)?,
                     holder: r.get(6)?,
                     idp: r.get(7)?,
+                    access_mint: r.get(8)?,
                 })
             },
         )
@@ -527,6 +531,8 @@ pub struct PosterWarrant {
     pub holder: Option<String>,
     /// Base URL of the IdP that mints access certs for this credential.
     pub idp: Option<String>,
+    /// Full mint URL when the IdP's differs from `<idp>/access/mint`.
+    pub access_mint: Option<String>,
 }
 
 /// An in-flight `/poster/enable` consent request awaiting approval pickup.
@@ -597,10 +603,10 @@ mod tests {
         // Credential: set, read, upsert-replace, delete.
         assert!(s.get_poster_warrant(acct.id).unwrap().is_none());
         s.set_poster_warrant(acct.id, "dan@example.com", "w1~cc", "sbo+raw://x/", 100,
-            "seed1", "cert1", "svc.h1", "https://mingo.test")
+            "seed1", "cert1", "svc.h1", "https://mingo.test", None)
             .unwrap();
         s.set_poster_warrant(acct.id, "dan@example.com", "w2~cc", "sbo+raw://x/", 200,
-            "seed2", "cert2", "svc.h2", "https://mingo.test")
+            "seed2", "cert2", "svc.h2", "https://mingo.test", Some("https://mingo.test/api/mint"))
             .unwrap();
         let w = s.get_poster_warrant(acct.id).unwrap().unwrap();
         assert_eq!(w.warrant, "w2~cc");
@@ -610,6 +616,7 @@ mod tests {
         assert_eq!(w.device_cert.as_deref(), Some("cert2"));
         assert_eq!(w.holder.as_deref(), Some("svc.h2"));
         assert_eq!(w.idp.as_deref(), Some("https://mingo.test"));
+        assert_eq!(w.access_mint.as_deref(), Some("https://mingo.test/api/mint"));
         s.delete_poster_warrant(acct.id).unwrap();
         assert!(s.get_poster_warrant(acct.id).unwrap().is_none());
     }

@@ -372,6 +372,7 @@ pub async fn poll(
             let idp = body["credential"]["idp"]
                 .as_str()
                 .ok_or_else(|| AppError::Internal("completed poll carried no idp".into()))?;
+            let access_mint = body["credential"]["access_mint"].as_str();
             let identity = body["credential"]["identity"].as_str().unwrap_or_default();
             if !identity.eq_ignore_ascii_case(&pending.user_email) {
                 st.store.clear_poster_pending(account_id)?;
@@ -399,6 +400,7 @@ pub async fn poll(
                 device_cert_jws,
                 device_cert.holder().as_str(),
                 idp,
+                access_mint,
             )?;
             st.store.clear_poster_pending(account_id)?;
             tracing::info!(user = %pending.user_email, holder = %device_cert.holder().as_str(),
@@ -501,6 +503,7 @@ pub async fn submit(
         device_key: seed,
         agent_device_cert: cert_jws,
         idp,
+        access_mint: w.access_mint.clone(),
     };
     let mut agent = DeviceAgent::new(credential)
         .map_err(|e| AppError::Internal(format!("poster credential: {e}")))?;
