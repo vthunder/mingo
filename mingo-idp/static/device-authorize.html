@@ -115,14 +115,31 @@
     window.close();
   }
 
+  var RETRY_KEY = 'browserid_da_signin_attempted';
+
   fetch('/whoami', { credentials: 'same-origin', headers: { accept: 'application/json' } })
     .then(function (r) { return r.json(); })
     .then(function (who) {
       if (!who || !who.authenticated || !who.handle) {
+        // No live IdP session — the SPA may still LOOK signed in (its state
+        // is client-side), but the cookie lapsed. Our pending params survive
+        // in sessionStorage across navigations, so hop through the SPA's
+        // normal sign-in (which roots at the EXTERNAL identity — no
+        // recursion into this IdP) and come back to finish. One shot; a
+        // second miss falls back to instructions.
+        var tried = false;
+        try { tried = sessionStorage.getItem(RETRY_KEY) === '1'; } catch (e) {}
+        if (!tried) {
+          try { sessionStorage.setItem(RETRY_KEY, '1'); } catch (e) {}
+          msg.textContent = 'Signing you in to mingo…';
+          location.replace('/?return=%2Fdevice-authorize');
+          return;
+        }
         return fail('You are not signed in to mingo.place in this browser (or have no handle yet). ' +
           '<a href="/" target="_blank" rel="noreferrer">Open mingo.place</a>, sign in, ' +
           'then close this window and click sign-in again.');
       }
+      try { sessionStorage.removeItem(RETRY_KEY); } catch (e) {}
       if (params.agent_email) {
         // Agent mode: the agent identity must be the signed-in handle itself
         // (an as-you service) or a `+tag` sub-address of it.

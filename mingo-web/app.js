@@ -2120,7 +2120,46 @@ window.addEventListener("pageshow", (e) => {
   pickupPoster();
 });
 
+// Device-authorize resume: the authorize page bounces here with
+// ?return=/device-authorize when it finds no live IdP session (its pending
+// params survive in sessionStorage). If the cookie is actually live — our
+// localStorage "signed in" state can outlive it, and vice versa — go straight
+// back; otherwise prompt one real sign-in (a click, so the dialog popup isn't
+// blocker-eaten), which establishes the IdP session via the EXTERNAL identity
+// (no recursion into mingo's own IdP lane), then return.
+async function maybeResumeAuthorize() {
+  const ret = new URLSearchParams(location.search).get("return");
+  if (!ret || !/^\/[^/]/.test(ret)) return false;
+  try {
+    const who = await idpGet("/whoami");
+    if (who && who.authenticated && who.handle) { location.replace(ret); return true; }
+  } catch {}
+  return new Promise((resolve) => {
+    const overlay = el(`<div class="modal-overlay"><div class="modal card">
+      <div class="h2">Sign in to continue</div>
+      <p class="muted" style="margin-top:8px">Authorizing your device needs a live
+        mingo session. Sign in and you'll be sent right back to finish.</p>
+      <div class="row-between" style="margin-top:12px">
+        <button id="ra-cancel">Cancel</button>
+        <button class="primary" id="ra-go">Sign in</button>
+      </div></div></div>`);
+    document.body.appendChild(overlay);
+    overlay.querySelector("#ra-cancel").onclick = () => { overlay.remove(); resolve(false); };
+    overlay.querySelector("#ra-go").onclick = async () => {
+      try {
+        await signIn();
+        overlay.remove();
+        location.replace(ret);
+        resolve(true);
+      } catch (e) {
+        toast("Sign-in failed: " + (e.message || e));
+      }
+    };
+  });
+}
+
 (async function init() {
+  if (await maybeResumeAuthorize()) return; // navigating back to the authorize page
   await renderChrome();
   await route();
   restoreDraft(); // after route(): the view the draft belongs to must exist
