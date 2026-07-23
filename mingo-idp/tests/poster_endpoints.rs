@@ -104,8 +104,11 @@ async fn start_stub_broker() -> (String, KeyPair) {
             Duration::days(90), &idp_kp, None,
         )
         .unwrap();
+        // Delegated: grantor = the user, grantee = the poster service, bound to
+        // the poster's stable holder (svc.mingo-poster).
         let warrant = Warrant::create(
-            USER, HolderMatcher::new("svcpfx.poster1").unwrap(), AUDIENCE,
+            USER, "mingo-poster@mingo.place",
+            HolderMatcher::new("svc.mingo-poster").unwrap(), AUDIENCE,
             vec!["action:post".into()], Duration::days(90), &config_kp, None,
         )
         .unwrap();
@@ -195,8 +198,10 @@ async fn enable_then_poll_stores_the_device_credential() {
     let w = state.store.get_poster_warrant(account_id).unwrap().unwrap();
     assert_eq!(w.user_email, USER);
     assert_eq!(w.audience, AUDIENCE);
-    assert_eq!(w.holder.as_deref(), Some("svcpfx.poster1"));
-    assert_eq!(w.idp.as_deref(), Some("https://broker.test"));
+    // Delegated model: the stored credential is the POSTER's own (mingo IdP +
+    // stable poster holder), not the broker's.
+    assert_eq!(w.holder.as_deref(), Some("svc.mingo-poster"));
+    assert_eq!(w.idp.as_deref(), Some("https://mingo.place"));
     assert!(w.warrant.contains('~'), "stored grant is warrant~config_cert");
     assert!(w.device_seed.is_some() && w.device_cert.is_some());
     assert!(state.store.get_poster_pending(account_id).unwrap().is_none());

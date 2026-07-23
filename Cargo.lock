@@ -241,6 +241,22 @@ dependencies = [
 [[package]]
 name = "browserid-agent"
 version = "0.1.0"
+source = "git+https://github.com/vthunder/browserid-ng?rev=5ffe436#5ffe43608dedd28cfb2c2cd64f1009c6ed50f289"
+dependencies = [
+ "base64 0.22.1",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=5ffe436)",
+ "chrono",
+ "rand",
+ "reqwest 0.12.25",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "browserid-agent"
+version = "0.1.0"
 source = "git+https://github.com/vthunder/browserid-ng?rev=fa21c8e#fa21c8e7e101e98c342b6e48013013f3e2215e09"
 dependencies = [
  "base64 0.22.1",
@@ -257,7 +273,24 @@ dependencies = [
 [[package]]
 name = "browserid-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=b8526f6#b8526f6c2d914fd5937bdaf91e9412c849cf567b"
+source = "git+https://github.com/vthunder/browserid-ng?rev=2582555#2582555a5a799f0c951d93d51b64f7f88678dab0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "flate2",
+ "jsonwebtoken",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "browserid-core"
+version = "0.1.0"
+source = "git+https://github.com/vthunder/browserid-ng?rev=5ffe436#5ffe43608dedd28cfb2c2cd64f1009c6ed50f289"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1429,7 +1462,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "browserid-agent",
+ "browserid-agent 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=fa21c8e)",
  "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=fa21c8e)",
  "chrono",
  "clap",
@@ -1448,8 +1481,8 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "browserid-agent",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=fa21c8e)",
+ "browserid-agent 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=5ffe436)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=5ffe436)",
  "chrono",
  "reqwest 0.12.25",
  "rusqlite",
@@ -2026,10 +2059,10 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 [[package]]
 name = "sbo-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/sbo?rev=a1dd085#a1dd08592453f4e9dd34c441b8754f7e94023b6f"
+source = "git+https://github.com/vthunder/sbo?rev=ae1a998#ae1a9985e2a6a12624838024925b674966cd4446"
 dependencies = [
  "base64 0.22.1",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=b8526f6)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=2582555)",
  "dirs",
  "dnssec-prover",
  "ed25519-dalek",
@@ -2049,7 +2082,7 @@ dependencies = [
 [[package]]
 name = "sbo-crypto"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/sbo?rev=a1dd085#a1dd08592453f4e9dd34c441b8754f7e94023b6f"
+source = "git+https://github.com/vthunder/sbo?rev=ae1a998#ae1a9985e2a6a12624838024925b674966cd4446"
 dependencies = [
  "blst",
  "ed25519-dalek",
@@ -2061,7 +2094,7 @@ dependencies = [
 [[package]]
 name = "sbo-types"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/sbo?rev=a1dd085#a1dd08592453f4e9dd34c441b8754f7e94023b6f"
+source = "git+https://github.com/vthunder/sbo?rev=ae1a998#ae1a9985e2a6a12624838024925b674966cd4446"
 dependencies = [
  "serde",
 ]

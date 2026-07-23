@@ -17,10 +17,10 @@ path = "src/main.rs"
 # BrowserID protocol primitives (device-cert model: DeviceCert/AccessCert/
 # Warrant/AccessPresentation). Pinned git dependency on browserid-ng
 # (645d7c9 = holder model + merged one-approval provisioning + as-you services).
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "fa21c8e" }
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "5ffe436" }
 # Headless device-cert agent SDK — the mingo-poster holds a per-user
 # DeviceCredential and assembles envelope-key-bound presentations with it.
-browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "fa21c8e" }
+browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "5ffe436" }
 # SBO message/wire assembly for server-side posting (poster).
 sbo-core.workspace = true
 

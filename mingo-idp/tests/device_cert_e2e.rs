@@ -161,6 +161,7 @@ async fn device_cert_issuance_and_headless_mint_and_present() {
     // Grant the exact holder the IdP minted (an `<id>` matcher covering it).
     let warrant = DeviceWarrant::create(
         &identity,
+        &identity,
         HolderMatcher::new(device_cert.holder().as_str()).unwrap(),
         AUDIENCE,
         vec!["post".into()],

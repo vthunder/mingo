@@ -32,8 +32,7 @@ use axum::extract::State;
 use axum::Json;
 use base64::Engine as _;
 use browserid_agent::{DeviceAgent, DeviceCredential};
-use browserid_core::device::{DeviceCert, Warrant};
-use browserid_core::KeyPair;
+use browserid_core::device::{DeviceCert, Holder, Purpose, Warrant};
 use sbo_core::crypto::{ContentHash, Signature, SigningKey};
 use sbo_core::message::{Action, Id, Message, ObjectType, Path};
 use sbo_core::wire;
@@ -72,6 +71,38 @@ fn public_identity(account: &Account, domain: &str) -> String {
         Some(h) => format!("{h}@{domain}"),
         None => account.external_email.clone(),
     }
+}
+
+/// The shared **mingo-poster** service identity: a DISTINCT on-chain principal
+/// that acts on a consenting user's behalf (delegated attribution). Minted by
+/// mingo's OWN IdP; the user's warrant names it as `grantee` while attribution
+/// lands on the user (`grantor`). Its posts are visibly the poster's, on behalf
+/// of the user.
+fn poster_identity(domain: &str) -> String {
+    format!("mingo-poster@{domain}")
+}
+
+/// The poster's STABLE holder — every access cert copies it, and the user's
+/// warrant binds to it via an `<id>` matcher (anti-fungibility).
+const POSTER_HOLDER: &str = "svc.mingo-poster";
+
+/// Mint (fresh) the poster's authentication device cert with mingo's IdP key.
+/// Cheap + deterministic: mingo owns both the poster key and the IdP key.
+fn poster_device_cert(st: &Shared) -> Result<String, AppError> {
+    let holder =
+        Holder::new(POSTER_HOLDER).map_err(|e| AppError::Internal(format!("holder: {e}")))?;
+    let cert = DeviceCert::create(
+        &st.config.domain,
+        &st.poster_key.public_key(),
+        Purpose::Authentication,
+        holder,
+        vec![poster_identity(&st.config.domain)],
+        chrono::Duration::days(90),
+        &st.keypair,
+        None,
+    )
+    .map_err(|e| AppError::Internal(format!("poster device cert: {e}")))?;
+    Ok(cert.encoded().to_string())
 }
 
 /// `scheme://host` for a domain — https, except localhost/127.* (dev).
@@ -302,27 +333,33 @@ pub async fn enable(
         }
     }
 
-    let device_key = KeyPair::generate();
+    // Delegated (model A): the poster is a DISTINCT service identity minted by
+    // mingo's own IdP. The user signs a warrant delegating from THEIR identity
+    // (grantor) to `mingo-poster@…` (grantee) — the broker mints no cert, and
+    // attribution lands on the user while the poster is the visible actor.
+    let poster = poster_identity(&domain);
     let resp: ProvisionRequestResp = post_json(
         format!("{broker_origin}/agent-provision/request"),
         serde_json::json!({
+            // Unused for a foreign grantee (the poster holds its own cert), but
+            // the endpoint requires a well-formed key.
             "provisioning_pubkey": {
                 "algorithm": "Ed25519",
-                "publicKey": device_key.public_key().to_base64(),
+                "publicKey": st.poster_key.public_key().to_base64(),
             },
-            // No requested_handles: an as-you service — the poster holds the
-            // user's identity itself, isolated by its services holder.
-            "namespace": "services",
+            "grantor": user_email,
+            "grantee": poster,
+            "grantee_holder": POSTER_HOLDER,
             "grants": [{
                 "audience": st.config.sbo_db_audience,
                 "scopes": default_scopes(&user_email),
             }],
-            "label": format!("mingo poster ({user_email})"),
+            "label": "mingo poster".to_string(),
         }),
     )
     .await?;
     let seed_b64 =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(device_key.secret_bytes());
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(st.poster_key.secret_bytes());
     st.store.set_poster_pending(
         account_id,
         &user_email,
@@ -366,55 +403,50 @@ pub async fn poll(
     match status.as_str() {
         "pending" => Ok(Json(serde_json::json!({ "status": "pending" }))),
         "completed" => {
-            let device_cert_jws = body["credential"]["device_cert"]
+            // Delegated model: the poll delivers ONLY the `warrant~config_cert`
+            // tail — no device cert (the poster holds its own). Validate the
+            // warrant delegates from the user (grantor) to the poster (grantee),
+            // then store it against the poster's OWN shared credential.
+            let tail = body["grants"][0]["warrant"]
                 .as_str()
-                .ok_or_else(|| AppError::Internal("completed poll carried no device cert".into()))?;
-            let idp = body["credential"]["idp"]
-                .as_str()
-                .ok_or_else(|| AppError::Internal("completed poll carried no idp".into()))?;
-            let access_mint = body["credential"]["access_mint"].as_str();
-            let identity = body["credential"]["identity"].as_str().unwrap_or_default();
-            if !identity.eq_ignore_ascii_case(&pending.user_email) {
-                // The approval authorized a DIFFERENT identity than mingo needs
-                // to post as (e.g. the account page defaulted to a named handle
-                // `dan+mingo@…` instead of the requested `dan@…`). Report it as a
-                // legible, terminal status the SPA can explain — not an opaque
-                // 500 the poll loop swallows into a silent "try again" spin.
+                .ok_or_else(|| AppError::Internal("completed poll carried no warrant".into()))?;
+            let warrant_jws = tail.split('~').next().unwrap_or_default();
+            let warrant = Warrant::parse(warrant_jws)
+                .map_err(|e| AppError::Internal(format!("broker returned a bad warrant: {e}")))?;
+            let wc = warrant.claims();
+            let poster = poster_identity(&st.config.domain);
+            if !wc.grantor.eq_ignore_ascii_case(&pending.user_email) || wc.grantee != poster {
+                // The approval delegated a different grantor/grantee than mingo
+                // requested — report legibly rather than 500 into a silent spin.
                 st.store.clear_poster_pending(account_id)?;
                 tracing::warn!(
-                    requested = %pending.user_email, approved = %identity,
-                    "poster approval identity mismatch"
+                    requested = %pending.user_email, grantor = %wc.grantor, grantee = %wc.grantee,
+                    "poster warrant delegation mismatch"
                 );
                 return Ok(Json(serde_json::json!({
                     "status": "mismatch",
                     "requested": pending.user_email,
-                    "approved": identity,
+                    "approved": wc.grantor,
                 })));
             }
-            let tail = body["grants"][0]["warrant"]
-                .as_str()
-                .ok_or_else(|| AppError::Internal("completed poll carried no warrant".into()))?;
-            let device_cert = DeviceCert::parse(device_cert_jws)
-                .map_err(|e| AppError::Internal(format!("broker returned a bad device cert: {e}")))?;
-            let warrant_jws = tail.split('~').next().unwrap_or_default();
-            let warrant = Warrant::parse(warrant_jws)
-                .map_err(|e| AppError::Internal(format!("broker returned a bad warrant: {e}")))?;
-            let expires_at = warrant.claims().exp.min(device_cert.claims().exp);
+            let device_cert = poster_device_cert(&st)?;
+            let idp = origin_for(&st.config.domain);
+            let access_mint = format!("{idp}/access/mint");
             st.store.set_poster_warrant(
                 account_id,
                 &pending.user_email,
                 tail,
-                &warrant.claims().audience,
-                expires_at,
+                &wc.audience,
+                wc.exp,
                 &seed_b64,
-                device_cert_jws,
-                device_cert.holder().as_str(),
-                idp,
-                access_mint,
+                &device_cert,
+                POSTER_HOLDER,
+                &idp,
+                Some(&access_mint),
             )?;
             st.store.clear_poster_pending(account_id)?;
-            tracing::info!(user = %pending.user_email, holder = %device_cert.holder().as_str(),
-                "mingo-poster enabled (device model)");
+            tracing::info!(user = %pending.user_email, grantee = %poster,
+                "mingo-poster enabled (delegated model)");
             Ok(Json(serde_json::json!({ "status": "approved" })))
         }
         other => {
@@ -514,9 +546,11 @@ pub async fn submit(
         agent_device_cert: cert_jws,
         idp,
         access_mint: w.access_mint.clone(),
-        // The poster acts AS the user; its cert names them (as-you), so the
-        // cert's own identity is correct — no override.
-        identity: Some(w.user_email.clone()),
+        // Delegated model: the ACTOR is the poster (its device cert certifies
+        // `mingo-poster@…`), so the access cert is minted for the poster. The
+        // warrant delegates the poster → the user, and the write's `owner` (set
+        // below) is the user, so attribution lands on them.
+        identity: Some(poster_identity(&st.config.domain)),
     };
     let mut agent = DeviceAgent::new(credential)
         .map_err(|e| AppError::Internal(format!("poster credential: {e}")))?;
