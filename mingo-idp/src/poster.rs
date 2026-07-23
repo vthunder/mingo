@@ -353,6 +353,9 @@ pub async fn enable(
             "grants": [{
                 "audience": st.config.sbo_db_audience,
                 "scopes": default_scopes(&user_email),
+                // Plain-language labels for the consent card.
+                "app": "mingo",
+                "actions": ["post", "comment", "react", "delete"],
             }],
             "label": "mingo poster".to_string(),
         }),
