@@ -1772,6 +1772,21 @@ function jwsPayload(token) {
   } catch { return null; }
 }
 
+// A device-model presentation `access~assertion~warrant~config` → its decoded
+// access cert, warrant, and config cert. Returns null for anything else (a
+// key-rooted write has no Auth-Cert). The warrant carries grantor/grantee: equal
+// = an as-you (direct) post; distinct = delegated (a service acting for you).
+function parsePresentation(authCert) {
+  if (!authCert || authCert.indexOf("~") < 0) return null;
+  const parts = authCert.split("~");
+  if (parts.length !== 4) return null;
+  return {
+    access: jwsPayload(parts[0]),
+    warrant: jwsPayload(parts[2]),
+    config: jwsPayload(parts[3]),
+  };
+}
+
 // Long hex/JWS values stay behind middle-truncation; tap copies the full value.
 const truncMid = (s, head = 12, tail = 6) =>
   s && s.length > head + tail + 1 ? s.slice(0, head) + "…" + s.slice(-tail) : s || "";
@@ -1835,44 +1850,47 @@ async function renderReceipt(item, body) {
   // The wire spec calls this header Public-Key (wire/serializer.rs); accept
   // Signing-Key too in case an older node still emits the pre-rename name.
   const wireKey = wire["Public-Key"] || wire["Signing-Key"] || "";
-  const cert = wire["Auth-Cert"] ? jwsPayload(wire["Auth-Cert"]) : null;
-  const warrant = wire["Auth-Warrant"] ? jwsPayload(wire["Auth-Warrant"]) : null;
-  // Agent path: the top-level cert certifies the AGENT; the author's own cert
-  // rides inside the warrant as `parent-cert` (the author signed the warrant
-  // with the key that cert binds). Client path: the top-level cert IS the
-  // author's, and the wire signing key is the author's key.
-  const authorCert = warrant ? jwsPayload(warrant["parent-cert"] || "") : cert;
+  // Device-model presentation: `access~assertion~warrant~config`. The warrant's
+  // grantor is the attributed author; the grantee is the actor. When they differ
+  // the post was made by a DISTINCT service ON BEHALF OF the author (delegated);
+  // when equal (or absent) the author signed it directly.
+  const pres = parsePresentation(wire["Auth-Cert"]);
+  const wc = pres?.warrant || null;
+  const grantor = wc?.grantor || null;
+  const grantee = wc?.grantee || null;
+  const delegated = !!(grantor && grantee && grantor.toLowerCase() !== grantee.toLowerCase());
   const author = view.owner_ref || view.creator || "unknown";
 
   const parts = [];
   parts.push(rSection("Status",
     `<div><span class="confirmed">✓ verified</span> · confirmed in block ${esc(String(view.block ?? "?"))}</div>`));
 
-  // -- Author: the identity this post belongs to, and who vouches for it.
-  const authorKey = warrant
-    ? authorCert?.["public-key"]?.publicKey || ""
-    : wireKey;
+  // -- Author: the identity this post is attributed to, and who vouches for it.
+  // Delegated: the CONFIG cert vouches for the author (it signed the warrant).
+  // Direct: the ACCESS cert certifies the author + the signing key.
+  const authorCert = delegated ? pres?.config : (pres ? pres.access : null);
+  const authorKey = delegated ? (authorCert?.["public-key"]?.publicKey || "") : wireKey;
   parts.push(rSection("Author",
     `<div><strong>${esc(author)}</strong></div>` +
     (authorKey ? `<div class="tiny">identity key ${copyable(authorKey, 16, 6)}</div>` : "") +
     (authorCert
-      ? `<div class="tiny muted">${vouchLine(authorCert, authorCert.principal?.email || author)}</div>
+      ? `<div class="tiny muted">${vouchLine(authorCert, delegated ? grantor : author)}</div>
          <div class="tiny muted">certified ${esc(rDate(authorCert.iat))} · expires ${esc(rDate(authorCert.exp))}</div>`
       : `<div class="tiny muted">no certificate present</div>`) +
     anchorLine(authorCert?.iss) +
-    (warrant ? "" : `<div class="tiny muted" style="margin-top:4px">posted directly by the author from their own browser</div>`)));
+    (delegated ? "" : `<div class="tiny muted" style="margin-top:4px">posted directly by the author from their own browser</div>`)));
 
-  // -- Posted by: only when an agent signed; the warrant is the author→agent link.
-  if (warrant) {
-    const agentEmail = warrant.agent || cert?.principal?.email || "?";
-    const scopes = Array.isArray(warrant.scopes) ? warrant.scopes : [];
-    parts.push(rSection("Posted by",
-      `<div><strong>${esc(agentEmail)}</strong> <span class="tiny muted">(an agent, not the author)</span></div>` +
-      (wireKey ? `<div class="tiny">agent signing key ${copyable(wireKey, 16, 6)}</div>` : "") +
-      (cert ? `<div class="tiny muted">${vouchLine(cert, cert.principal?.email || agentEmail)}</div>` : "") +
+  // -- Acting service: only when a distinct grantee signed on the author's behalf.
+  if (delegated) {
+    const actorCert = pres.access; // certifies the grantee (the actor)
+    const scopes = Array.isArray(wc.scopes) ? wc.scopes : [];
+    parts.push(rSection("Acting service",
+      `<div><strong>${esc(grantee)}</strong> <span class="tiny muted">(a service acting on behalf of the author)</span></div>` +
+      (wireKey ? `<div class="tiny">signing key ${copyable(wireKey, 16, 6)}</div>` : "") +
+      (actorCert ? `<div class="tiny muted">${vouchLine(actorCert, grantee)}</div>` : "") +
       `<div style="margin-top:6px"><span class="side-h" style="display:inline">authorized by the author</span></div>
-       <div class="tiny">${esc(warrant.iss || author)} signed a warrant with their own identity key allowing ${esc(agentEmail)} to post for them</div>
-       <div class="tiny muted">valid until ${esc(rDate(warrant.exp))} · only at ${esc(warrant.aud || "?")}</div>` +
+       <div class="tiny">${esc(grantor)} signed a warrant with their own identity key allowing ${esc(grantee)} to act on their behalf</div>
+       <div class="tiny muted">valid until ${esc(rDate(wc.exp))} · only at ${esc(wc.audience || "?")}</div>` +
       (scopes.length ? `<div style="margin-top:4px">${scopes.map((s) => `<span class="scope">${esc(String(s))}</span>`).join("")}</div>` : "")));
   }
 
@@ -1883,10 +1901,11 @@ async function renderReceipt(item, body) {
     const primary = iss === (author.split("@")[1] || "");
     who.push(`<strong>${esc(iss)}</strong> ${primary ? "(identity provider) certified" : "(fallback certifier) vouched for"} the author's identity`);
   }
-  if (warrant) {
-    if (cert?.iss) who.push(`<strong>${esc(cert.iss)}</strong> (identity provider) certified the posting agent ${esc(warrant.agent || "?")}`);
-    who.push(`<strong>${esc(warrant.iss || author)}</strong> (the author) signed the warrant that authorizes the agent`);
-    who.push(`<strong>mingo</strong> (the app) operates the agent and submitted this write`);
+  if (delegated) {
+    if (pres.access?.iss) who.push(`<strong>${esc(pres.access.iss)}</strong> (identity provider) certified the acting service ${esc(grantee)}`);
+    who.push(`<strong>${esc(grantor)}</strong> (the author) signed the warrant delegating to ${esc(grantee)}`);
+    who.push(`<strong>${esc(grantee)}</strong> signed this post on the author's behalf`);
+    who.push(`<strong>mingo</strong> (the app) operates the service and submitted this write`);
   } else {
     who.push(`<strong>${esc(author)}</strong> (the author) signed this post themselves`);
   }
