@@ -1,11 +1,11 @@
 ---
 # mingo-3f3i
 title: 'mingo-poster agent: delegated server-side signing (mobile posting)'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-14T16:52:00Z
-updated_at: 2026-07-14T22:55:13Z
+updated_at: 2026-07-23T12:43:26Z
 ---
 
 Problem: mingo's posting requires client-side per-object signing via browserid
@@ -242,3 +242,6 @@ on-host build). Fix: sbo-core a92886c gates its rocksdb-backed state store
 workspace-wide (default-features=false on the root sbo-core dep) since neither
 mingo-idp nor mingo-app uses the state store. Workspace tree now rocksdb-free.
 mingo on sbo-core a92886c. Daemon still 3a6f959 (unaffected).
+
+## Superseded + SHIPPED via the holder model (2026-07-23 reconciliation)
+The user-facing goal — opt-in server-side (popup-free, mobile-reliable) posting — SHIPPED, but via the holder-authorization model, NOT the as:-warrant/cross-issuer design detailed above. Under the holder model the poster is an **as-you service** (owner==user, no as: scope, no separate mingo-poster@ identity; isolation via a broker-assigned holder in the user's 'services' namespace). Implemented in mingo-idp/src/poster.rs (main 58ed2ea + fixes 1a03483/4cf300d/b4e5ca3), deployed, and live-confirmed by Dan 2026-07-22 (mingo posted on his behalf). The as:-approach branch feat/mingo-poster-signer (fully contained in main, 0 unique commits) was deleted. Tracking + remaining polish live on browserid-ng-3b8m (human re-test) and browserid-ng-p5i0 (cold-start bootstrap).

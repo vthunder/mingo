@@ -375,15 +375,31 @@ async function enablePoster() {
 // request was just created, the user needs a moment to approve anyway, and it
 // avoids a burst that would trip the throttle. A transient poll error (e.g. a
 // rate-limit blip) is swallowed and retried, never aborting the enable.
+// Human-readable reason for a terminal, non-approval poll status. Returns null
+// for statuses with no useful detail (fall back to the generic retry message).
+function posterFailureReason(r) {
+  if (r && r.status === "mismatch") {
+    return `That approval authorized ${r.approved || "a different identity"}, ` +
+      `but mingo posts as ${r.requested || "your identity"}. ` +
+      `Re-approve and grant it to ${r.requested || "the right identity"}.`;
+  }
+  if (r && r.status === "denied") return "You declined the request.";
+  return null;
+}
+
+// Resolves { ok, reason } — reason is a specific message on a legible terminal
+// failure (e.g. an identity mismatch), else null.
 async function pollPoster({ tries = 60, intervalMs = 6000 } = {}) {
   for (let i = 0; i < tries; i++) {
     await new Promise((res) => setTimeout(res, intervalMs));
     let r;
     try { r = await idpPost("/poster/poll", {}); } catch { continue; }
-    if (r.status === "approved") { poster.enabled = true; return true; }
-    if (r.status === "denied" || r.status === "expired" || r.status === "failed" || r.status === "none") return false;
+    if (r.status === "approved") { poster.enabled = true; return { ok: true, reason: null }; }
+    if (["mismatch", "denied", "expired", "failed", "none"].includes(r.status)) {
+      return { ok: false, reason: posterFailureReason(r) };
+    }
   }
-  return false;
+  return { ok: false, reason: null };
 }
 
 async function disablePoster() {
@@ -1138,6 +1154,12 @@ function openPosterEnableModal() {
         if (go.href) go.removeAttribute("aria-disabled");
         setStatus("warn", "Approval didn't complete — tap Continue to try again.");
       },
+      // A legible, terminal failure (e.g. identity mismatch): show why, and
+      // re-arm Continue so the user can retry with the correction in mind.
+      fail(msg) {
+        if (go.href) go.removeAttribute("aria-disabled");
+        setStatus("err", msg);
+      },
     };
     setStatus("muted", "Setting up…");
     let waiting = false;
@@ -1157,14 +1179,14 @@ function openPosterEnableModal() {
         setStatus("muted", "Approve in the browserid.me tab, then return here — waiting…");
         if (waiting) return; // re-tap just reopens the tab; one poller is enough
         waiting = true;
-        pollPoster().then((ok) => {
+        pollPoster().then(({ ok, reason }) => {
           waiting = false;
           if (ok) {
             close(true);
             renderAuth();
             toast("Done — mingo now posts for you. 🎉");
           } else {
-            setStatus("warn", "Approval didn't complete — tap Continue to try again.");
+            setStatus("warn", reason || "Approval didn't complete — tap Continue to try again.");
           }
         });
       };
@@ -1197,7 +1219,14 @@ async function pickupPoster() {
         if (posterModal) posterModal.close(true);
         return;
       }
-      if (r.status !== "pending") { posterModal?.thaw(); return; } // none / denied / expired
+      if (r.status !== "pending") {
+        // Terminal, not approved. Explain a legible failure (identity mismatch)
+        // rather than the generic "try again" — retrying just repeats it.
+        const reason = posterFailureReason(r);
+        if (reason) { posterModal?.fail(reason); toast(reason); }
+        else posterModal?.thaw();
+        return;
+      } // none / denied / expired / mismatch
       await new Promise((res) => setTimeout(res, 6000));
     }
     posterModal?.thaw(); // gave up while still pending — let the user retry

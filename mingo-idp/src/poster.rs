@@ -375,11 +375,21 @@ pub async fn poll(
             let access_mint = body["credential"]["access_mint"].as_str();
             let identity = body["credential"]["identity"].as_str().unwrap_or_default();
             if !identity.eq_ignore_ascii_case(&pending.user_email) {
+                // The approval authorized a DIFFERENT identity than mingo needs
+                // to post as (e.g. the account page defaulted to a named handle
+                // `dan+mingo@…` instead of the requested `dan@…`). Report it as a
+                // legible, terminal status the SPA can explain — not an opaque
+                // 500 the poll loop swallows into a silent "try again" spin.
                 st.store.clear_poster_pending(account_id)?;
-                return Err(AppError::Internal(format!(
-                    "approved identity '{identity}' does not match the requested '{}'",
-                    pending.user_email
-                )));
+                tracing::warn!(
+                    requested = %pending.user_email, approved = %identity,
+                    "poster approval identity mismatch"
+                );
+                return Ok(Json(serde_json::json!({
+                    "status": "mismatch",
+                    "requested": pending.user_email,
+                    "approved": identity,
+                })));
             }
             let tail = body["grants"][0]["warrant"]
                 .as_str()
