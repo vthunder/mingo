@@ -3,17 +3,19 @@
 //! consenting user's behalf so posting works with no client-side signing
 //! popups (mobile Safari).
 //!
-//! Under the holder model the poster is an **as-you service**: it holds the
-//! user's identity ITSELF — writes stay owned by and attributed to the user —
-//! isolated by a broker-assigned holder in the user's `services` namespace.
-//! There is no separate `mingo-poster@` identity and no `as:` scope; the
-//! warrant's identifier IS the user, and its `<id>` matcher confines the grant
-//! to this one service's holder.
+//! The poster is a **delegated service identity** (model A): a distinct
+//! `mingo-poster@…` principal minted by mingo's own IdP. The user signs a
+//! warrant delegating from THEIR identity (`grantor` — who the write is
+//! attributed to) to the poster (`grantee` — the actor that mints the access
+//! cert and signs). There is no `as:` scope: attribution rides the grantor,
+//! and the warrant's `<id>` holder matcher confines the grant to this one
+//! service's holder (anti-fungibility).
 //!
 //! Enable = one merged provisioning request at the broker (one URL, one
-//! approval, one pickup): mingo generates a per-user device keypair, POSTs
-//! `/agent-provision/request` (no handle → as-you; namespace `services`; one
-//! grant at the mingo SBO db), and hands back the verification URL. The user
+//! approval, one pickup): mingo POSTs `/agent-provision/request` naming the
+//! user as `grantor` and the poster as `grantee` (with the poster's fixed
+//! `grantee_holder`; one grant at the mingo SBO db), and hands back the
+//! verification URL. The user
 //! approves once on their broker account page — which assigns the holder,
 //! obtains the PRIMARY-signed device cert via the device-authorize hop (for
 //! `@mingo.place` identities; broker-signed for external emails), and signs
@@ -47,8 +49,8 @@ use crate::store::Account;
 /// The warrant scopes mingo requests for a user: post (and owner-delete) on
 /// their behalf, bounded to mingo content paths and schemas. Scopes are opaque
 /// to the registrar — it renders and copies them; the daemon enforces them
-/// (`sbo_core::authorize`). No `as:` scope: under the holder model the warrant
-/// identifier IS the user, so attribution lands on them directly.
+/// (`sbo_core::authorize`). No `as:` scope: the user is the warrant's grantor,
+/// so attribution lands on them directly.
 pub fn default_scopes(user_email: &str) -> Vec<String> {
     vec![
         "action:post".into(),
@@ -64,7 +66,7 @@ pub fn default_scopes(user_email: &str) -> Vec<String> {
 
 /// The public identity a user's mingo posts attribute to: their claimed
 /// `<handle>@<domain>` pseudonym when they have one, else their external
-/// email. This is the write's owner AND the warrant's identifier, so it MUST
+/// email. This is the write's owner AND the warrant's grantor, so it MUST
 /// match the identity the SPA authors as.
 fn public_identity(account: &Account, domain: &str) -> String {
     match &account.handle {
@@ -355,6 +357,9 @@ pub async fn enable(
                 "scopes": default_scopes(&user_email),
             }],
             "label": "mingo poster".to_string(),
+            // Agent flows v2: the human-readable why, quoted (unverified) on
+            // the approval card.
+            "message": "mingo posts for you server-side, so posting works without signing popups.",
         }),
     )
     .await?;

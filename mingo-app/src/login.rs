@@ -1,19 +1,31 @@
 //! `mingo login` / `whoami` / `post` — the CLI's authenticated identity,
 //! on the browserid **holder model** (device-cert protocol).
 //!
-//! The CLI is an **as-you agent**: one merged provisioning request at the
-//! broker (`/agent-provision/request`, no handle) asks to hold the user's
-//! identity ITSELF — writes stay owned by and attributed to the user —
-//! isolated by a broker-assigned holder in their `agents` namespace, plus a
-//! warrant grant at the mingo SBO db in the SAME approval. The user opens one
-//! URL, approves once, and a single poll returns the device cert AND the
-//! `warrant~config_cert` grant (browserid-agent's `request_provision`/`wait`).
+//! By default the CLI is an **as-you agent**: one merged provisioning request
+//! at the broker (`/agent-provision/request`, no handle) asks to hold the
+//! user's identity ITSELF, isolated by a broker-assigned holder in their
+//! `agents` namespace, plus a warrant grant at the mingo SBO db in the SAME
+//! approval. The user opens one URL and walks the broker's agent-flows-v2
+//! screens — fingerprint check, identity, then the permission card — and a
+//! single poll returns the device cert AND the `warrant~config_cert` grant
+//! (browserid-agent's `request_provision`/`wait`). The identity and the
+//! permission are separate questions there: a declined permission still
+//! delivers the credential, with `grants_denied` saying why.
+//!
+//! A warrant names two parties: the **grantor** (the attributed identity — who
+//! is answerable for the write) and the **grantee** (the actor — the identity
+//! the CLI presents as, which must equal its access-cert identity). For an
+//! as-you agent they are the same person. With `--handle`, the broker
+//! provisions a NAMED agent on behalf of its approver, so grantor is the human
+//! (`dan@…`) and grantee the agent (`dan+cli@…`). Everywhere the CLI needs an
+//! owner / "whose account this lands on" it uses the grantor; everywhere it
+//! needs the acting credential it uses the grantee (`DeviceAgent::email()`).
 //!
 //! Posting mints a short-lived access cert headlessly (`DeviceAgent`), signs
 //! the SBO envelope with the SAME access key (envelope-key binding), and
 //! attaches the 4-object presentation as `Auth-Cert` — mirroring
 //! `mingo-idp/src/poster.rs::submit`. There is no `as:` scope and no separate
-//! agent identity: attribution lands on the user directly, and the classic
+//! agent identity: attribution lands on the grantor, and the classic
 //! `AgentCredential`/`AgentIdentity` chain is gone.
 //!
 //! Storage: `~/.mingo/device-credential.json` (see [`crate::device_login`]).
@@ -101,8 +113,8 @@ impl ScopePreset {
 }
 
 /// The warrant scopes the CLI requests. Mirrors mingo-idp's poster
-/// `default_scopes`, minus `as:` (the holder model attributes to the user
-/// directly — the warrant identifier IS them) and without a per-user path
+/// `default_scopes`, minus `as:` (the holder model attributes to the warrant's
+/// grantor, so no scope has to carry the identity) and without a per-user path
 /// (the identity isn't known until the user approves; ownership checks bound
 /// writes to them regardless).
 pub fn scopes_for(preset: ScopePreset) -> Vec<String> {
@@ -150,12 +162,17 @@ async fn login_async(args: &LoginArgs) -> Result<()> {
     for s in &scopes {
         println!("    scope: {s}");
     }
+    let message = format!(
+        "Command-line access from {hostname}: sign in and act at the site shown, until you revoke it."
+    );
     let pending = request_provision(
         &args.broker,
         args.handle.as_deref(),
         Some("agents"),
         &grants,
         Some(&label),
+        Some(&message),
+        None,
     )
     .await
     .map_err(|e| anyhow!("starting provisioning at {}: {e}", args.broker))?;
@@ -191,7 +208,14 @@ async fn login_async(args: &LoginArgs) -> Result<()> {
         })
         .collect();
     if grants.is_empty() {
-        bail!("approval delivered no warrant grant — re-run `mingo login`");
+        // Agent flows v2: the identity and the permission are separate
+        // questions — the human may have approved one and declined the other.
+        match &provisioned.grants_denied {
+            Some(reason) => bail!(
+                "the identity was approved but the permission was declined ({reason}) —                  re-run `mingo login` when you're ready to grant it"
+            ),
+            None => bail!("approval delivered no warrant grant — re-run `mingo login`"),
+        }
     }
 
     let mut stored = StoredDeviceLogin::load().unwrap_or_default();
@@ -204,7 +228,14 @@ async fn login_async(args: &LoginArgs) -> Result<()> {
     println!("\n✓ logged in as {}", agent.email());
     println!("  idp:        {}", stored.credential.as_ref().map(|c| c.idp.as_str()).unwrap_or("?"));
     for g in &stored.grants {
-        println!("  grant:      {}", g.audience);
+        let grantor = g.grantor()?;
+        if grantor == agent.email() {
+            println!("  grant:      {}", g.audience);
+        } else {
+            // Named agent: the broker provisioned it on behalf of its approver,
+            // so writes attribute to the human, not to the agent identity.
+            println!("  grant:      {}  (on behalf of {grantor})", g.audience);
+        }
     }
     println!("\nTry:  mingo whoami");
     Ok(())
@@ -236,8 +267,9 @@ pub fn whoami() -> Result<()> {
 // Signing writes as the logged-in user (device presentation)
 // ===========================================================================
 
-/// One SBO write signed as the logged-in user. Under the holder model the
-/// warrant identifier IS the user, so `owner` is them directly (no `as:`).
+/// One SBO write signed by the logged-in credential. Under the holder model
+/// `owner` is the warrant's grantor — the same identity for an as-you agent,
+/// the approving human for a named on-behalf one (no `as:` scope either way).
 pub struct WriteSpec {
     pub action: Action,
     pub path: String,
@@ -245,12 +277,12 @@ pub struct WriteSpec {
     pub schema: String,
     pub content_type: String,
     pub payload: Vec<u8>,
-    /// The object owner — the logged-in user.
+    /// The object owner — the warrant grantor (the attributed identity).
     pub owner: String,
     pub hlc: Option<String>,
 }
 
-/// Sign `spec` as the logged-in user: mint an access cert at the credential's
+/// Sign `spec` with the logged-in credential: mint an access cert at its
 /// IdP, sign the envelope with the SAME access key (envelope-key binding), and
 /// attach the 4-object presentation as `Auth-Cert`. `Auth-Evidence` is omitted
 /// so the daemon resolves the issuer's on-chain `/sys/dnssec` proof (same
@@ -333,7 +365,10 @@ struct ObjectView {
 pub fn post(args: &PostArgs) -> Result<()> {
     let stored = StoredDeviceLogin::load()?;
     let agent = stored.agent()?; // errors with a re-login hint when absent
-    let user = agent.email().to_string();
+    // The write attributes to the grant's grantor; `agent.email()` is the
+    // grantee (who signs). They coincide for an as-you login.
+    let actor = agent.email().to_string();
+    let user = stored.grantor_for(&args.audience)?;
 
     let now_ms = chrono::Utc::now().timestamp_millis();
     let path = format!("/communities/{}/spaces/{}/", args.community, args.space);
@@ -363,7 +398,12 @@ pub fn post(args: &PostArgs) -> Result<()> {
     println!("Write plan:");
     println!("  path:      {path}");
     println!("  id:        {id}");
-    println!("  owner:     {user}   (the warrant identifier — attribution lands on you)");
+    if actor == user {
+        println!("  owner:     {user}   (the warrant grantor — attribution lands on you)");
+    } else {
+        println!("  owner:     {user}   (the warrant grantor — attribution lands on them)");
+        println!("  actor:     {actor}   (the warrant grantee — who signs this write)");
+    }
     println!("  audience:  {}", args.audience);
     println!("  schema:    post.v1");
     println!("  wire:      {} bytes (device presentation in Auth-Cert)", wire_bytes.len());
@@ -403,7 +443,7 @@ pub fn post(args: &PostArgs) -> Result<()> {
                     view.creator, view.owner_ref, view.confirmed
                 );
                 if attributed == user {
-                    println!("\n✓ attribution confirmed: authored by {user} (the logged-in user).");
+                    println!("\n✓ attribution confirmed: authored by {user} (the warrant grantor).");
                 } else {
                     println!("\n⚠ object present but attributed to '{attributed}', not '{user}'.");
                 }
@@ -471,32 +511,31 @@ mod tests {
         assert!(s.contains(&"action:delete".to_string()));
     }
 
-    // Build a real device presentation and assert the assembled envelope
-    // matches the daemon's device-attribution shape: signed by the ACCESS key
-    // (envelope-key binding), presentation in Auth-Cert, no Auth-Warrant,
-    // Owner = the user (the warrant identifier).
-    #[test]
-    fn assembled_envelope_matches_daemon_device_shape() {
+    /// Build a real device presentation for a `grantor → grantee` warrant and
+    /// assemble the envelope. Returns `(wire_bytes, idp_pubkey, access_pub)`.
+    fn build_and_assemble(grantor: &str, grantee: &str) -> (Vec<u8>, KeyPair, KeyPair) {
         let idp = KeyPair::generate();
         let access = KeyPair::generate();
         let config = KeyPair::generate();
-        let user_email = "dan@mingo.place";
         let audience = DEFAULT_AUDIENCE;
         let holder = "agpfx.cli1";
 
+        // The access cert names the GRANTEE (the actor that signs).
         let access_cert = AccessCert::create(
-            "mingo.place", user_email, Holder::new(holder).unwrap(), &access.public_key(),
+            "mingo.place", grantee, Holder::new(holder).unwrap(), &access.public_key(),
             Duration::hours(24), &idp, None,
         )
         .unwrap();
+        // The config cert must be authoritative for the GRANTOR — it is the
+        // grantor's authorization cert that signs the warrant.
         let config_cert = DeviceCert::create(
             "mingo.place", &config.public_key(), Purpose::Authorization,
-            Holder::new(holder).unwrap(), vec![user_email.to_string()],
+            Holder::new(holder).unwrap(), vec![grantor.to_string()],
             Duration::days(90), &idp, None,
         )
         .unwrap();
         let warrant = DeviceWarrant::create(
-            user_email, HolderMatcher::new(holder).unwrap(), audience,
+            grantor, grantee, HolderMatcher::new(holder).unwrap(), audience,
             scopes_for(ScopePreset::Post), Duration::days(90), &config, None,
         )
         .unwrap();
@@ -513,27 +552,57 @@ mod tests {
             schema: "post.v1".to_string(),
             content_type: "application/json".to_string(),
             payload: serde_json::to_vec(&serde_json::json!({"body":"hi","parent":null})).unwrap(),
-            owner: user_email.to_string(),
+            // Attribution: the grantor owns the object, not the signer.
+            owner: grantor.to_string(),
             hlc: None,
         };
 
         let wire_bytes =
             assemble_device_wire(access.secret_bytes(), &presentation, &spec).unwrap();
+        (wire_bytes, idp, access)
+    }
 
-        // Re-parse and assert the daemon-visible shape.
-        let msg = sbo_core::wire::parse(&wire_bytes).expect("wire parses");
-        // Envelope-key binding: signed by the presentation's access key.
+    /// Assert the daemon-visible shape: signed by the ACCESS key (envelope-key
+    /// binding), presentation in Auth-Cert, no Auth-Warrant, Owner = grantor,
+    /// and the verified presentation reports grantor/grantee as expected.
+    fn assert_device_shape(
+        wire_bytes: &[u8],
+        idp: &KeyPair,
+        access: &KeyPair,
+        grantor: &str,
+        grantee: &str,
+    ) {
+        let msg = sbo_core::wire::parse(wire_bytes).expect("wire parses");
         assert_eq!(msg.signing_key, SigningKey::from_bytes(access.secret_bytes()).public_key());
         sbo_core::message::verify_message(&msg).expect("signature verifies");
-        // Owner = the user (the warrant identifier under the holder model).
-        assert_eq!(msg.owner.as_ref().map(|o| o.to_string()), Some(user_email.to_string()));
-        // The presentation rides Auth-Cert; the classic Auth-Warrant is unused.
+        assert_eq!(msg.owner.as_ref().map(|o| o.to_string()), Some(grantor.to_string()));
         let attached = msg.auth_cert.expect("auth_cert present");
         assert!(msg.auth_warrant.is_none());
         let pres = AccessPresentation::parse(&attached).expect("presentation parses");
         let verified = pres
-            .verify(audience, |_| Ok(idp.public_key()))
+            .verify(DEFAULT_AUDIENCE, |_| Ok(idp.public_key()))
             .expect("presentation verifies");
-        assert_eq!(verified.email, user_email);
+        // `.email` is the ATTRIBUTED identity (grantor); `.grantee` is the actor.
+        assert_eq!(verified.email, grantor);
+        assert_eq!(verified.grantee, grantee);
+    }
+
+    #[test]
+    fn assembled_envelope_matches_daemon_device_shape() {
+        // As-you agent: grantor == grantee, the historical CLI default.
+        let user_email = "dan@mingo.place";
+        let (wire_bytes, idp, access) = build_and_assemble(user_email, user_email);
+        assert_device_shape(&wire_bytes, &idp, &access, user_email, user_email);
+    }
+
+    #[test]
+    fn on_behalf_envelope_attributes_to_the_grantor() {
+        // Named agent (browserid-ng-8v6c): the broker provisions it on behalf
+        // of its approver, so the write lands on the human while the agent
+        // identity is the actor of record.
+        let human = "dan@mingo.place";
+        let agent = "dan+cli@mingo.place";
+        let (wire_bytes, idp, access) = build_and_assemble(human, agent);
+        assert_device_shape(&wire_bytes, &idp, &access, human, agent);
     }
 }

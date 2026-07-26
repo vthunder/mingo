@@ -27,7 +27,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use browserid_agent::{DeviceAgent, DeviceCredential};
-use browserid_core::device::DeviceCert;
+use browserid_core::device::{DeviceCert, Warrant as DeviceWarrant};
 use serde::{Deserialize, Serialize};
 
 use crate::login; // reuse mingo_home() indirectly via the same layout
@@ -91,6 +91,38 @@ impl StoredDeviceLogin {
         }
         Ok(agent)
     }
+
+    /// The identity a write under `audience` is ATTRIBUTED to: the warrant's
+    /// `grantor`. For an as-you agent this equals the acting identity; for a
+    /// named agent provisioned on behalf of a human it is the approver.
+    pub fn grantor_for(&self, audience: &str) -> Result<String> {
+        let grant = self
+            .grants
+            .iter()
+            .find(|g| g.audience == audience)
+            .ok_or_else(|| anyhow!("no grant held for {audience} — re-run `mingo login`"))?;
+        Ok(grant.grantor()?)
+    }
+}
+
+impl StoredGrant {
+    /// The attributed identity this grant delegates FROM.
+    pub fn grantor(&self) -> Result<String> {
+        Ok(DeviceWarrant::parse(&self.warrant)
+            .map_err(|e| anyhow!("stored warrant for {} is unreadable (re-login): {e}", self.audience))?
+            .claims()
+            .grantor
+            .clone())
+    }
+
+    /// The acting identity this grant delegates TO (== the access-cert identity).
+    pub fn grantee(&self) -> Result<String> {
+        Ok(DeviceWarrant::parse(&self.warrant)
+            .map_err(|e| anyhow!("stored warrant for {} is unreadable (re-login): {e}", self.audience))?
+            .claims()
+            .grantee
+            .clone())
+    }
 }
 
 /// Import a `DeviceCredential` from a JSON file (produced by an out-of-band
@@ -150,7 +182,17 @@ pub fn whoami() -> Result<()> {
     } else {
         println!("  grants for:");
         for g in &stored.grants {
-            println!("    {}", g.audience);
+            // A grant names both parties: attribution lands on the grantor, this
+            // credential acts as the grantee. They differ for an on-behalf agent.
+            match (g.grantor(), g.grantee()) {
+                (Ok(grantor), Ok(grantee)) if grantor == grantee => {
+                    println!("    {}  (as {grantor})", g.audience);
+                }
+                (Ok(grantor), Ok(grantee)) => {
+                    println!("    {}  (as {grantee}, on behalf of {grantor})", g.audience);
+                }
+                _ => println!("    {}  (warrant unreadable — re-login)", g.audience),
+            }
         }
     }
     Ok(())
@@ -174,7 +216,7 @@ pub async fn present_for(audience: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use browserid_core::device::{Holder, HolderMatcher, Purpose, Warrant as DeviceWarrant};
+    use browserid_core::device::{Holder, HolderMatcher, Purpose};
     use browserid_core::{device::AccessPresentation, KeyPair};
     use chrono::Duration;
 
@@ -214,6 +256,7 @@ mod tests {
         )
         .unwrap();
         let warrant = DeviceWarrant::create(
+            identity,
             identity,
             HolderMatcher::new("svc.cli").unwrap(),
             audience,
@@ -260,5 +303,86 @@ mod tests {
         // Sanity: the grant's warrant is signed by the config cert and joins.
         warrant.verify(config_cert.public_key()).unwrap();
         let _ = AccessPresentation::parse; // presentation shape exercised in idp e2e
+
+        // As-you: grantor == grantee, and both read back off the stored warrant.
+        assert_eq!(stored.grantor_for(audience).unwrap(), identity);
+        assert_eq!(stored.grants[0].grantee().unwrap(), identity);
+        assert!(stored.grantor_for("https://other.example.com").is_err());
+    }
+
+    /// On-behalf (browserid-ng-8v6c): a named agent holds the credential, but
+    /// attribution — what `grantor_for` returns, and what a write's owner must
+    /// be — is the approving human.
+    #[test]
+    fn on_behalf_grant_attributes_to_the_grantor() {
+        let idp = KeyPair::generate();
+        let device = KeyPair::generate();
+        let config = KeyPair::generate();
+        let human = "dan@mingo.place";
+        let agent_id = "dan+cli@mingo.place";
+        let audience = "https://rp.example.com";
+
+        let device_cert = DeviceCert::create(
+            "mingo.place",
+            &device.public_key(),
+            Purpose::Authentication,
+            Holder::new("agents.cli1").unwrap(),
+            vec![agent_id.into()],
+            Duration::days(90),
+            &idp,
+            None,
+        )
+        .unwrap();
+        // The config cert is the GRANTOR's (the human's) authorization cert.
+        let config_cert = DeviceCert::create(
+            "mingo.place",
+            &config.public_key(),
+            Purpose::Authorization,
+            Holder::new("agents.cli1").unwrap(),
+            vec![human.into()],
+            Duration::days(90),
+            &idp,
+            None,
+        )
+        .unwrap();
+        let warrant = DeviceWarrant::create(
+            human,
+            agent_id,
+            HolderMatcher::new("agents.cli1").unwrap(),
+            audience,
+            vec!["action:post".into()],
+            Duration::days(90),
+            &config,
+            None,
+        )
+        .unwrap();
+
+        let stored = StoredDeviceLogin {
+            credential: Some(DeviceCredential {
+                device_key: base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    device.secret_bytes(),
+                ),
+                agent_device_cert: device_cert.encoded().to_string(),
+                idp: "https://mingo.place".into(),
+                access_mint: None,
+                identity: Some(agent_id.into()),
+            }),
+            grants: vec![StoredGrant {
+                audience: audience.into(),
+                warrant: warrant.encoded().to_string(),
+                config_cert: config_cert.encoded().to_string(),
+            }],
+        };
+
+        // The agent (grantee) holds the grant — `add_grant` pins grantee ==
+        // the credential identity, so rehydration proves the split is honored.
+        let agent = stored.agent().unwrap();
+        assert_eq!(agent.email(), agent_id);
+        assert_eq!(agent.warranted_audiences(), vec![audience]);
+
+        // Attribution is the human, not the acting agent identity.
+        assert_eq!(stored.grantor_for(audience).unwrap(), human);
+        assert_eq!(stored.grants[0].grantee().unwrap(), agent_id);
     }
 }

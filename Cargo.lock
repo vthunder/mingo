@@ -241,26 +241,10 @@ dependencies = [
 [[package]]
 name = "browserid-agent"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=5ffe436#5ffe43608dedd28cfb2c2cd64f1009c6ed50f289"
+source = "git+https://github.com/vthunder/browserid-ng?rev=ac7b93e#ac7b93e82566a3c8b9579681c6b183760b5a55b7"
 dependencies = [
  "base64 0.22.1",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=5ffe436)",
- "chrono",
- "rand",
- "reqwest 0.12.25",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
-name = "browserid-agent"
-version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=fa21c8e#fa21c8e7e101e98c342b6e48013013f3e2215e09"
-dependencies = [
- "base64 0.22.1",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=fa21c8e)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=ac7b93e)",
  "chrono",
  "rand",
  "reqwest 0.12.25",
@@ -290,24 +274,7 @@ dependencies = [
 [[package]]
 name = "browserid-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=5ffe436#5ffe43608dedd28cfb2c2cd64f1009c6ed50f289"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "ed25519-dalek",
- "flate2",
- "jsonwebtoken",
- "rand",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "browserid-core"
-version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=fa21c8e#fa21c8e7e101e98c342b6e48013013f3e2215e09"
+source = "git+https://github.com/vthunder/browserid-ng?rev=ac7b93e#ac7b93e82566a3c8b9579681c6b183760b5a55b7"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1462,8 +1429,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "browserid-agent 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=fa21c8e)",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=fa21c8e)",
+ "browserid-agent",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=ac7b93e)",
  "chrono",
  "clap",
  "hex",
@@ -1481,8 +1448,8 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "browserid-agent 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=5ffe436)",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=5ffe436)",
+ "browserid-agent",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=ac7b93e)",
  "chrono",
  "reqwest 0.12.25",
  "rusqlite",
