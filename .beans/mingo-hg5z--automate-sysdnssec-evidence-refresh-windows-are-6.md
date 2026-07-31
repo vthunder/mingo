@@ -1,11 +1,11 @@
 ---
 # mingo-hg5z
 title: Automate /sys/dnssec evidence refresh (windows are ~6 days; manual refresh already lapsed once)
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-07-31T08:24:43Z
-updated_at: 2026-07-31T08:49:16Z
+updated_at: 2026-07-31T09:08:43Z
 ---
 
 2026-07-31: attribution of every email-rooted write on the live chain broke silently because /sys/dnssec/mingo.place's RRSIG window expired (~39h stale) and /sys/dnssec/bsky.browserid.me was absent — surfaced as 'signer carries no valid attribution' on the first me@<handle> live test (which was itself innocent). GENESIS.md warned proofs expire and asked for a refresher.
@@ -24,3 +24,13 @@ The on-demand machinery already existed; the real bug was that it ensured only O
 - mingo-app/src/bin/dnssec-refresh stays as a manual ops tool, not a cron.
 
 Remaining (optional): surface EvidenceWindowMismatch distinctly in the daemon error instead of the generic 'no valid attribution'.
+
+## Summary of Changes
+
+Shipped in 38f5859 + 4fbd06e (deployed to mingo.place via dokku):
+- mingo-idp poster: presentation_issuers() — every distinct issuer (access + config cert) gets an on-demand /sys/dnssec ensure before submit; unit test covers cross-issuer (broker-rooted me@<handle> grantor) and same-issuer dedup.
+- mingo-app CLI post: previously no ensure at all; now ensures each presentation issuer before --execute submit.
+- mingo-web SPA: unchanged — browser self-signing is always same-issuer and it already ensured the access cert's issuer.
+- bin/dnssec-refresh: manual ops tool only. NO cron, per decision: freshness is guaranteed at write time by whoever writes.
+
+Left open elsewhere: daemon could surface EvidenceWindowMismatch instead of the generic 'no valid attribution' (noted, no bean).
