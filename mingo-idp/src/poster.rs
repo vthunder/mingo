@@ -34,7 +34,7 @@ use axum::extract::State;
 use axum::Json;
 use base64::Engine as _;
 use browserid_agent::{DeviceAgent, DeviceCredential};
-use browserid_core::device::{DeviceCert, Holder, Purpose, Warrant};
+use browserid_core::device::{AccessCert, DeviceCert, Holder, Purpose, Warrant};
 use sbo_core::crypto::{ContentHash, Signature, SigningKey};
 use sbo_core::message::{Action, Id, Message, ObjectType, Path};
 use sbo_core::wire;
@@ -571,14 +571,17 @@ pub async fn submit(
         .await
         .map_err(|e| AppError::Internal(format!("access mint: {e}")))?;
 
-    // The attribution proof for the presentation's issuer must be fresh
-    // on-chain before the daemon will attribute the write.
-    let issuer = DeviceCert::parse(agent_cert_of(&presentation)?)
-        .map_err(|e| AppError::Internal(format!("presentation config cert: {e}")))?
-        .claims()
-        .iss
-        .clone();
-    ensure_dnssec_fresh(&st.config.daemon_url, &issuer).await?;
+    // The attribution proof for EVERY distinct issuer in the presentation
+    // must be fresh on-chain before the daemon will attribute the write:
+    // the access cert's (the poster's own issuer) AND the config cert's
+    // (the user's issuer — different when the delegated grant crosses
+    // issuers, e.g. a broker-rooted me@<handle> user). Ensuring only the
+    // config side is how the first live handle identity hit 'signer
+    // carries no valid attribution' while /sys/dnssec/mingo.place rotted
+    // (bean mingo-hg5z).
+    for issuer in presentation_issuers(&presentation)? {
+        ensure_dnssec_fresh(&st.config.daemon_url, &issuer).await?;
+    }
 
     // Only post (incl. edit-as-update) and owner-delete are signable on a
     // user's behalf. Reject anything else rather than silently downgrading.
@@ -636,9 +639,93 @@ fn agent_cert_of(presentation: &str) -> Result<&str, AppError> {
         .ok_or_else(|| AppError::Internal("presentation is not 4 ~-joined objects".into()))
 }
 
+/// The distinct issuers whose on-chain `/sys/dnssec` proof the daemon's
+/// attribution verifier will demand for this presentation: the access
+/// cert's (grantee) and the config cert's (grantor). Mirrors
+/// `sbo_core::device_attribution`'s own per-issuer evidence loop.
+fn presentation_issuers(presentation: &str) -> Result<Vec<String>, AppError> {
+    let access = presentation
+        .split('~')
+        .next()
+        .ok_or_else(|| AppError::Internal("empty presentation".into()))?;
+    let access_iss = AccessCert::parse(access)
+        .map_err(|e| AppError::Internal(format!("presentation access cert: {e}")))?
+        .claims()
+        .iss
+        .clone();
+    let config_iss = DeviceCert::parse(agent_cert_of(presentation)?)
+        .map_err(|e| AppError::Internal(format!("presentation config cert: {e}")))?
+        .claims()
+        .iss
+        .clone();
+    let mut issuers = vec![access_iss];
+    if !issuers.contains(&config_iss) {
+        issuers.push(config_iss);
+    }
+    Ok(issuers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cross-issuer delegated grant (broker-rooted user, e.g.
+    /// `me@<handle>`) needs BOTH issuers' proofs fresh; a same-issuer one
+    /// needs exactly one ensure. Ensuring only the config side left
+    /// /sys/dnssec/mingo.place stale until the first live handle identity
+    /// hit it (mingo-hg5z).
+    #[test]
+    fn presentation_issuers_covers_both_certs_deduped() {
+        use browserid_core::KeyPair;
+        use chrono::Duration;
+
+        let mingo_key = KeyPair::generate();
+        let broker_key = KeyPair::generate();
+        let access_pub = KeyPair::generate().public_key();
+        let device_pub = KeyPair::generate().public_key();
+
+        let access = AccessCert::create(
+            "mingo.place",
+            "mingo-poster@mingo.place",
+            Holder::new("h.poster").unwrap(),
+            &access_pub,
+            Duration::hours(24),
+            &mingo_key,
+            None,
+        )
+        .unwrap();
+        let config = |iss: &str, key: &KeyPair| {
+            DeviceCert::create(
+                iss,
+                &device_pub,
+                Purpose::Authorization,
+                Holder::new("h.user").unwrap(),
+                vec!["me@dan.bsky.social".into()],
+                Duration::days(90),
+                key,
+                None,
+            )
+            .unwrap()
+        };
+
+        // Middle parts (assertion~warrant) are never parsed by this helper.
+        let cross = format!(
+            "{}~a~w~{}",
+            access.encoded(),
+            config("browserid.me", &broker_key).encoded()
+        );
+        assert_eq!(
+            presentation_issuers(&cross).unwrap(),
+            vec!["mingo.place".to_string(), "browserid.me".to_string()]
+        );
+
+        let same = format!(
+            "{}~a~w~{}",
+            access.encoded(),
+            config("mingo.place", &mingo_key).encoded()
+        );
+        assert_eq!(presentation_issuers(&same).unwrap(), vec!["mingo.place".to_string()]);
+    }
 
     #[test]
     fn default_scopes_have_no_as_scope_and_bound_paths() {

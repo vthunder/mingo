@@ -291,7 +291,7 @@ pub async fn sign_as_logged_in_user(
     stored: &StoredDeviceLogin,
     audience: &str,
     spec: &WriteSpec,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, Vec<String>)> {
     let mut agent = stored.agent()?;
     if agent.warranted_audiences().iter().all(|a| *a != audience) {
         bail!("no grant held for {audience} — re-run `mingo login`");
@@ -300,7 +300,44 @@ pub async fn sign_as_logged_in_user(
         .assertion_with_access_seed(audience)
         .await
         .map_err(|e| anyhow!("minting access cert: {e}"))?;
-    assemble_device_wire(&access_seed, &presentation, spec)
+    let wire = assemble_device_wire(&access_seed, &presentation, spec)?;
+    Ok((wire, presentation_issuers(&presentation)?))
+}
+
+/// The distinct issuers whose on-chain `/sys/dnssec` proof the daemon's
+/// attribution verifier will demand for this presentation: the access
+/// cert's (grantee) and the config cert's (grantor — different when the
+/// grant crosses issuers, e.g. a broker-rooted me@<handle> user posting
+/// through an agent). Mirrors `sbo_core::device_attribution`'s per-issuer
+/// evidence loop; decoded structurally (JWS payload `iss`), no signature
+/// checks needed for a routing decision.
+pub fn presentation_issuers(presentation: &str) -> Result<Vec<String>> {
+    let parts: Vec<&str> = presentation.split('~').collect();
+    if parts.len() != 4 {
+        bail!("presentation is not 4 ~-joined objects");
+    }
+    let iss_of = |jws: &str, what: &str| -> Result<String> {
+        use base64::Engine;
+        let payload = jws
+            .split('.')
+            .nth(1)
+            .with_context(|| format!("{what}: not a JWS"))?;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .with_context(|| format!("{what}: bad base64"))?;
+        let v: serde_json::Value =
+            serde_json::from_slice(&bytes).with_context(|| format!("{what}: bad JSON"))?;
+        v.get("iss")
+            .and_then(|i| i.as_str())
+            .map(str::to_string)
+            .with_context(|| format!("{what}: no iss claim"))
+    };
+    let mut issuers = vec![iss_of(parts[0], "access cert")?];
+    let config_iss = iss_of(parts[3], "config cert")?;
+    if !issuers.contains(&config_iss) {
+        issuers.push(config_iss);
+    }
+    Ok(issuers)
 }
 
 /// Pure envelope assembly (unit-testable): sign the SBO message with the
@@ -391,7 +428,7 @@ pub fn post(args: &PostArgs) -> Result<()> {
         // unsorted and undated in mingo-web. Mirror the poster: now.0.
         hlc: Some(format!("{now_ms}.0")),
     };
-    let wire_bytes = tokio::runtime::Runtime::new()
+    let (wire_bytes, issuers) = tokio::runtime::Runtime::new()
         .context("starting async runtime")?
         .block_on(sign_as_logged_in_user(&stored, &args.audience, &spec))?;
 
@@ -416,6 +453,16 @@ pub fn post(args: &PostArgs) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
+    // Attribution demands a fresh on-chain /sys/dnssec proof for EVERY
+    // issuer in the presentation — refresh on demand, like the poster.
+    for issuer in &issuers {
+        crate::seed::ensure_dnssec_fresh(
+            &client,
+            &args.daemon,
+            issuer,
+            chrono::Utc::now().timestamp(),
+        )?;
+    }
     println!("\nSubmitting to {}/v1/submit …", args.daemon);
     let resp = client
         .post(format!("{}/v1/submit", args.daemon.trim_end_matches('/')))
