@@ -86,15 +86,15 @@ pub async fn session_from_presentation(
 ) -> Result<Json<SessionResp>, AppError> {
     let audience = st.config.app_origin.clone();
     let broker = st.config.broker_domain.clone();
-    let require_https = !st.config.allow_http_verify;
     let presentation = req.presentation;
 
-    let verified = tokio::task::spawn_blocking(move || {
-        verify_external_presentation(&presentation, &audience, &broker, require_https)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("verify task: {}", e)))?
-    .map_err(AppError::InvalidAssertion)?;
+    // DNSSEC-rooted verification: resolve issuer keys from the authenticated
+    // _browserid record (never .well-known), honoring hosted primaries (host=).
+    let fetcher = browserid_dnssec::DnsFetcher::new()
+        .map_err(|e| AppError::Internal(format!("dns resolver: {}", e)))?;
+    let verified = verify_external_presentation(&presentation, &audience, &broker, &fetcher)
+        .await
+        .map_err(AppError::InvalidAssertion)?;
     let email = verified.email;
     if let Some(scopes) = &verified.agent {
         tracing::info!(agent = %email, ?scopes, "agent session (warrant-backed)");

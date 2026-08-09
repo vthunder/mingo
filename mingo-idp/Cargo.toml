@@ -18,10 +18,11 @@ path = "src/main.rs"
 # Warrant/AccessPresentation). Pinned git dependency on browserid-ng
 # (4fce152 = holder model + merged one-approval provisioning + grantor/grantee
 # warrants, where a named agent is provisioned on behalf of its approver).
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "ac7b93e" }
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "bc8eaad" }
 # Headless device-cert agent SDK — the mingo-poster holds a per-user
 # DeviceCredential and assembles envelope-key-bound presentations with it.
-browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "ac7b93e" }
+browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "bc8eaad" }
+browserid-dnssec = { git = "https://github.com/vthunder/browserid-ng", rev = "bc8eaad" }
 # SBO message/wire assembly for server-side posting (poster).
 sbo-core.workspace = true
 

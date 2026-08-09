@@ -1,90 +1,22 @@
-//! Inbound presentation verification (device-cert model).
+//! Inbound presentation verification (device-cert model), DNSSEC-rooted.
 //!
 //! The SPA hands us the 4-object access presentation the browserid dialog
 //! produced for the user's external identity (audience = the app origin). We
-//! verify it to root a mingo session. This is HTTP-discovery based (fetch the
-//! issuer's `.well-known/browserid`), so we depend only on `browserid-core`.
-//! The trustless part — the certs *we* issue for `<handle>@mingo.place` — is
-//! validated downstream by RPs via DNSSEC; this check only protects the
-//! integrity of our own session.
+//! verify it to root a mingo session.
+//!
+//! The issuer's signing key is resolved from its authenticated
+//! `_browserid` **DNSSEC** record — the sole root of trust per the spec —
+//! never from `.well-known` (a support document carries endpoints, never a
+//! key, and a hosted primary serves no key at its own origin). Because the key
+//! comes from the record, a hosted primary's `host=` is honored implicitly:
+//! we never fetch the identity domain for a key. Shared resolver:
+//! `browserid-dnssec`.
 
-use std::time::Duration;
+use std::collections::HashMap;
 
-use browserid_core::discovery::{
-    discover, DiscoveryConfig, SupportDocument, SupportDocumentFetcher,
-};
 use browserid_core::device::AccessPresentation;
-use browserid_core::{Error as CoreError, Result as CoreResult};
-
-/// HTTP support-document fetcher (HTTPS, optionally allowing HTTP for local dev).
-pub struct HttpFetcher {
-    client: reqwest::blocking::Client,
-    require_https: bool,
-}
-
-impl HttpFetcher {
-    pub fn new(require_https: bool) -> Self {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("http client");
-        Self {
-            client,
-            require_https,
-        }
-    }
-}
-
-impl SupportDocumentFetcher for HttpFetcher {
-    fn fetch(&self, domain: &str) -> CoreResult<SupportDocument> {
-        let try_url = |scheme: &str| format!("{}://{}/.well-known/browserid", scheme, domain);
-        let resp = self.client.get(try_url("https")).send();
-        let resp = match resp {
-            Ok(r) if r.status().is_success() => r,
-            _ if !self.require_https => {
-                self.client
-                    .get(try_url("http"))
-                    .send()
-                    .map_err(|e| CoreError::DiscoveryFailed {
-                        domain: domain.to_string(),
-                        reason: e.to_string(),
-                    })?
-            }
-            Ok(r) => {
-                return Err(CoreError::DiscoveryFailed {
-                    domain: domain.to_string(),
-                    reason: format!("HTTP {}", r.status()),
-                })
-            }
-            Err(e) => {
-                return Err(CoreError::DiscoveryFailed {
-                    domain: domain.to_string(),
-                    reason: e.to_string(),
-                })
-            }
-        };
-        resp.json().map_err(|e| CoreError::DiscoveryFailed {
-            domain: domain.to_string(),
-            reason: format!("invalid JSON: {}", e),
-        })
-    }
-}
-
-/// Fetch a broker/IdP domain's published signing key via `.well-known/browserid`
-/// discovery — used to verify provisioning endorsements from the trusted broker
-/// (mingo-ua8w / tdxf). Same HTTP-discovery path as assertion verification.
-pub fn fetch_domain_pubkey(
-    domain: &str,
-    require_https: bool,
-) -> Result<browserid_core::PublicKey, String> {
-    let fetcher = HttpFetcher::new(require_https);
-    let config = DiscoveryConfig::default();
-    discover(domain, &fetcher, &config)
-        .map_err(|e| format!("discover {}: {}", domain, e))?
-        .document
-        .public_key
-        .ok_or_else(|| format!("{} published no public key", domain))
-}
+use browserid_core::{Error as CoreError, PublicKey};
+use browserid_dnssec::{resolve_idp_key, DnsFetcher};
 
 /// A verified external presentation: the certified email, plus the warrant
 /// scopes when the presentation is scoped ("agent"-style).
@@ -92,8 +24,7 @@ pub struct VerifiedExternal {
     pub email: String,
     /// `Some(scopes)` iff the warrant carried a non-empty scope set — a scoped
     /// (delegated/"agent") grant at exactly this audience. `None` for an
-    /// unscoped (plain-login/"user") warrant. The old user/agent subject axis is
-    /// gone; the scope set is what distinguishes the two now.
+    /// unscoped (plain-login/"user") warrant.
     pub agent: Option<Vec<String>>,
 }
 
@@ -101,66 +32,66 @@ pub struct VerifiedExternal {
 /// (`access_cert~assertion~warrant~config_cert`) and return the certified
 /// external identity.
 ///
-/// Authorization (mirrors Persona / the broker): the issuer (shared by the
-/// access cert and config cert — the core join enforces that) must be either
-/// the trusted broker, the email's own domain (native primary), or a domain
-/// the email's domain delegates to. The core join also verifies the warrant
-/// against the config cert and the assertion against the fresh access key —
-/// a warrant-less presentation never parses.
-pub fn verify_external_presentation(
+/// Every issuer key is DNSSEC-resolved. Authority (spec §8): each identity's
+/// issuer must be that identity's own DNSSEC primary, or — for an identity
+/// whose domain is not a DNSSEC primary — the accepted fallback broker. The
+/// core join then verifies the four objects against those keys and enforces
+/// identity/holder/audience consistency.
+pub async fn verify_external_presentation(
     presentation: &str,
     audience: &str,
     trusted_broker: &str,
-    require_https: bool,
+    fetcher: &DnsFetcher,
 ) -> Result<VerifiedExternal, String> {
-    let fetcher = HttpFetcher::new(require_https);
-    let config = DiscoveryConfig::default();
-
     let pres = AccessPresentation::parse(presentation).map_err(|e| format!("parse: {}", e))?;
-    let ac = pres.access_cert.claims();
-    let issuer = ac.iss.clone();
-    let email = ac.identity.clone();
-    let email_domain = email
-        .split('@')
-        .nth(1)
-        .ok_or_else(|| "invalid email".to_string())?
-        .to_string();
 
-    let authorized = issuer == trusted_broker
-        || issuer == email_domain
-        || matches!(discover(&email_domain, &fetcher, &config), Ok(r) if r.domain == issuer);
-    if !authorized {
-        return Err(format!(
-            "issuer '{}' not authorized for '{}'",
-            issuer, email_domain
-        ));
+    // Resolve the IdP keys (grantee's access-cert issuer, grantor's config-cert
+    // issuer) from their authenticated DNSSEC records.
+    let access_iss = pres.access_cert.claims().iss.clone();
+    let config_iss = pres.config_cert.claims().iss.clone();
+    let mut keys: HashMap<String, PublicKey> = HashMap::new();
+    for iss in [&access_iss, &config_iss] {
+        if !keys.contains_key(iss) {
+            let key = resolve_idp_key(fetcher, iss)
+                .await
+                .map_err(|e| format!("resolve issuer {}: {}", iss, e))?;
+            keys.insert(iss.clone(), key);
+        }
     }
 
-    let issuer_key = discover(&issuer, &fetcher, &config)
-        .map_err(|e| format!("discover issuer {}: {}", issuer, e))?
-        .document
-        .public_key
-        .ok_or_else(|| format!("issuer {} published no public key", issuer))?;
-
-    // The core join: both certs verify against the issuer key, the assertion
-    // against the fresh access key, the warrant against the config cert, and
-    // identity/holder/audience must be consistent across all four objects.
     let verified = pres
         .verify(audience, |iss| {
-            if iss == issuer {
-                Ok(issuer_key.clone())
-            } else {
-                Err(CoreError::DiscoveryFailed {
+            keys.get(iss)
+                .cloned()
+                .ok_or_else(|| CoreError::DiscoveryFailed {
                     domain: iss.to_string(),
-                    reason: "issuer not authoritative for this presentation".to_string(),
+                    reason: "issuer key not DNSSEC-resolved".to_string(),
                 })
-            }
         })
         .map_err(|e| format!("presentation invalid: {}", e))?;
 
-    // The user/agent axis is gone; a non-empty warrant scope set marks a
-    // scoped ("agent") grant, an empty one a plain login ("user").
-    let agent = (!verified.scopes.is_empty()).then(|| verified.scopes.clone());
+    // Per-identity issuer authority: the grantor (attributed identity) under
+    // its config-cert issuer, and the grantee (actor) under its access-cert
+    // issuer, each checked independently.
+    for (identity, iss) in [
+        (&verified.email, &verified.issuer),
+        (&verified.grantee, &verified.grantee_issuer),
+    ] {
+        let domain = identity.split('@').nth(1).unwrap_or("");
+        let is_primary = resolve_idp_key(fetcher, domain).await.is_ok();
+        let authorized = if is_primary {
+            iss == domain
+        } else {
+            iss == trusted_broker
+        };
+        if !authorized {
+            return Err(format!("issuer '{}' not authorized for '{}'", iss, identity));
+        }
+    }
 
-    Ok(VerifiedExternal { email: verified.email, agent })
+    let agent = (!verified.scopes.is_empty()).then(|| verified.scopes.clone());
+    Ok(VerifiedExternal {
+        email: verified.email,
+        agent,
+    })
 }
