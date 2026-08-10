@@ -7,7 +7,10 @@
 # cached, and the mingo app copies the SPA in its final layer, so SPA-only
 # changes deploy in seconds.
 
-KEY ?= $(HOME)/.ssh/donotuse_id_ed25519_service
+# Ops key for dokku app management (declared in sandmill-infra/keys/dokku).
+# Not forced-only: ssh still falls back to agent keys, so an authorized
+# agent key (e.g. laptop-admin) also completes auth if this key isn't present.
+KEY ?= $(HOME)/.ssh/mini-ops
 HOST ?= dokku@sandmill.org
 BRANCH ?= main
 GIT_SSH = GIT_SSH_COMMAND="ssh -i $(KEY)"

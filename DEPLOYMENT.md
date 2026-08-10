@@ -14,15 +14,18 @@ pinned Cargo git dependency.
 
 ## Prerequisites (one-time)
 
-Deploys authenticate with a dedicated key (the default SSH key is not authorized):
+Deploys authenticate with the mac-mini ops key for dokku app management
+(declared in `sandmill-infra/keys/dokku/mini-ops.pub`). It must be authorized on
+the host's `dokku` user (`dokku ssh-keys:add mini-ops`, run as root). ssh also
+falls back to agent keys, so an authorized agent key (e.g. `laptop-admin`) works too:
 ```
-~/.ssh/donotuse_id_ed25519_service
+~/.ssh/mini-ops
 ```
 Point each app at its Dockerfile and add git remotes (one repo, two apps):
 ```sh
-ssh -i ~/.ssh/donotuse_id_ed25519_service dokku@sandmill.org \
+ssh -i ~/.ssh/mini-ops dokku@sandmill.org \
   builder-dockerfile:set sbo-daemon dockerfile-path deploy/sbo-daemon/Dockerfile
-ssh -i ~/.ssh/donotuse_id_ed25519_service dokku@sandmill.org \
+ssh -i ~/.ssh/mini-ops dokku@sandmill.org \
   builder-dockerfile:set mingo dockerfile-path deploy/mingo/Dockerfile
 
 git remote add dokku-daemon dokku@sandmill.org:sbo-daemon
@@ -48,7 +51,7 @@ Set via `dokku config:set` so they stay out of git:
   the app.
 
 ```sh
-ssh -i ~/.ssh/donotuse_id_ed25519_service dokku@sandmill.org \
+ssh -i ~/.ssh/mini-ops dokku@sandmill.org \
   config:set sbo-daemon SBO_TURBO_DA_API_KEY=<key>
 ```
 
