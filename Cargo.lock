@@ -241,10 +241,10 @@ dependencies = [
 [[package]]
 name = "browserid-agent"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=bc8eaad#bc8eaadb1326ec6dd82fa5085e41be070a3b561e"
+source = "git+https://github.com/vthunder/browserid-ng?rev=a04ddf7#a04ddf7ab849796253a04221b6ff55f9e7c97dca"
 dependencies = [
  "base64 0.22.1",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=bc8eaad)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=a04ddf7)",
  "chrono",
  "rand",
  "reqwest 0.12.25",
@@ -274,7 +274,7 @@ dependencies = [
 [[package]]
 name = "browserid-core"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=bc8eaad#bc8eaadb1326ec6dd82fa5085e41be070a3b561e"
+source = "git+https://github.com/vthunder/browserid-ng?rev=a04ddf7#a04ddf7ab849796253a04221b6ff55f9e7c97dca"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -291,9 +291,9 @@ dependencies = [
 [[package]]
 name = "browserid-dnssec"
 version = "0.1.0"
-source = "git+https://github.com/vthunder/browserid-ng?rev=bc8eaad#bc8eaadb1326ec6dd82fa5085e41be070a3b561e"
+source = "git+https://github.com/vthunder/browserid-ng?rev=a04ddf7#a04ddf7ab849796253a04221b6ff55f9e7c97dca"
 dependencies = [
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=bc8eaad)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=a04ddf7)",
  "futures-util",
  "hickory-client",
  "rand",
@@ -1474,7 +1474,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "browserid-agent",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=bc8eaad)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=a04ddf7)",
  "chrono",
  "clap",
  "hex",
@@ -1493,7 +1493,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "browserid-agent",
- "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=bc8eaad)",
+ "browserid-core 0.1.0 (git+https://github.com/vthunder/browserid-ng?rev=a04ddf7)",
  "browserid-dnssec",
  "chrono",
  "reqwest 0.12.25",

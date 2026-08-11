@@ -155,7 +155,7 @@ async fn device_cert_issuance_and_headless_mint_and_present() {
     };
     let mut agent = DeviceAgent::new(credential).unwrap();
     assert_eq!(agent.email(), identity);
-    agent.mint().await.expect("headless access-cert mint");
+    agent.mint(None).await.expect("headless access-cert mint");
 
     // 3. A config-cert-signed warrant for the audience (the principal's grant).
     // Grant the exact holder the IdP minted (an `<id>` matcher covering it).
