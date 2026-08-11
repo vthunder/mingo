@@ -67,5 +67,11 @@ jobs:
           ssh-keyscan -H sandmill.org >> ~/.ssh/known_hosts 2>/dev/null
           # `dokku@` runs the dokku command dispatcher as its forced SSH command,
           # so the args below become `dokku git:from-image sbo-daemon <image>`.
-          ssh -i ~/.ssh/id_deploy dokku@sandmill.org \
-            git:from-image sbo-daemon "${IMAGE}:${{ github.sha }}"
+          # `git:from-image` exits 1 on an unchanged image digest — a re-run of an
+          # already-released sha is a no-op, not a failure.
+          out=$(ssh -i ~/.ssh/id_deploy dokku@sandmill.org \
+            git:from-image sbo-daemon "${IMAGE}:${{ github.sha }}" 2>&1) \
+            || { echo "$out" | grep -q "No changes detected" \
+                 && echo "no-op: image digest unchanged (already deployed)" \
+                 || { echo "$out" | tail -30; exit 1; }; }
+          echo "$out" | tail -5

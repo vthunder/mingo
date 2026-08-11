@@ -69,5 +69,11 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           install -m 600 /dev/stdin ~/.ssh/id_deploy <<< "${{ secrets.DOKKU_SSH_KEY }}"
           ssh-keyscan -H sandmill.org >> ~/.ssh/known_hosts 2>/dev/null
-          ssh -i ~/.ssh/id_deploy dokku@sandmill.org \
-            git:from-image mingo "${IMAGE}:${{ github.sha }}"
+          # `git:from-image` exits 1 on an unchanged image digest — a re-run of an
+          # already-released sha is a no-op, not a failure.
+          out=$(ssh -i ~/.ssh/id_deploy dokku@sandmill.org \
+            git:from-image mingo "${IMAGE}:${{ github.sha }}" 2>&1) \
+            || { echo "$out" | grep -q "No changes detected" \
+                 && echo "no-op: image digest unchanged (already deployed)" \
+                 || { echo "$out" | tail -30; exit 1; }; }
+          echo "$out" | tail -5
