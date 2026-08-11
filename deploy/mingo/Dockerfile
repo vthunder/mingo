@@ -7,8 +7,11 @@
 # SPA-only change (app.js/css/html) reuses the cached binary entirely and
 # deploys in seconds without touching Rust.
 #
-# Build context = repo root. Selected per-app via:
-#   dokku builder-dockerfile:set mingo dockerfile-path deploy/mingo/Dockerfile
+# Built in CI (.github/workflows/deploy-mingo.yml) and deployed by IMAGE via
+# `dokku git:from-image mingo` — the host never compiles. Build context = repo
+# root. (Legacy on-host path: `dokku builder-dockerfile:set mingo
+# dockerfile-path deploy/mingo/Dockerfile` — cleared for image deploys, see the
+# Makefile deploy-mingo-onhost note.)
 # Base pinned to a specific toolchain (not the moving `rust:1` tag): a tag bump
 # changes the image digest and invalidates every cached layer below — including
 # the slow cargo-chef install and the dependency build. Bump deliberately on
@@ -23,14 +26,17 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS build
 COPY --from=planner /src/recipe.json recipe.json
+# Deps cook into an IMAGE LAYER (no target cache mount): `--mount=type=cache`
+# contents persist in neither dokku nor GitHub's type=gha layer cache, so the
+# cook must live in the layer itself to survive across builds (same pattern as
+# ../sbo-daemon/Dockerfile, mingo-e1dd). Keyed only on recipe.json → re-cooks
+# only when the dependency graph changes.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
     cargo chef cook --release -p mingo-idp --recipe-path recipe.json
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
     cargo build --release -p mingo-idp \
     && cp target/release/mingo-idp /mingo-idp
 

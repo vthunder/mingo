@@ -1,0 +1,73 @@
+# Build mingo (mingo-idp + SPA) in CI and deploy the IMAGE to dokku — same
+# pattern as deploy-daemon.yml. The sandmill.org host (24G disk) can't keep a
+# warm Rust cache, so on-host `git push dokku` cold-compiled the workspace
+# (~40 min); here GitHub Actions compiles with a persistent type=gha layer
+# cache and dokku just PULLS the ~100MB runtime image.
+#
+# One-time setup (done 2026-08-11, bean browserid-ng-5l83):
+#   dokku builder:set mingo selected dockerfile
+#   dokku builder-dockerfile:set mingo dockerfile-path     # cleared: from-image
+#                                                          # generates its own
+# The GHCR package inherits the repo's public visibility (validated on
+# sbo-daemon) — no manual step. An SPA-only change rebuilds in ~1 min (the
+# cargo layers all hit cache; the SPA is the last runtime layer).
+name: Deploy mingo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mingo-idp/**"
+      - "mingo-web/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "deploy/mingo/**"
+      - ".github/workflows/deploy-mingo.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-mingo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/mingo
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/mingo/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to dokku (pull + run the image)
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          install -m 600 /dev/stdin ~/.ssh/id_deploy <<< "${{ secrets.DOKKU_SSH_KEY }}"
+          ssh-keyscan -H sandmill.org >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id_deploy dokku@sandmill.org \
+            git:from-image mingo "${IMAGE}:${{ github.sha }}"
