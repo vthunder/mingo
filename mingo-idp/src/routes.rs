@@ -47,10 +47,10 @@ pub type Shared = Arc<AppState>;
 // --------------------------------------------------------------------------
 // GET /.well-known/browserid
 // --------------------------------------------------------------------------
-pub async fn well_known(State(st): State<Shared>) -> Json<serde_json::Value> {
+pub async fn well_known(State(_st): State<Shared>) -> Json<serde_json::Value> {
     // Device-cert conformance: batch issuance (session-authed), the headless
     // mint, and the browser-facing device-authorization popup page.
-    let doc = SupportDocument::new(st.keypair.public_key())
+    let doc = SupportDocument::new()
         .with_device_cert("/device_cert")
         .with_access_cert("/access/mint")
         .with_device_authorization("/device-authorize");
