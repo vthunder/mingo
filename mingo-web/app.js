@@ -357,15 +357,37 @@ const idpGet = async (path) => {
 // poster is an as-you service holding YOUR identity on its own isolated
 // holder, so posts attribute on-chain directly to you.
 // ---------------------------------------------------------------------------
-const poster = { enabled: false };
+const poster = { enabled: false, known: false };
+
+// The user's OWN preference on this browser, honored regardless of what the
+// server holds: turning the poster off in settings must mean writes never
+// route through it here — even if the server-side disable call failed or the
+// status read is flaky (both bit us on 2026-08-25: a swallowed disable
+// failure / an errored status read each let the UI show "off" while the
+// server warrant survived, and the next load silently re-enabled).
+function posterPref() {
+  try { return localStorage.getItem("mingo_poster_pref"); } catch { return null; }
+}
+function setPosterPref(v) {
+  try { localStorage.setItem("mingo_poster_pref", v); } catch {}
+}
+// Whether writes may route through the poster: the server must hold a live
+// warrant AND the user must not have switched it off locally.
+function posterActive() {
+  return poster.enabled && posterPref() !== "off";
+}
 
 // Refresh whether mingo currently holds a valid warrant for this user.
+// `known` distinguishes a real "off" from a failed read — writes fail SAFE
+// (client signing) either way, but the settings UI must not render a failed
+// read as a confident "off".
 async function refreshPosterStatus() {
-  if (!session.email) { poster.enabled = false; return; }
+  if (!session.email) { poster.enabled = false; poster.known = true; return; }
   try {
     const s = await idpGet("/poster/status");
     poster.enabled = !!s.enabled;
-  } catch { poster.enabled = false; }
+    poster.known = true;
+  } catch { poster.enabled = false; poster.known = false; }
 }
 
 // Start delegation: mingo raises the consent request at the user's registrar
@@ -402,7 +424,7 @@ async function pollPoster({ tries = 60, intervalMs = 6000 } = {}) {
     await new Promise((res) => setTimeout(res, intervalMs));
     let r;
     try { r = await idpPost("/poster/poll", {}); } catch { continue; }
-    if (r.status === "approved") { poster.enabled = true; return { ok: true, reason: null }; }
+    if (r.status === "approved") { poster.enabled = true; poster.known = true; setPosterPref("on"); return { ok: true, reason: null }; }
     if (["mismatch", "denied", "expired", "failed", "none"].includes(r.status)) {
       return { ok: false, reason: posterFailureReason(r) };
     }
@@ -410,9 +432,22 @@ async function pollPoster({ tries = 60, intervalMs = 6000 } = {}) {
   return { ok: false, reason: null };
 }
 
+// Turn the poster off. The LOCAL preference flips first and unconditionally
+// (writes on this browser stop using the poster immediately); the server-side
+// forget is then attempted and its failure is SURFACED, never swallowed —
+// the stored warrant remaining alive server-side is exactly the state that
+// bit us on 2026-08-25.
 async function disablePoster() {
-  try { await idpPost("/poster/disable", {}); } catch {}
+  setPosterPref("off");
   poster.enabled = false;
+  try {
+    await idpPost("/poster/disable", {});
+    return true;
+  } catch (e) {
+    toast("couldn't remove the server-side authorization — it stays off on this browser; " +
+      "retry from Settings, or revoke it at browserid.me/account");
+    return false;
+  }
 }
 
 // Submit a write through the server-side signer. Mirrors the fields the
@@ -497,7 +532,7 @@ async function signIn(opts) {
 // proceed. Skips the offer once you've set up client signing this session, so
 // existing client-signers aren't nagged.
 async function ensureCanWrite() {
-  if (poster.enabled) return true;
+  if (posterActive()) return true;
   if (localStorage.getItem("mingo_signing_ready") === "1") return ensureSigningReady();
   if (await openPosterEnableModal()) return true;
   return ensureSigningReady();
@@ -506,7 +541,7 @@ async function ensureCanWrite() {
 async function ensureSigningReady() {
   // Server-side signing is on: mingo signs, so the client never opens the
   // browserid signing dialog. Skip the whole client-signer setup.
-  if (poster.enabled) return true;
+  if (posterActive()) return true;
   if (localStorage.getItem("mingo_signing_ready") === "1") return true;
   const granted = await new Promise((resolve) => {
     const overlay = el(`<div class="modal-overlay">
@@ -749,7 +784,7 @@ async function writeContent({ path, id, schema, payload, hlc, prev, owner, conte
   // no popup. Only for email-rooted content writes — key-rooted self-authorizing
   // writes (the /sys/dnssec refresh) sign with a throwaway key locally and must
   // not route through the agent signer.
-  if (poster.enabled && !keyRooted) {
+  if (posterActive() && !keyRooted) {
     try {
       return await submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType, action });
     } catch (e) {
@@ -2058,13 +2093,13 @@ async function viewSettings() {
     <div id="settings-body" class="muted">loading…</div>`;
   await refreshPosterStatus();
   const render = () => {
-    const on = poster.enabled;
+    const on = posterActive();
     $("#settings-body").outerHTML = `<div id="settings-body">
       <div class="card">
         <div class="row-between">
           <div style="min-width:0">
             <div class="h2" style="margin:0">Posting on your behalf</div>
-            <div class="muted tiny" style="margin-top:4px">mingo posts for you: <strong class="${on ? "confirmed" : ""}">${on ? "on" : "off"}</strong></div>
+            <div class="muted tiny" style="margin-top:4px">mingo posts for you: <strong class="${on ? "confirmed" : ""}">${on ? "on" : "off"}</strong>${poster.known ? "" : " <span class=\"tiny\">(server status unavailable — showing this browser's setting)</span>"}</div>
           </div>
           <button class="${on ? "" : "primary"}" id="poster-btn">${on ? "Turn off" : "Turn on"}</button>
         </div>
@@ -2073,7 +2108,7 @@ async function viewSettings() {
           mobile. ${on ? "To fully revoke, use Manage at browserid.me." : "You approve once on browserid.me."}</p>
       </div></div>`;
     $("#poster-btn").onclick = async () => {
-      if (poster.enabled) {
+      if (posterActive()) {
         const btn = $("#poster-btn");
         btn.disabled = true; btn.textContent = "Turning off…";
         await disablePoster();
