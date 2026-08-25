@@ -626,7 +626,27 @@ pub async fn submit(
     msg.sign(&key);
     let wire_bytes = wire::serialize(&msg);
 
-    let result = submit_wire(st.config.daemon_url.clone(), wire_bytes).await?;
+    let result = match submit_wire(st.config.daemon_url.clone(), wire_bytes).await {
+        Ok(v) => v,
+        Err(e) => {
+            // The daemon now checks all three revocation refs fail-closed at
+            // submit (2026-08-25). A "revocation:" refusal means our STORED
+            // bundle is dead — typically the grantor's config cert, revoked
+            // at its IdP after a device rotation/migration since the grant
+            // was approved. Self-disable so /poster/status stops advertising
+            // a dead lane and the client falls back to in-browser signing;
+            // re-enabling runs a fresh approval with current certs.
+            let msg = format!("{e:?}");
+            if msg.contains("revocation:") {
+                let _ = st.store.delete_poster_warrant(account_id);
+                return Err(AppError::BadRequest(
+                    "mingo-poster's stored authorization was revoked — server-side posting                      disabled; this write will use in-browser signing (re-enable the poster                      to re-approve)"
+                        .into(),
+                ));
+            }
+            return Err(e);
+        }
+    };
     Ok(Json(result))
 }
 

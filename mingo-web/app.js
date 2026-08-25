@@ -750,7 +750,20 @@ async function writeContent({ path, id, schema, payload, hlc, prev, owner, conte
   // writes (the /sys/dnssec refresh) sign with a throwaway key locally and must
   // not route through the agent signer.
   if (poster.enabled && !keyRooted) {
-    return submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType, action });
+    try {
+      return await submitViaPoster({ path, id, schema, payload, hlc, prev, owner, contentType, action });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      // The poster self-disables when the daemon reports its stored
+      // authorization revoked (2026-08-25): fall through to in-browser
+      // signing with the user's own signing grant instead of dead-ending.
+      if (msg.includes("server-side posting") || msg.includes("re-enable the poster")) {
+        poster.enabled = false;
+        toast("server-side posting was revoked — using in-browser signing");
+      } else {
+        throw e;
+      }
+    }
   }
   const wasm = await sbo();
   const spec = {
