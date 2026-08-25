@@ -781,6 +781,12 @@ async function writeContent({ path, id, schema, payload, hlc, prev, owner, conte
   // we post /sys/dnssec/<issuer>, not /sys/dnssec/<email-domain>.
   const issuer = certIssuer(res.cert) || (owner || session.email).split("@")[1];
   if (issuer) await ensureDnssecFresh(issuer);
+  // The WARRANT's status list is signed by the broker (its registry), and the
+  // daemon verifies it against the broker's DNSSEC-proven key from
+  // /sys/dnssec/<broker> — keep that evidence fresh too, not just the cert
+  // issuer's, or revocation checks fail closed when the proof's RRSig lapses.
+  const brokerHost = new URL(CONFIG.broker).hostname;
+  if (brokerHost && brokerHost !== issuer) await ensureDnssecFresh(brokerHost);
   const bound = { ...spec, public_key: res.pubkey, auth_cert: res.cert };
   return submitWire(wasm.assembleWire(bound, res.signature));
 }
