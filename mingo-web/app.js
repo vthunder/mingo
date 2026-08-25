@@ -836,7 +836,20 @@ async function writeContent({ path, id, schema, payload, hlc, prev, owner, conte
   const brokerHost = new URL(CONFIG.broker).hostname;
   if (brokerHost && brokerHost !== issuer) await ensureDnssecFresh(brokerHost);
   const bound = { ...spec, public_key: res.pubkey, auth_cert: res.cert };
-  return submitWire(wasm.assembleWire(bound, res.signature));
+  try {
+    return await submitWire(wasm.assembleWire(bound, res.signature));
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    // The daemon refused the write over revocation (its own fail-closed gate;
+    // the wallet also checks per sign, so this is the race window / non-
+    // warrant refs). Clear the ready flag so the next attempt re-runs the
+    // consent flow instead of looping on a dead grant.
+    if (msg.includes("revocation:")) {
+      localStorage.removeItem("mingo_signing_ready");
+      throw new Error("your signing authorization was revoked — tap again to re-approve");
+    }
+    throw e;
+  }
 }
 
 // Sign a self-authorizing (unowned) envelope with a throwaway Ed25519 key and
