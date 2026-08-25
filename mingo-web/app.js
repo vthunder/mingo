@@ -32,6 +32,14 @@ const CONFIG = Object.assign(
 
 const SBO_WASM_URL = CONFIG.sboWasm || `${CONFIG.broker}/common/js/sbo-wasm/sbo_wasm.js`;
 
+// The signing-grant request declared at consent time (browserid spec §7.5):
+// the dialog's card shows exactly this — posts sign silently, deletions
+// prompt in the signer window each time.
+const SBO_SIGN_REQUEST = {
+  audiences: [CONFIG.dbAudience],
+  scopes: ["sign:sbo:post", { scope: "sign:sbo:delete", mode: "prompt" }],
+};
+
 
 // ---------------------------------------------------------------------------
 // daemon read/submit API
@@ -518,7 +526,7 @@ async function ensureSigningReady() {
       // Open the dialog FIRST, while the tapped button is still in the DOM, so
       // requestAssertion's window.open stays within the user gesture (removing
       // the overlay before it opens can invalidate the gesture).
-      const p = requestAssertion({ sboSign: true, provisionEmail: session.email });
+      const p = requestAssertion({ sboSign: SBO_SIGN_REQUEST, provisionEmail: session.email });
       overlay.remove();
       try {
         const assertion = await p;
@@ -643,7 +651,7 @@ function ensureSigner() {
   let resolve, reject;
   const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
   signerReady = { promise, resolve, reject };
-  signerWin = window.open(`${CONFIG.broker}/sign`, "mingo-signer", "width=360,height=200");
+  signerWin = window.open(`${CONFIG.broker}/sign`, "mingo-signer", "width=380,height=360");
   if (!signerWin) { reject(new Error("popup blocked — allow popups")); return promise; }
   window.focus();
   setTimeout(() => reject(new Error("signer popup did not become ready")), 15000);
@@ -652,11 +660,27 @@ function ensureSigner() {
 async function signEnvelope(email, envelope, audience) {
   await ensureSigner();
   const id = ++signSeq;
-  return new Promise((resolve, reject) => {
-    pendingSign.set(id, { resolve, reject });
-    signerWin.postMessage({ type: "sbo:sign", id, email, envelope, audience }, CONFIG.broker);
-    setTimeout(() => { if (pendingSign.has(id)) { pendingSign.delete(id); reject(new Error("sign timeout")); } }, 20000);
-  });
+  try {
+    return await new Promise((resolve, reject) => {
+      pendingSign.set(id, { resolve, reject });
+      signerWin.postMessage({ type: "sbo:sign", id, email, envelope, audience }, CONFIG.broker);
+      // Generous: a prompt-mode scope (deletions) legitimately waits on the
+      // user reading the signer window before approving.
+      setTimeout(() => { if (pendingSign.has(id)) { pendingSign.delete(id); reject(new Error("sign timeout")); } }, 120000);
+    });
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    // The signer's error vocabulary (browserid signing grants):
+    if (msg.startsWith("not_granted")) {
+      // Missing/expired/other-device grant — drop the ready flag so the next
+      // attempt re-runs the consent card instead of failing forever.
+      localStorage.removeItem("mingo_signing_ready");
+      throw new Error("signing grant missing or expired — tap again to re-enable signing");
+    }
+    if (msg.startsWith("prompt_declined")) throw new Error("you declined the signing prompt");
+    if (msg.startsWith("scope_not_granted")) throw new Error("this action isn't covered by your signing grant");
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------
