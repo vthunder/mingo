@@ -55,6 +55,10 @@ pub struct DeviceCertResp {
     pub device_cert: String,
     /// The `authorization` config cert (signs warrants).
     pub config_cert: String,
+    /// Provenance: the external email this handle is backed by. The broker's
+    /// sign-in dialog records it (`/wsapi/set_parent`) so the account knows
+    /// the handle is a derived identity that signs in via its parent.
+    pub parent_email: String,
     /// The `<handle>@mingo.place` identity both certs authorize.
     pub identity: String,
 }
@@ -100,10 +104,13 @@ pub async fn device_cert(
     Json(req): Json<DeviceCertReq>,
 ) -> Result<Json<DeviceCertResp>, AppError> {
     let account_id = require_session(&st, &cookies)?;
-    let handle = st
+    let account = st
         .store
         .get_account(account_id)?
-        .and_then(|a| a.handle)
+        .ok_or_else(|| AppError::BadRequest("claim a handle before issuing device certs".into()))?;
+    let handle = account
+        .handle
+        .clone()
         .ok_or_else(|| AppError::BadRequest("claim a handle before issuing device certs".into()))?;
     let identity = format!("{}@{}", handle, st.config.domain);
 
@@ -156,6 +163,7 @@ pub async fn device_cert(
         device_cert: device_cert.encoded().to_string(),
         config_cert: config_cert.encoded().to_string(),
         identity,
+        parent_email: account.external_email,
     }))
 }
 
