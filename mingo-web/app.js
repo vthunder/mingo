@@ -251,25 +251,30 @@ const session = {
 let _pendingAssertion = null;
 let lastLoginDetails = null; // dialog response details for the most recent login
 function requestAssertion(opts) {
+  // browserid-ng request kinds: request("login", args) returns a promise of
+  // { presentation, email, ... }; a cancel or an error the site should explain
+  // (e.g. the chosen identity's issuer — us — has no session here) rejects
+  // with { error, ... }. onlogin still fires for compatibility; whichever
+  // arrives first settles the pending sign-in, the other is a no-op.
   return new Promise((resolve, reject) => {
     _pendingAssertion = { resolve, reject };
-    // oncancel fires when the user closes the dialog OR the popup is blocked
-    // (include.js reports it). Without it, a blocked/cancelled request would
-    // never resolve and this promise would hang.
-    const req = Object.assign({}, opts, {
-      oncancel: function () {
-        if (_pendingAssertion && _pendingAssertion.resolve === resolve) {
-          _pendingAssertion = null;
-          resolve(null);
-        }
+    let p;
+    try { p = navigator.id.request("login", Object.assign({}, opts)); }
+    catch (e) { _pendingAssertion = null; return reject(e); }
+    const mine = () => _pendingAssertion && _pendingAssertion.resolve === resolve;
+    p.then(
+      (r) => {
+        if (!mine()) return;
+        _pendingAssertion = null;
+        lastLoginDetails = r || null;
+        resolve(r && r.presentation ? r.presentation : null);
       },
-    });
-    try {
-      navigator.id.request(req);
-    } catch (e) {
-      _pendingAssertion = null;
-      reject(e);
-    }
+      (e) => {
+        if (!mine()) return;
+        _pendingAssertion = null;
+        if (e && (e.error === "cancelled" || e.error === "busy")) return resolve(null);
+        reject(Object.assign(new Error((e && (e.message || e.error)) || "sign-in failed"), e || {}));
+      });
   });
 }
 
@@ -520,8 +525,27 @@ async function signIn(opts) {
     // to do it now, so the certs exist before anything needs them.
     if (sess.handle && !handleReadyHere(email)) offerContinueAsHandle(email);
   } catch (e) {
+    if (e && e.error === "issuer_not_signed_in") return explainHandleSignIn(e.identity);
     toast("Sign-in failed: " + e.message);
   }
+}
+
+// The person chose their mingo handle in the wallet, but this browser has no
+// mingo session yet, so mingo could not certify it. Explain, and offer the
+// sign-in again — with their email this time; mingo then sets the handle up.
+function explainHandleSignIn(identity) {
+  const overlay = el(`<div class="modal-overlay"><div class="modal card">
+    <div class="h2">Sign in with your email first</div>
+    <p class="muted" style="margin-top:8px">${esc(identity || "Your mingo identity")} is a mingo username,
+      and this browser isn't signed in to mingo yet, so it can't be used to sign in on its own.
+      Sign in with your email; mingo will then set up ${esc(identity || "your username")} here.</p>
+    <div class="row-between" style="margin-top:12px">
+      <button id="hs-cancel">Cancel</button>
+      <button class="primary" id="hs-go">Sign in</button>
+    </div></div></div>`);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#hs-cancel").onclick = () => overlay.remove();
+  overlay.querySelector("#hs-go").onclick = () => { overlay.remove(); signIn(); };
 }
 
 // Directed sign-in for the HANDLE (the derived identity), naming the parent
@@ -546,12 +570,12 @@ function handleReadyHere(handleEmail) {
 function offerContinueAsHandle(handleEmail) {
   return new Promise((resolve) => {
     const overlay = el(`<div class="modal-overlay"><div class="modal card">
-      <div class="h2">Continue as ${esc(handleEmail)}</div>
-      <p class="muted" style="margin-top:8px">Your browserid wallet will sign in your mingo
-        identity on this browser, once. Nothing about your email is shown to anyone.</p>
+      <div class="h2">Save your mingo handle to browserid</div>
+      <p class="muted" style="margin-top:8px">browserid will link <strong>${esc(handleEmail)}</strong> to
+        your account so it works on every device, and sign it in on this browser.</p>
       <div class="row-between" style="margin-top:12px">
         <button id="ch-later">Later</button>
-        <button class="primary" id="ch-go">Continue</button>
+        <button class="primary" id="ch-go">Save</button>
       </div></div></div>`);
     document.body.appendChild(overlay);
     overlay.querySelector("#ch-later").onclick = () => { overlay.remove(); resolve(false); };
