@@ -2417,9 +2417,9 @@ async function maybeResumeAuthorize() {
     const who = session.external;
     const overlay = el(`<div class="modal-overlay"><div class="modal card">
       <div class="h2">Sign in to continue</div>
-      <p class="muted" style="margin-top:8px">Your mingo session expired, so
-        authorizing needs a quick re-login${who ? ` as <strong>${esc(who)}</strong>` : ""}.
-        You'll be sent right back to finish.</p>
+      <p class="muted" style="margin-top:8px">This browser is not signed in to mingo.
+        Sign in${who ? ` as <strong>${esc(who)}</strong>` : ""} to continue; you'll be sent
+        right back to finish.</p>
       <div class="row-between" style="margin-top:12px">
         <button id="ra-cancel">Cancel</button>
         <button class="primary" id="ra-go">${who ? "Sign back in" : "Sign in"}</button>

@@ -151,12 +151,18 @@
     .then(withParentProof)
     .then(function (who) {
       if (!who || !who.authenticated || !who.handle) {
-        // No live IdP session. Say so — without naming which account owns
-        // this handle — and let the person sign in to mingo (an undirected
-        // sign-in with their own identity) from a click; our pending params
-        // survive in sessionStorage, and mingo sends them back here. Never an
-        // automatic bounce: that can loop, and it cannot help when the wrong
-        // identity was chosen.
+        // No live IdP session. Popup mode (the broker's dialog opened us):
+        // report it and close — the dialog sends the person back to its
+        // chooser, where signing in as the identity that owns this handle
+        // lets mingo set the handle up afterwards. Running mingo's own
+        // sign-in from inside this popup would reuse the dialog's window and
+        // strand the flow. Standalone (redirect mode): a plain message and a
+        // click into mingo's sign-in. Nothing names which account owns it.
+        if (window.opener && !params.return_url) {
+          send({ type: 'browserid:device_error', reason: 'not_signed_in', device_pubkey: params.device_pubkey });
+          return fail('This browser is not signed in to mingo. Go back to the sign-in window and choose ' +
+            'the identity you use to sign in to mingo.');
+        }
         return fail('This browser is not signed in to mingo, so it cannot authorize ' +
           escapeHtml(String(params.email || 'this identity')) + ' yet. ' +
           'Sign in to mingo with the account that owns it, and you will come straight back here. ' +
