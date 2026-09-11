@@ -1258,17 +1258,9 @@ function openPosterEnableModal() {
       go.href = uri;
       go.removeAttribute("aria-disabled");
       setStatus("", "");
-      go.onclick = (e) => {
-        // Try a new tab first — it keeps this page (and any draft) alive so we
-        // can poll for the approval right here. A blocked window.open returns
-        // null, and then we DON'T preventDefault: the anchor's default same-tab
-        // navigation proceeds, which nothing can block. Stash the draft so it
-        // survives that round-trip.
-        const win = window.open(uri, "_blank");
-        if (!win) return stashDraft();
-        e.preventDefault();
-        setStatus("muted", "Approve in the browserid.me tab, then return here — waiting…");
-        if (waiting) return; // re-tap just reopens the tab; one poller is enough
+      const awaitApproval = (where) => {
+        setStatus("muted", `Approve in ${where}, then return here — waiting…`);
+        if (waiting) return; // one poller is enough
         waiting = true;
         pollPoster().then(({ ok, reason }) => {
           waiting = false;
@@ -1280,6 +1272,43 @@ function openPosterEnableModal() {
             setStatus("warn", reason || "Approval didn't complete — tap Continue to try again.");
           }
         });
+      };
+      const openTab = (e) => {
+        // A new tab keeps this page (and any draft) alive so we can poll for
+        // the approval right here. A blocked window.open returns null, and
+        // then we DON'T preventDefault: the anchor's default same-tab
+        // navigation proceeds, which nothing can block. Stash the draft so it
+        // survives that round-trip.
+        const win = window.open(uri, "_blank");
+        if (!win) return stashDraft();
+        e.preventDefault();
+        awaitApproval("the browserid.me tab");
+      };
+      go.onclick = (e) => {
+        // Present lane (browserid-ng request kinds): hand the request's code
+        // to the user's wallet from THIS page, naming the identity that must
+        // sign (the handle mingo pinned as grantor). The wallet signs that
+        // identity in through mingo's own IdP — live, since we're on mingo —
+        // and hosts the approval card; no tab, no redirect. Anything short
+        // of an answer falls back to the tab.
+        let code = null;
+        try { code = new URL(uri).searchParams.get("code"); } catch {}
+        if (!code || !navigator.id || typeof navigator.id.request !== "function") return openTab(e);
+        e.preventDefault();
+        setStatus("muted", "Opening your wallet…");
+        let p;
+        try { p = navigator.id.request("provision", { code, identity: session.email }); } catch { p = null; }
+        if (!p || typeof p.then !== "function") return openTab(e);
+        p.then(
+          () => awaitApproval("your wallet"),
+          (err) => {
+            if (err && err.error === "denied") return setStatus("warn", "You declined — mingo won't post for you. Tap Continue to try again.");
+            if (err && err.error === "cancelled") return setStatus("warn", "Wallet closed — tap Continue to try again.");
+            // unsupported_kind, busy, popup blocked, … → the tab still works.
+            const win = window.open(uri, "_blank");
+            if (!win) { stashDraft(); location.href = uri; return; }
+            awaitApproval("the browserid.me tab");
+          });
       };
     }).catch((e) => {
       setStatus("err", "Couldn't start: " + e.message);
