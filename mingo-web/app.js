@@ -501,6 +501,9 @@ async function signIn(opts) {
       } else {
         const claim = await idpPost("/claim_handle", { handle: choice.handle });
         email = claim.email;
+        // Position the new handle under its parent at the broker and put its
+        // certs in this browser — still inside the chooser's click.
+        try { await signInAsHandle(email); } catch (e) { console.warn("handle sign-in:", e); }
       }
     }
 
@@ -513,9 +516,51 @@ async function signIn(opts) {
     renderAuth();
     route(); // flip "Sign in to post" → Join / New post
     toast(`Signed in as ${session.email}`);
+    // A handle user on a browser that has never signed the handle in: offer
+    // to do it now, so the certs exist before anything needs them.
+    if (sess.handle && !handleReadyHere(email)) offerContinueAsHandle(email);
   } catch (e) {
     toast("Sign-in failed: " + e.message);
   }
+}
+
+// Directed sign-in for the HANDLE (the derived identity), naming the parent
+// that was just proven so the broker can record the relationship (the dialog
+// honours the hint only from this origin — mingo asking about its own
+// identity). This is how the handle's certs reach a browser and how a lost
+// parent link gets repaired: at claim, from Settings (Save), or after a
+// parent sign-in on a browser that has not done it yet. Needs a click.
+async function signInAsHandle(handleEmail) {
+  const assertion = await requestAssertion({
+    sboSign: false, provisionEmail: handleEmail, parent: session.external || undefined,
+  });
+  if (assertion) localStorage.setItem("mingo_handle_ready", handleEmail);
+  return !!assertion;
+}
+function handleReadyHere(handleEmail) {
+  return localStorage.getItem("mingo_handle_ready") === handleEmail;
+}
+// After a parent sign-in on a browser that has never signed the handle in:
+// one click to continue as the handle (a wallet window needs a gesture, and
+// the sign-in click was spent on the parent).
+function offerContinueAsHandle(handleEmail) {
+  return new Promise((resolve) => {
+    const overlay = el(`<div class="modal-overlay"><div class="modal card">
+      <div class="h2">Continue as ${esc(handleEmail)}</div>
+      <p class="muted" style="margin-top:8px">Your browserid wallet will sign in your mingo
+        identity on this browser, once. Nothing about your email is shown to anyone.</p>
+      <div class="row-between" style="margin-top:12px">
+        <button id="ch-later">Later</button>
+        <button class="primary" id="ch-go">Continue</button>
+      </div></div></div>`);
+    document.body.appendChild(overlay);
+    overlay.querySelector("#ch-later").onclick = () => { overlay.remove(); resolve(false); };
+    overlay.querySelector("#ch-go").onclick = async () => {
+      const p = signInAsHandle(handleEmail); // open the wallet inside the gesture
+      overlay.remove();
+      try { resolve(await p); } catch (e) { toast("Could not sign in as " + handleEmail + ": " + e.message); resolve(false); }
+    };
+  });
 }
 
 // Lazy signing grant. mingo signs objects through a first-party signer popup
@@ -2134,9 +2179,24 @@ async function viewSettings() {
     <div class="muted vh-sub">Signed in as ${esc(session.email)}</div></div></div>
     <div id="settings-body" class="muted">loading…</div>`;
   await refreshPosterStatus();
+  const who = await idpGet("/whoami").catch(() => null);
+  const handle = who && who.handle ? who.handle : "";
   const render = () => {
     const on = posterActive();
     $("#settings-body").outerHTML = `<div id="settings-body">
+      <div class="card">
+        <div class="h2" style="margin:0">Your username</div>
+        <p class="muted tiny" style="margin-top:4px">${handle
+          ? `You post as <strong>${esc(handle)}@${esc(CONFIG.domain)}</strong>, a mingo identity that never shows your email.`
+          : `You post as <strong>${esc(session.email || "")}</strong>.`}</p>
+        <div class="row" style="margin-top:10px;gap:8px;align-items:center">
+          <input id="un-handle" value="${esc(handle)}" placeholder="username" maxlength="32" style="flex:1;min-width:0">
+          <button class="primary" id="un-save">Save</button>
+        </div>
+        <p class="muted tiny" style="margin-top:8px">Saving also links this username to your account at browserid
+          and signs it in on this browser — do it again if signing ever says it has no key for you.</p>
+        <p class="status" id="un-status" style="margin-top:6px"></p>
+      </div>
       <div class="card">
         <div class="row-between">
           <div style="min-width:0">
@@ -2149,6 +2209,22 @@ async function viewSettings() {
           comments and votes for you — no signing pop-up each time, and it works on
           mobile. ${on ? "To fully revoke, use Manage at browserid.me." : "You approve once on browserid.me."}</p>
       </div></div>`;
+    $("#un-save").onclick = async () => {
+      const st = $("#un-status");
+      const want = $("#un-handle").value.trim().toLowerCase();
+      if (!want) { st.className = "status err"; st.textContent = "Choose a username."; return; }
+      st.className = "status muted"; st.textContent = "Saving…";
+      try {
+        const claim = await idpPost("/claim_handle", { handle: want }); // idempotent for your own
+        const ok = await signInAsHandle(claim.email); // inside the Save click
+        session.email = claim.email;
+        st.className = ok ? "status ok" : "status warn";
+        st.textContent = ok ? `Saved — you post as ${claim.email}.` : "Saved, but the wallet step was cancelled — press Save again to finish.";
+        renderAuth();
+      } catch (e) {
+        st.className = "status err"; st.textContent = "Couldn't save: " + e.message;
+      }
+    };
     $("#poster-btn").onclick = async () => {
       if (posterActive()) {
         const btn = $("#poster-btn");
