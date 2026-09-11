@@ -109,8 +109,7 @@
       try { sessionStorage.removeItem(KEY); } catch (e) {}
       var frag = payload.type === 'browserid:device_certs'
         ? '#device_cert=' + encodeURIComponent(payload.device_cert) +
-          '&config_cert=' + encodeURIComponent(payload.config_cert) +
-          (payload.parent_email ? '&parent_email=' + encodeURIComponent(payload.parent_email) : '')
+          '&config_cert=' + encodeURIComponent(payload.config_cert)
         : '#device_error=' + encodeURIComponent(payload.reason || 'refused');
       location.replace(params.return_url + frag);
       return;
@@ -255,10 +254,7 @@
         var payload = {
           type: 'browserid:device_certs',
           device_cert: res.body.device_cert,
-          config_cert: res.body.config_cert,
-          // Provenance: the handle is backed by this external email; the
-          // dialog records the parent link on the broker account.
-          parent_email: res.body.parent_email || null
+          config_cert: res.body.config_cert
         };
         // Hold mode (popup only): post the certs but stay open for one
         // optional re-issue — the dialog's session join may reveal the
