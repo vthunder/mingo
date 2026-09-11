@@ -53,6 +53,11 @@
           // dialog can request ONE re-issue under the account's canonical
           // browsers holder once its session join reveals it.
           hold: p.get('hold') || null,
+          // Parent proof (derived identities): a presentation of the external
+          // identity this handle is backed by, for THIS origin, minted by the
+          // broker's dialog. Establishes our session without a bounce when
+          // the cookie has lapsed.
+          parent_presentation: p.get('parent_presentation') || null,
           return_origin: p.get('return_origin'),
           // Redirect mode (popup-hostile browsers): navigate back to the
           // dialog's resume URL instead of postMessage-ing an opener.
@@ -118,8 +123,27 @@
 
   var RETRY_KEY = 'browserid_da_signin_attempted';
 
-  fetch('/whoami', { credentials: 'same-origin', headers: { accept: 'application/json' } })
-    .then(function (r) { return r.json(); })
+  function whoami() {
+    return fetch('/whoami', { credentials: 'same-origin', headers: { accept: 'application/json' } })
+      .then(function (r) { return r.json(); });
+  }
+  // No live session but the dialog proved the parent: open the session from
+  // that presentation (the same call the SPA's sign-in makes), then re-check.
+  function withParentProof(who) {
+    if (who && who.authenticated && who.handle) return who;
+    if (!params.parent_presentation) return who;
+    var proof = params.parent_presentation;
+    params.parent_presentation = null; // one attempt
+    try { sessionStorage.setItem(KEY, JSON.stringify(params)); } catch (e) {}
+    msg.textContent = 'Signing you in to mingo…';
+    return fetch('/session/from-presentation', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ presentation: proof })
+    }).then(function () { return whoami(); }, function () { return who; });
+  }
+  whoami()
+    .then(withParentProof)
     .then(function (who) {
       if (!who || !who.authenticated || !who.handle) {
         // No live IdP session — the SPA may still LOOK signed in (its state
