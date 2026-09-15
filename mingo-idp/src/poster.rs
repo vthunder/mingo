@@ -7,7 +7,9 @@
 //! `mingo-poster@…` principal minted by mingo's own IdP. The user signs a
 //! warrant delegating from THEIR identity (`grantor` — who the write is
 //! attributed to) to the poster (`grantee` — the actor that mints the access
-//! cert and signs). There is no `as:` scope: attribution rides the grantor,
+//! cert and signs). The grant carries `as:<user>` — the SBO Authorization
+//! spec's on-behalf mode: without it a delegated write is authored by the
+//! agent itself (sbo 5c1a368), and mingo's poster must author as the user —
 //! and the warrant's `<id>` holder matcher confines the grant to this one
 //! service's holder (anti-fungibility).
 //!
@@ -49,10 +51,13 @@ use crate::store::Account;
 /// The warrant scopes mingo requests for a user: post (and owner-delete) on
 /// their behalf, bounded to mingo content paths and schemas. Scopes are opaque
 /// to the registrar — it renders and copies them; the daemon enforces them
-/// (`sbo_core::authorize`). No `as:` scope: the user is the warrant's grantor,
-/// so attribution lands on them directly.
+/// (`sbo_core::authorize`). `as:<user>` makes the USER (the warrant's grantor)
+/// the effective author; without it the daemon attributes the write to the
+/// poster itself (Authorization Spec, "On-behalf writes"). The `as:` value
+/// must equal the grantor exactly and travel with a `path:` scope.
 pub fn default_scopes(user_email: &str) -> Vec<String> {
     vec![
+        format!("as:{user_email}"),
         "action:post".into(),
         "action:delete".into(),
         "schema:post.v1".into(),
@@ -463,17 +468,50 @@ pub async fn poll(
     }
 }
 
+/// Does the stored `warrant~config_cert` grant carry `as:<user>` — i.e. will
+/// the daemon attribute the poster's writes to `user_email`? Grants issued
+/// before the on-behalf mode (sbo 5c1a368) lack it and would now author as
+/// the poster, so they must be re-enabled. Decoded structurally (JWS payload
+/// `scopes`, bare strings or `{scope}` entries); no signature check needed for
+/// this routing decision.
+pub fn warrant_authors_as(stored: &str, user_email: &str) -> bool {
+    use base64::Engine;
+    let Some((warrant_jws, _)) = stored.split_once('~') else { return false };
+    let Some(payload) = warrant_jws.split('.').nth(1) else { return false };
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+    let want = format!("as:{user_email}");
+    v.get("scopes")
+        .and_then(|s| s.as_array())
+        .is_some_and(|scopes| {
+            scopes.iter().any(|e| {
+                e.as_str()
+                    .or_else(|| e.get("scope").and_then(|x| x.as_str()))
+                    .is_some_and(|sc| sc == want)
+            })
+        })
+}
+
 /// GET /poster/status — whether mingo may currently post for this account.
 pub async fn status(
     State(st): State<Shared>,
     cookies: Cookies,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let account_id = require_session(&st, &cookies)?;
+    let account = st
+        .store
+        .get_account(account_id)?
+        .ok_or(AppError::NotAuthenticated)?;
+    let user_email = public_identity(&account, &st.config.domain);
     let now = chrono::Utc::now().timestamp();
     let w = st.store.get_poster_warrant(account_id)?;
-    let enabled = w
-        .as_ref()
-        .is_some_and(|w| w.expires_at > now && w.device_seed.is_some());
+    // A pre-`as:` grant is reported as not enabled so the UI offers re-enabling
+    // (its writes would author as the poster and fail the user's ownership).
+    let enabled = w.as_ref().is_some_and(|w| {
+        w.expires_at > now && w.device_seed.is_some() && warrant_authors_as(&w.warrant, &user_email)
+    });
     Ok(Json(serde_json::json!({
         "enabled": enabled,
         "available": true,
@@ -542,6 +580,18 @@ pub async fn submit(
             "mingo-poster needs re-enabling on the current authorization model".into(),
         ));
     };
+    {
+        let account = st
+            .store
+            .get_account(account_id)?
+            .ok_or(AppError::NotAuthenticated)?;
+        let user_email = public_identity(&account, &st.config.domain);
+        if !warrant_authors_as(&w.warrant, &user_email) {
+            return Err(AppError::BadRequest(
+                "mingo-poster needs re-enabling: its grant predates on-behalf (as:) attribution".into(),
+            ));
+        }
+    }
 
     // Assemble the presentation via the headless SDK: mint an access cert at
     // the credential's IdP, get back `access~assertion~warrant~config` plus
@@ -553,8 +603,8 @@ pub async fn submit(
         access_mint: w.access_mint.clone(),
         // Delegated model: the ACTOR is the poster (its device cert certifies
         // `mingo-poster@…`), so the access cert is minted for the poster. The
-        // warrant delegates the poster → the user, and the write's `owner` (set
-        // below) is the user, so attribution lands on them.
+        // warrant (grantor = user, grantee = poster) carries `as:<user>`, so the
+        // daemon attributes the write to the user, who is the `owner` set below.
         identity: Some(poster_identity(&st.config.domain)),
     };
     let mut agent = DeviceAgent::new(credential)
@@ -748,12 +798,42 @@ mod tests {
     }
 
     #[test]
-    fn default_scopes_have_no_as_scope_and_bound_paths() {
+    fn default_scopes_carry_as_user_and_bound_paths() {
         let scopes = default_scopes("dan@mingo.place");
         assert!(scopes.iter().any(|s| s == "action:post"));
         assert!(scopes.iter().any(|s| s == "path:/u/dan@mingo.place/**"));
-        // Holder model: attribution lands on the user directly — no `as:`.
-        assert!(!scopes.iter().any(|s| s.starts_with("as:")));
+        // On-behalf mode: the user is the effective author, never the poster.
+        assert_eq!(scopes.iter().filter(|s| s.starts_with("as:")).count(), 1);
+        assert!(scopes.iter().any(|s| s == "as:dan@mingo.place"));
+    }
+
+    #[test]
+    fn stored_warrant_without_as_scope_needs_re_enabling() {
+        use browserid_core::device::{HolderMatcher, Warrant as DeviceWarrant};
+        use browserid_core::KeyPair;
+        use chrono::Duration;
+        let config = KeyPair::generate();
+        let mk = |scopes: Vec<String>| -> String {
+            DeviceWarrant::create(
+                "dan@mingo.place",
+                "mingo-poster@mingo.place",
+                HolderMatcher::new(POSTER_HOLDER).unwrap(),
+                "sbo+raw://avail:turing:506/",
+                scopes,
+                Duration::days(30),
+                &config,
+                None,
+            )
+            .unwrap()
+            .encoded()
+            .to_string()
+        };
+        let old = format!("{}~cfg", mk(vec!["action:post".into(), "path:/u/**".into()]));
+        assert!(!warrant_authors_as(&old, "dan@mingo.place"));
+        let new = format!("{}~cfg", mk(default_scopes("dan@mingo.place")));
+        assert!(warrant_authors_as(&new, "dan@mingo.place"));
+        assert!(!warrant_authors_as(&new, "someone@else"));
+        assert!(!warrant_authors_as("garbage", "dan@mingo.place"));
     }
 
     #[test]

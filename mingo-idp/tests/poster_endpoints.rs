@@ -105,11 +105,13 @@ async fn start_stub_broker() -> (String, KeyPair) {
         )
         .unwrap();
         // Delegated: grantor = the user, grantee = the poster service, bound to
-        // the poster's stable holder (svc.mingo-poster).
+        // the poster's stable holder (svc.mingo-poster). A real broker copies
+        // the requested scopes verbatim; the stub mints the poster's default
+        // set, which carries `as:<user>` (on-behalf attribution).
         let warrant = Warrant::create(
             USER, "mingo-poster@mingo.place",
             HolderMatcher::new("svc.mingo-poster").unwrap(), AUDIENCE,
-            vec!["action:post".into()], Duration::days(90), &config_kp, None,
+            mingo_idp::poster::default_scopes(USER), Duration::days(90), &config_kp, None,
         )
         .unwrap();
         Json(json!({

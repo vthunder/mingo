@@ -113,10 +113,11 @@ impl ScopePreset {
 }
 
 /// The warrant scopes the CLI requests. Mirrors mingo-idp's poster
-/// `default_scopes`, minus `as:` (the holder model attributes to the warrant's
-/// grantor, so no scope has to carry the identity) and without a per-user path
-/// (the identity isn't known until the user approves; ownership checks bound
-/// writes to them regardless).
+/// `default_scopes`, minus `as:` and without a per-user path (the identity
+/// isn't known until the user approves). Consequence (Authorization Spec,
+/// on-behalf writes; sbo 5c1a368): an as-you login (grantor == grantee) authors
+/// as the user; a named agent (`--handle dan+claude`) authors as ITSELF, so its
+/// writes are bound to the agent's own identity, not the approver's.
 pub fn scopes_for(preset: ScopePreset) -> Vec<String> {
     let mut scopes = vec![
         "action:post".to_string(),
