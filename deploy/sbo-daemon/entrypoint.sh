@@ -82,7 +82,7 @@ if [ -f /data/repos.json ] && ! grep -q "\"id\":\"$DSP_REPO_ID\"" /data/repos.js
   mkdir -p /data/repos/dsp
   DSP_ENTRY='{"id":"ec2dbcf61eea9945","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":530,"first_block":3885219,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:530/","path":"/data/repos/dsp","head":3885218,"created_at":1789483842,"expected_genesis":"sha256:6e36ddae51fcf93557d6be930cda3849ededbdf226241af08f6f7f07e7e86d51"}'
   # repos.json is a one-line JSON array: splice the entry in before the closing bracket.
-  sed -i "s/]\s*$/,$DSP_ENTRY]/" /data/repos.json
+  sed -i "s|]\s*$|,$DSP_ENTRY]|" /data/repos.json
   echo "added browserid-pay repo (app 530, head=3885218) to /data/repos.json"
 fi
 
