@@ -44,8 +44,13 @@ const SBO_SIGN_REQUEST = {
 // ---------------------------------------------------------------------------
 // daemon read/submit API
 // ---------------------------------------------------------------------------
+// The daemon follows several databases (mingo's 506 and others), so every
+// call names ours explicitly: `repo=` is the bare database reference,
+// URL-encoded (the `+` in sbo+raw must be %2B or it decodes to a space).
+const REPO_PARAM = `repo=${encodeURIComponent(CONFIG.dbAudience)}`;
+const withRepo = (path) => `${path}${path.includes("?") ? "&" : "?"}${REPO_PARAM}`;
 async function api(path) {
-  const r = await fetch(`${CONFIG.daemon}${path}`);
+  const r = await fetch(`${CONFIG.daemon}${withRepo(path)}`);
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
 }
@@ -68,7 +73,7 @@ function b64urlToBytes(s) {
   return out;
 }
 async function submitWire(bytes) {
-  const r = await fetch(`${CONFIG.daemon}/v1/submit`, {
+  const r = await fetch(`${CONFIG.daemon}${withRepo("/v1/submit")}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
     body: bytes,
@@ -1992,7 +1997,7 @@ function vouchLine(certPayload, email) {
 // record the daemon validates against — link straight to it.
 function anchorLine(iss) {
   if (!iss) return "";
-  const href = `${CONFIG.daemon}/v1/object?path=${encodeURIComponent("/sys/dnssec/")}&id=${encodeURIComponent(iss)}`;
+  const href = `${CONFIG.daemon}${withRepo(`/v1/object?path=${encodeURIComponent("/sys/dnssec/")}&id=${encodeURIComponent(iss)}`)}`;
   return `<div class="tiny muted">${esc(iss)}'s certifying key is anchored in DNS — <a href="${esc(href)}" target="_blank" rel="noopener" class="rlink">DNSSEC proof ↗</a></div>`;
 }
 
@@ -2080,7 +2085,7 @@ async function renderReceipt(item, body) {
   // -- Record: what and where, plus the proof itself. Honesty note: the daemon
   // proves inclusion against the CURRENT head state root (sboq Block/
   // State-Root), not the block that first confirmed the object (view.block).
-  const proofHref = `${CONFIG.daemon}/v1/object?path=${encodeURIComponent(item.path)}&id=${encodeURIComponent(item.id)}&proof=1`;
+  const proofHref = `${CONFIG.daemon}${withRepo(`/v1/object?path=${encodeURIComponent(item.path)}&id=${encodeURIComponent(item.id)}&proof=1`)}`;
   const record =
     `<div class="mono tiny" style="word-break:break-all">${esc(item.path + item.id)}</div>` +
     `<div class="tiny muted">${esc(view.content_schema || "?")} · written ${esc(item.ts ? new Date(item.ts).toLocaleString() : rDate(null))}</div>` +

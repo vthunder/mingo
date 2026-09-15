@@ -6,6 +6,10 @@ socket_path = "/data/daemon.sock"
 pid_file = "/data/daemon.pid"
 repos_dir = "/data/repos"
 repos_index = "/data/repos.json"
+# The node follows several databases (mingo 506, browserid-pay 530). Requests
+# that omit ?repo= target this one — mingo's — so older clients keep working;
+# mingo-web itself now passes repo= explicitly. Env override: SBO_DEFAULT_REPO.
+default_repo = "sbo+raw://avail:turing:506/"
 
 [light_client]
 network = "turing"
