@@ -521,9 +521,10 @@ async function signIn(opts) {
     renderAuth();
     route(); // flip "Sign in to post" → Join / New post
     toast(`Signed in as ${session.email}`);
-    // A handle user on a browser that has never signed the handle in: offer
-    // to do it now, so the certs exist before anything needs them.
-    if (sess.handle && !handleReadyHere(email)) offerContinueAsHandle(email);
+    // A handle user on a browser that has never signed the handle in gets
+    // no prompt here (Dan, 2026-09-15): the handle was linked at claim time,
+    // and this browser signs it in lazily inside the first action that needs
+    // it (ensureSigningReady). Settings > Your username > Save is the repair.
   } catch (e) {
     if (e && e.error === "issuer_not_signed_in") return explainHandleSignIn(e.identity);
     toast("Sign-in failed: " + e.message);
@@ -561,32 +562,6 @@ async function signInAsHandle(handleEmail) {
   if (assertion) localStorage.setItem("mingo_handle_ready", handleEmail);
   return !!assertion;
 }
-function handleReadyHere(handleEmail) {
-  return localStorage.getItem("mingo_handle_ready") === handleEmail;
-}
-// After a parent sign-in on a browser that has never signed the handle in:
-// one click to continue as the handle (a wallet window needs a gesture, and
-// the sign-in click was spent on the parent).
-function offerContinueAsHandle(handleEmail) {
-  return new Promise((resolve) => {
-    const overlay = el(`<div class="modal-overlay"><div class="modal card">
-      <div class="h2">Save your mingo handle to browserid</div>
-      <p class="muted" style="margin-top:8px">browserid will link <strong>${esc(handleEmail)}</strong> to
-        your account so it works on every device, and sign it in on this browser.</p>
-      <div class="row-between" style="margin-top:12px">
-        <button id="ch-later">Later</button>
-        <button class="primary" id="ch-go">Save</button>
-      </div></div></div>`);
-    document.body.appendChild(overlay);
-    overlay.querySelector("#ch-later").onclick = () => { overlay.remove(); resolve(false); };
-    overlay.querySelector("#ch-go").onclick = async () => {
-      const p = signInAsHandle(handleEmail); // open the wallet inside the gesture
-      overlay.remove();
-      try { resolve(await p); } catch (e) { toast("Could not sign in as " + handleEmail + ": " + e.message); resolve(false); }
-    };
-  });
-}
-
 // Lazy signing grant. mingo signs objects through a first-party signer popup
 // (ensureSigner → /sign), which needs the identity provisioned + the origin
 // granted SBO-signing — done here via the broker dialog, once, on first use.
