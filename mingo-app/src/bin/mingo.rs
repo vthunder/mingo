@@ -270,6 +270,10 @@ enum Commands {
         repo: String,
         #[arg(long, default_value = "~/secure-backup/mingo-sys.key")]
         sys_key_file: String,
+        /// Delete an existing community's descriptor and policy first, then
+        /// write it again. Only for a community with nothing in it.
+        #[arg(long)]
+        replace: bool,
         /// Actually submit (default is a dry-run print).
         #[arg(long)]
         execute: bool,
@@ -604,9 +608,9 @@ fn main() -> Result<()> {
                 execute,
             })?;
         }
-        Commands::CreateCommunity { id, name, description, issuer, spaces, attested, daemon, repo, sys_key_file, execute } => {
+        Commands::CreateCommunity { id, name, description, issuer, spaces, attested, daemon, repo, sys_key_file, replace, execute } => {
             mingo_app::create_community::run(&mingo_app::create_community::CreateCommunityArgs {
-                id, name, description, issuer, spaces, open: !attested, daemon, repo, sys_key_file, execute,
+                id, name, description, issuer, spaces, open: !attested, daemon, repo, sys_key_file, replace, execute,
             })?;
         }
         Commands::AddPolicyLayer { layer_file, daemon, repo, sys_key_file, execute } => {
