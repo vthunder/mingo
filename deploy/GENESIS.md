@@ -77,6 +77,28 @@ sbo debug da submit --file dnssec.wire --turbo                # → /sys/dnssec/
 > `mingo_genesis` emit `/sys/dnssec/<domain>` (or the runbook include this step) so a
 > fresh genesis is write-ready out of the box.
 
+## ⚠ Before any regenesis: check who else is on this chain
+
+This is a **shared base chain**. Other repositories keep objects here under a
+root policy this sys key governs, and their grants are **not** in
+`mingo-app/src/genesis.rs` — so a regenesis destroys both their data and their
+policy layer, and neither comes back on its own.
+
+**Before regenesising, check which other repositories follow this chain and
+work through their own runbooks.** Start from the databases this deploy
+follows (`deploy/sbo-daemon/entrypoint.sh`) and from `roles.admin` in the live
+root policy; each dependent repo documents what it needs re-applied.
+
+Re-applying a dependent layer needs **this** repo's sys key: the root policy
+grants `govern` only to the admin key, so a dependent application cannot install
+its own grants. Use `mingo add-policy-layer` with the fragment that repo's
+tooling emits — it merges rather than replaces, which is the only safe shape
+when the root policy is a single shared object.
+
+Note also that this sys key is effectively the **chain's** admin key rather than
+mingo's alone; `roles.admin` carries a human identity too. Guard and back it up
+on that basis.
+
 ## Reproduce / recover
 
 ```

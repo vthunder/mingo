@@ -246,6 +246,30 @@ enum Commands {
     /// DRY-RUN by default (prints current vs proposed admin + a preservation
     /// proof); pass --execute to submit. Dropping the sys key from admin is an
     /// irreversible cutover and additionally requires --i-understand-cutover.
+    /// Merge an application's grants and restrictions INTO the live root policy.
+    ///
+    /// This is a shared base chain: more than one application may keep objects
+    /// on it, and the root policy is a single object, so an application's needs
+    /// must be ADDED rather than written over. Only the chain admin key can
+    /// perform the edit.
+    ///
+    /// Append-only and idempotent: entries already present are skipped. DRY-RUN
+    /// by default; pass --execute to submit.
+    AddPolicyLayer {
+        /// JSON `{ "grants": [...], "restrictions": [...] }`.
+        #[arg(long)]
+        layer_file: String,
+        #[arg(long, default_value = "https://da.sandmill.org")]
+        daemon: String,
+        /// Repo selector (the daemon follows several databases).
+        #[arg(long, default_value = "sbo+raw://avail:turing:506/")]
+        repo: String,
+        #[arg(long, default_value = "~/secure-backup/mingo-sys.key")]
+        sys_key_file: String,
+        /// Actually submit (default is a dry-run print).
+        #[arg(long)]
+        execute: bool,
+    },
     SetRootAdmin {
         /// FULL admin member list (repeatable). Each entry is a key
         /// (`ed25519:<hex>` / `key:<hex>` → `{"key":...}`) or an email/name
@@ -542,6 +566,11 @@ fn main() -> Result<()> {
                 only,
                 keep,
                 execute,
+            })?;
+        }
+        Commands::AddPolicyLayer { layer_file, daemon, repo, sys_key_file, execute } => {
+            mingo_app::add_policy_layer::run(&mingo_app::add_policy_layer::AddPolicyLayerArgs {
+                layer_file, daemon, repo, sys_key_file, execute,
             })?;
         }
         Commands::SetRootAdmin {

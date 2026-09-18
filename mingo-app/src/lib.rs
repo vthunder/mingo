@@ -13,6 +13,7 @@
 //! - [`seed`] — the demo-corpus seeder behind `mingo seed` (personas, posts,
 //!   vouches — a lived-in starting state for a fresh deployment).
 
+pub mod add_policy_layer;
 pub mod appoint;
 pub mod community;
 pub mod device_login;
