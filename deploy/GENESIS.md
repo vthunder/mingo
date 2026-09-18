@@ -1,4 +1,23 @@
-# Mingo genesis record — regenesis v5 (2026-07-17)
+# Mingo genesis record — regenesis v6 (2026-09-18)
+
+**v6 canonical identity:** `avail:turing:506:3899192:sha256:fb64dc3b5f869041db99546f93cf777671a6f473856e77b6676146590902f652`
+(sys, domain and checkpointer keys UNCHANGED from v5 — admin identity and the
+daemon's `[checkpoint]` key still work. TurboDA submission_id
+`b2554fe5-5d04-4370-a2ec-aacdaa226707`, block hash
+`0x2f1b78b5e6fa98f5b48f466aa9b643c4eb4231031184261d23f51d73a14aac54`.)
+
+## v6 DNS record (`_sbo.mingo.place`) — to update
+
+```
+_sbo.mingo.place.  IN  TXT  "v=sbo1 repo=sbo+raw://avail:turing:506@3899192/ genesis=sha256:fb64dc3b5f869041db99546f93cf777671a6f473856e77b6676146590902f652 node=https://da.sandmill.org"
+```
+
+v6 also **retired the second database** that this node used to follow; its
+seeding block and state are gone.
+
+---
+
+# Historical — regenesis v5 (2026-07-17)
 
 **History:** v1 2026-06-28 @3545910 (`a3f28de0…`, after the original sys key was lost) → v2 @3567386 (`7c429116…`, added the /sys/checkpoints checkpointer grant + sys-checkpointer name; table below was not updated at the time) → v3 @3619219 (`3c614c5d…`, wipe of the rejected synthetic seed corpus, mingo-4rvr) → v4 @3622378 (`3c614c5d…`, SAME genesis wire re-anchored under the SBO global-(path,id)-uniqueness keying — sbo-qv95; the trie-key change (creator dropped) shifts every computed state root, so the chain is re-established from a fresh anchor on the new daemon) → **v5 @3623864** (`ca27c611…`, onto the policy-delegation model: the hub root policy gains a `govern` grant for admin (sbo P1 — authority to write policy objects, not implied by `*`), and each community policy gains a board-scoped `role:moderator:<id>` **delete** grant on spaces/** plus a reserved sys-key **delete** on the whole community subtree (hub takedown / community-removal); members get create+owner-update and **no govern**, closing the sbo-vos1 policy-capture vector. Requires the sbo P1 daemon (rev `4b28d8e`). Beans mingo-qjkf / sbo-orvt / sbo-vos1).
 

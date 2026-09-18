@@ -26,15 +26,15 @@ fi
 
 # One-shot fresh-genesis reset. On the first boot of an image with a new genesis we
 # wipe /data state unconditionally so the seed below rebuilds from the NEW genesis
-# (B=3623864 — the 2026-07-17 regenesis onto the policy-delegation model: govern-
-# aware root policy + per-community moderator-delete and reserved sys takedown
-# grants; sbo P1 4b28d8e, beans mingo-qjkf / sbo-orvt).
+# (B=3899192 — the 2026-09-18 regenesis. Same sys, domain and checkpointer keys as
+# v5, so admin identity and the daemon's [checkpoint] key are unchanged. This
+# reset also retires the second database that used to be seeded below.).
 # The marker makes this idempotent across later restarts; it also wins any race with
 # the retiring old container (which may rewrite /data during the deploy overlap). To
 # re-run a reset for a future regenesis, bump the marker name to the new block.
-RESET_MARKER=/data/.reset-genesis-3623864
+RESET_MARKER=/data/.reset-genesis-3899192
 if [ ! -f "$RESET_MARKER" ]; then
-  echo "fresh-genesis reset: wiping /data state to rebuild from B=3623864"
+  echo "fresh-genesis reset: wiping /data state to rebuild from B=3899192"
   rm -rf /data/.sbo /data/repos /data/repos.json
   mkdir -p /data/repos
   touch "$RESET_MARKER"
@@ -44,7 +44,7 @@ fi
 # $HOME/.sbo (now /data/.sbo, persistent). If it's missing but a repo head was
 # carried over in repos.json, the head sits past genesis while state is empty —
 # reads return nothing forever. Drop repos.json so the seed below re-registers
-# at head=3623863 and sync rebuilds state from Avail.
+# at head=3899191 and sync rebuilds state from Avail.
 STATE_DIR=/data/.sbo/repos/avail_turing_506/state
 if [ -f /data/repos.json ] && [ ! -d "$STATE_DIR" ]; then
   echo "state index missing at $STATE_DIR — resetting repo head to backfill from genesis"
@@ -52,10 +52,10 @@ if [ -f /data/repos.json ] && [ ! -d "$STATE_DIR" ]; then
 fi
 
 # Seed the repo registration on first boot. head is set to one below the genesis
-# block (3623863), so RPC-only sync (starting at head+1=3623864=B) replays the new
+# block (3899191), so RPC-only sync (starting at head+1=3899192=B) replays the new
 # genesis + all later app-506 writes and rebuilds state from Avail. The old
-# (pre-3623864) chain stays below this head and is invisible.
-# The new genesis landed at B=3623864 (sys=ed25519:564aafe4…, domain=ed25519:8ef0381e…,
+# (pre-3899192) chain stays below this head and is invisible.
+# The new genesis landed at B=3899192 (sys=ed25519:564aafe4…, domain=ed25519:8ef0381e…,
 # sys-checkpointer=ed25519:937fc1e8…, broker browserid.me).
 # uri.first_block + expected_genesis make the daemon verify the reconstructed genesis
 # hash at block B (non-fatal; logs "Genesis verified" / "GENESIS VERIFICATION FAILED").
@@ -64,28 +64,16 @@ fi
 # (anchor-independent, so it stays f86a7b415defc6cf across regenesis).
 if [ ! -f /data/repos.json ]; then
   cat > /data/repos.json <<'JSON'
-[{"id":"f86a7b415defc6cf","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":506,"first_block":3623864,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:506/","path":"/data/repos/mingo","head":3623863,"created_at":1782336171,"expected_genesis":"sha256:ca27c61143c18786fc9ffee4fee25b458e7881390601e2ab55e0d9df9dc585bc"}]
+[{"id":"f86a7b415defc6cf","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":506,"first_block":3899192,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:506/","path":"/data/repos/mingo","head":3899191,"created_at":1782336171,"expected_genesis":"sha256:fb64dc3b5f869041db99546f93cf777671a6f473856e77b6676146590902f652"}]
 JSON
-  echo "seeded /data/repos.json (head=3623863, will backfill from new genesis B=3623864)"
+  echo "seeded /data/repos.json (head=3899191, will backfill from new genesis B=3899192)"
 fi
 
-# Also follow a second database (Avail turing app 530). The daemon syncs every
-# app id in repos.json, so this node indexes both; that app's writers submit to
-# TurboDA directly (the [turbo_da] section is single-app).
-#
-# Idempotent: appended once, keyed on the repo id (sha256 of the bare URI). A
-# regenesis of that app bumps first_block/head/expected_genesis here AND needs
-# its state dropped (rm -rf /data/.sbo/repos/avail_turing_530) — the
-# fresh-genesis reset above deliberately does not touch it. The repository that
-# owns this database keeps its own runbook; consult it before changing anything
-# here. This block is retired when that app is.
-SECOND_REPO_ID=ec2dbcf61eea9945
-if [ -f /data/repos.json ] && ! grep -q "\"id\":\"$SECOND_REPO_ID\"" /data/repos.json; then
-  mkdir -p /data/repos/dsp
-  SECOND_ENTRY='{"id":"ec2dbcf61eea9945","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":530,"first_block":3885219,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:530/","path":"/data/repos/dsp","head":3885218,"created_at":1789483842,"expected_genesis":"sha256:6e36ddae51fcf93557d6be930cda3849ededbdf226241af08f6f7f07e7e86d51"}'
-  # repos.json is a one-line JSON array: splice the entry in before the closing bracket.
-  sed -i "s|]\s*$|,$SECOND_ENTRY]|" /data/repos.json
-  echo "added second repo (app 530, head=3885218) to /data/repos.json"
-fi
+# This node follows one database. A second one (Avail turing app 530) was
+# seeded here until 2026-09-18 and has been retired; its state was removed from
+# /data/repos.json and /data/repos/. If another database is added later, the
+# repository that owns it keeps its own runbook — and note that ANY change in
+# this directory redeploys and restarts the daemon, which re-processes from the
+# minimum head across every repo it follows.
 
 exec sbo-daemon --config /app/config.toml start --foreground
