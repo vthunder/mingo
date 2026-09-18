@@ -41,7 +41,7 @@ fi
 # To re-run a reset — for a regenesis, or to recover from that race — bump the marker
 # name. Check `cat /data/repos.json` after any deploy that was meant to change which
 # repos are followed.
-RESET_MARKER=/data/.reset-genesis-3899192-r2
+RESET_MARKER=/data/.reset-genesis-3899192-r3
 if [ ! -f "$RESET_MARKER" ]; then
   echo "fresh-genesis reset: wiping /data state to rebuild from B=3899192"
   rm -rf /data/.sbo /data/repos /data/repos.json
