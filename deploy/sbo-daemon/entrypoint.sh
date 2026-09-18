@@ -69,21 +69,23 @@ JSON
   echo "seeded /data/repos.json (head=3623863, will backfill from new genesis B=3623864)"
 fi
 
-# Also follow the browserid-pay database (Avail turing app 530, genesis
-# B=3885219 on 2026-09-15 — see vthunder/browserid-pay deploy/GENESIS.md). The
-# daemon syncs every app id in repos.json, so this node indexes both databases;
-# 530's writers submit to TurboDA directly (the [turbo_da] section is single-app).
+# Also follow a second database (Avail turing app 530). The daemon syncs every
+# app id in repos.json, so this node indexes both; that app's writers submit to
+# TurboDA directly (the [turbo_da] section is single-app).
+#
 # Idempotent: appended once, keyed on the repo id (sha256 of the bare URI). A
-# regenesis of 530 bumps first_block/head/expected_genesis here AND needs the
-# /data/repos/dsp state dropped (rm -rf /data/.sbo/repos/avail_turing_530) — the
-# fresh-genesis reset above deliberately does not touch it.
-DSP_REPO_ID=ec2dbcf61eea9945
-if [ -f /data/repos.json ] && ! grep -q "\"id\":\"$DSP_REPO_ID\"" /data/repos.json; then
+# regenesis of that app bumps first_block/head/expected_genesis here AND needs
+# its state dropped (rm -rf /data/.sbo/repos/avail_turing_530) — the
+# fresh-genesis reset above deliberately does not touch it. The repository that
+# owns this database keeps its own runbook; consult it before changing anything
+# here. This block is retired when that app is.
+SECOND_REPO_ID=ec2dbcf61eea9945
+if [ -f /data/repos.json ] && ! grep -q "\"id\":\"$SECOND_REPO_ID\"" /data/repos.json; then
   mkdir -p /data/repos/dsp
-  DSP_ENTRY='{"id":"ec2dbcf61eea9945","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":530,"first_block":3885219,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:530/","path":"/data/repos/dsp","head":3885218,"created_at":1789483842,"expected_genesis":"sha256:6e36ddae51fcf93557d6be930cda3849ededbdf226241af08f6f7f07e7e86d51"}'
+  SECOND_ENTRY='{"id":"ec2dbcf61eea9945","uri":{"chain":{"namespace":"avail","reference":"turing"},"app_id":530,"first_block":3885219,"path":null,"query":{"genesis":null,"as_of":null,"content_hash":null,"content_type":null,"content_schema":null,"encoding":null,"size":null,"extra":{}}},"display_uri":"sbo+raw://avail:turing:530/","path":"/data/repos/dsp","head":3885218,"created_at":1789483842,"expected_genesis":"sha256:6e36ddae51fcf93557d6be930cda3849ededbdf226241af08f6f7f07e7e86d51"}'
   # repos.json is a one-line JSON array: splice the entry in before the closing bracket.
-  sed -i "s|]\s*$|,$DSP_ENTRY]|" /data/repos.json
-  echo "added browserid-pay repo (app 530, head=3885218) to /data/repos.json"
+  sed -i "s|]\s*$|,$SECOND_ENTRY]|" /data/repos.json
+  echo "added second repo (app 530, head=3885218) to /data/repos.json"
 fi
 
 exec sbo-daemon --config /app/config.toml start --foreground
