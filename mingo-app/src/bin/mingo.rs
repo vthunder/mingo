@@ -239,13 +239,42 @@ enum Commands {
         execute: bool,
     },
 
-    /// Rewrite ONLY `roles.admin` in the LIVE root policy (/sys/policies/ id
-    /// root) to migrate Mingo admin from the baked sys key to an external email
-    /// identity. Fetches the current root policy, preserves every other field
-    /// exactly, and re-posts a KEY-ROOTED policy.v2 update signed by the sys key.
-    /// DRY-RUN by default (prints current vs proposed admin + a preservation
-    /// proof); pass --execute to submit. Dropping the sys key from admin is an
-    /// irreversible cutover and additionally requires --i-understand-cutover.
+    /// Create a community and its spaces on the LIVE chain.
+    ///
+    /// `genesis` seeds the starter communities and nothing else could create
+    /// one afterwards, so a new community used to mean a regenesis. This writes
+    /// exactly what genesis writes — descriptor, the community's own policy,
+    /// and a collection config per space — as ordinary governed writes signed
+    /// by the admin key. DRY-RUN by default; pass --execute.
+    CreateCommunity {
+        /// Community id — becomes the path segment, e.g. `agents`.
+        #[arg(long)]
+        id: String,
+        /// Display name.
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        /// Attestation issuer for membership and bans, e.g. `agents@mingo.place`.
+        #[arg(long)]
+        issuer: String,
+        /// Space to create; repeat for several. Order is preserved.
+        #[arg(long = "space")]
+        spaces: Vec<String>,
+        /// Issuer-attested membership instead of open self-issued membership.
+        #[arg(long)]
+        attested: bool,
+        #[arg(long, default_value = "https://da.sandmill.org")]
+        daemon: String,
+        #[arg(long, default_value = "sbo+raw://avail:turing:506/")]
+        repo: String,
+        #[arg(long, default_value = "~/secure-backup/mingo-sys.key")]
+        sys_key_file: String,
+        /// Actually submit (default is a dry-run print).
+        #[arg(long)]
+        execute: bool,
+    },
+
     /// Merge an application's grants and restrictions INTO the live root policy.
     ///
     /// This is a shared base chain: more than one application may keep objects
@@ -270,6 +299,13 @@ enum Commands {
         #[arg(long)]
         execute: bool,
     },
+    /// Rewrite ONLY `roles.admin` in the LIVE root policy (/sys/policies/ id
+    /// root) to migrate Mingo admin from the baked sys key to an external email
+    /// identity. Fetches the current root policy, preserves every other field
+    /// exactly, and re-posts a KEY-ROOTED policy.v2 update signed by the sys key.
+    /// DRY-RUN by default (prints current vs proposed admin + a preservation
+    /// proof); pass --execute to submit. Dropping the sys key from admin is an
+    /// irreversible cutover and additionally requires --i-understand-cutover.
     SetRootAdmin {
         /// FULL admin member list (repeatable). Each entry is a key
         /// (`ed25519:<hex>` / `key:<hex>` → `{"key":...}`) or an email/name
@@ -566,6 +602,11 @@ fn main() -> Result<()> {
                 only,
                 keep,
                 execute,
+            })?;
+        }
+        Commands::CreateCommunity { id, name, description, issuer, spaces, attested, daemon, repo, sys_key_file, execute } => {
+            mingo_app::create_community::run(&mingo_app::create_community::CreateCommunityArgs {
+                id, name, description, issuer, spaces, open: !attested, daemon, repo, sys_key_file, execute,
             })?;
         }
         Commands::AddPolicyLayer { layer_file, daemon, repo, sys_key_file, execute } => {

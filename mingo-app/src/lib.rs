@@ -14,6 +14,7 @@
 //!   vouches — a lived-in starting state for a fresh deployment).
 
 pub mod add_policy_layer;
+pub mod create_community;
 pub mod appoint;
 pub mod community;
 pub mod device_login;
