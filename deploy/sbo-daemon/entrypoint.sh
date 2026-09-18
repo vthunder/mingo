@@ -29,10 +29,19 @@ fi
 # (B=3899192 — the 2026-09-18 regenesis. Same sys, domain and checkpointer keys as
 # v5, so admin identity and the daemon's [checkpoint] key are unchanged. This
 # reset also retires the second database that used to be seeded below.).
-# The marker makes this idempotent across later restarts; it also wins any race with
-# the retiring old container (which may rewrite /data during the deploy overlap). To
-# re-run a reset for a future regenesis, bump the marker name to the new block.
-RESET_MARKER=/data/.reset-genesis-3899192
+# The marker makes this idempotent across later restarts. It does NOT reliably win
+# the race with the retiring old container: on 2026-09-18 the first v6 deploy failed
+# dokku's container check AFTER wiping /data, and the old container — still running
+# the previous image — re-seeded the retired second database into repos.json. The
+# successful rerun then found the marker and repos.json present, skipped both steps,
+# and inherited a repos.json registering a repo whose head was ~8k blocks back. The
+# sync loop starts from the MINIMUM head across registered repos, so nothing new
+# confirmed on either database until the marker was bumped again (`-r2`).
+#
+# To re-run a reset — for a regenesis, or to recover from that race — bump the marker
+# name. Check `cat /data/repos.json` after any deploy that was meant to change which
+# repos are followed.
+RESET_MARKER=/data/.reset-genesis-3899192-r2
 if [ ! -f "$RESET_MARKER" ]; then
   echo "fresh-genesis reset: wiping /data state to rebuild from B=3899192"
   rm -rf /data/.sbo /data/repos /data/repos.json
