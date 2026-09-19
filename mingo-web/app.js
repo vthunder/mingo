@@ -128,10 +128,23 @@ async function spacesOf(commId) {
   return names;
 }
 
-/** The space a route means: the one asked for if the community has it, else its first. */
+/**
+ * The space a route means: the one asked for, else the last one you were in
+ * for this community, else its first. Routes carry the space in the hash, so
+ * `asked` wins whenever a link was explicit about it.
+ */
 async function spaceFor(commId, asked) {
   const names = await spacesOf(commId);
-  return asked && names.includes(asked) ? asked : names[0];
+  if (asked && names.includes(asked)) return asked;
+  const last = lastSpace(commId);
+  return last && names.includes(last) ? last : names[0];
+}
+// Per-tab, best-effort: a nicety, never something correctness leans on.
+function lastSpace(commId) {
+  try { return sessionStorage.getItem(`mingo.space.${commId}`); } catch { return null; }
+}
+function rememberSpace(commId, space) {
+  try { sessionStorage.setItem(`mingo.space.${commId}`, space); } catch { /* private mode */ }
 }
 
 async function getSpaceItems(commId, space) {
@@ -148,6 +161,7 @@ async function getSpaceItems(commId, space) {
     // "pending…" card and can't reappear from that stale pending overlay entry
     // (mingo-3go6). Once the delete confirms the object is gone from head anyway.
     if (deletedUris.has(it.uri)) continue;
+    it.space = space;
     if (o.content_schema === "post.v1") posts.push(it);
     else comments.push(it);
   }
@@ -1518,7 +1532,7 @@ async function viewHub() {
   rows.sort((a, b) => (votes.get(b.uri) || 0) - (votes.get(a.uri) || 0) || (b.hlc || "").localeCompare(a.hlc || ""));
   $("#feed").outerHTML = `<div id="feed">${rows.length ? rows.map((p) => feedRow(p, votes)).join("") : `<div class="card muted">No posts yet. Sign in and create the first one.</div>`}</div>`;
   wireVoteButtons();
-  wireReceiptButtons();
+  wireReceiptButtons(); wireRelatedChips();
   wireEditButtons();
   wireCardMenus(); wireDeleteButtons();
   startLivePoll(() => pollFeed("hub"));
@@ -1529,16 +1543,118 @@ async function viewHub() {
 // agreement on the same chain, and the indexer can say whether the author was
 // actually a party to it. There is no SBO URI renderer yet (mingo-xn6z), so
 // the chip links at the daemon object for now — a raw but verifiable target.
+// Chips open a details popup rather than linking at raw daemon JSON. Registered
+// per render so the click handler can find the item the chip belongs to.
+const relatedItems = new Map();
 function relatedChips(item) {
   if (!item.related?.length) return "";
-  const chip = (r) => {
+  relatedItems.set(item.uri, item);
+  const chip = (r, i) => {
     const label = r.rel === "agreement"
-      ? `agreement ${(r.ref || "").split("/").filter(Boolean).pop()}`
+      ? (r.ref || "").split("/").filter(Boolean).pop()
       : `${r.rel}: ${r.ref}`;
-    const href = `${CONFIG.daemon}/v1/list?${REPO_PARAM}&prefix=${encodeURIComponent(r.ref)}`;
-    return `<a class="rel-chip" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(r.ref)}">${esc(label)}</a>`;
+    return `<button class="link rel-chip" data-related="${esc(item.uri)}|${i}" title="${esc(r.ref)}">${esc(label)}</button>`;
   };
-  return `<div class="rel-chips">${item.related.map(chip).join("")}</div>`;
+  return `<div class="rel-chips"><span class="rel-label">Related:</span>${item.related.map(chip).join("")}</div>`;
+}
+
+function wireRelatedChips() {
+  document.querySelectorAll("[data-related]").forEach((b) => {
+    b.onclick = () => {
+      const [uri, i] = b.getAttribute("data-related").split("|");
+      const item = relatedItems.get(uri);
+      const rel = item?.related?.[Number(i)];
+      if (rel) openRelated(item, rel);
+    };
+  });
+}
+
+/**
+ * What an agreement looks like from the forum's side. Everything here is read
+ * from the SAME chain the forum lives on — parties and stage are public even
+ * when the terms are sealed (`mode: "commitment"`), so the popup can say who
+ * was involved and what happened without being able to read what was agreed.
+ * Deliberately NOT sourced from an indexer: the party check is the whole point
+ * of the chip, and it should not rest on someone else's say-so.
+ */
+async function loadAgreement(ref) {
+  const objs = await listPrefix(ref);
+  const by = (id) => objs.find((o) => o.id === id)?.value ?? null;
+  const proposal = by("proposal");
+  const evidence = objs.filter((o) => o.content_schema === "agreement.evidence.v1");
+  const kinds = new Set(evidence.map((o) => o.value?.kind));
+  // Coarse, and only ever claims what is actually on chain. Settlement happens
+  // at the custodian and leaves no object here, so an acknowledged delivery is
+  // as far as the chain can honestly take us.
+  const stage = !proposal ? "unknown"
+    : kinds.has("acknowledgement") ? "delivered and acknowledged"
+    : kinds.has("delivery") ? "delivered"
+    : by("lock") ? "funded"
+    : by("acceptance") ? "accepted"
+    : "proposed";
+  const parties = proposal?.parties ? Object.values(proposal.parties).filter(Boolean) : [];
+  return {
+    id: ref.split("/").filter(Boolean).pop(),
+    proposal, parties, stage,
+    roles: proposal?.roles ?? null,
+    sealed: proposal?.mode === "commitment",
+    adjudicator: proposal?.adjudicator ?? null,
+    block: objs.find((o) => o.id === "proposal")?.block ?? null,
+    evidenceCount: evidence.length,
+  };
+}
+
+function openRelated(item, rel) {
+  const overlay = el(`<div class="modal-overlay">
+    <div class="modal card">
+      <div class="row-between"><div class="h2" style="margin:0">Related agreement</div>
+        <button class="link" id="rel-close" aria-label="Close">✕</button></div>
+      <div id="rel-body" class="muted" style="margin-top:8px">loading…</div>
+    </div></div>`);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#rel-close").onclick = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  const body = overlay.querySelector("#rel-body");
+  if (rel.rel !== "agreement") {
+    body.innerHTML = `<div>${esc(rel.rel)} → <code>${esc(rel.ref)}</code></div>`;
+    return;
+  }
+  loadAgreement(rel.ref).then((a) => {
+    body.className = "";
+    body.innerHTML = renderAgreement(a, item, rel);
+  }).catch((e) => {
+    body.className = "";
+    body.innerHTML = `<div class="error">couldn't load the agreement: ${esc(e.message)}</div>`;
+  });
+}
+
+function renderAgreement(a, item, rel) {
+  const author = item.authorRef;
+  // THE question the chip exists to answer: is the person making this claim
+  // actually named in the agreement they are pointing at? Anyone can link to
+  // any agreement; only the parties can claim it as their own track record.
+  const isParty = !!author && a.parties.includes(author);
+  const role = a.roles
+    ? Object.entries(a.roles).find(([, who]) => who === author)?.[0] ?? null
+    : null;
+  const verdict = !a.proposal
+    ? `<div class="rel-warn">No proposal found at <code>${esc(rel.ref)}</code> — nothing backs this link.</div>`
+    : isParty
+      ? `<div class="rel-ok">✓ ${esc(shortAuthor(author))} is a party to this agreement${role ? ` (the ${esc(role)})` : ""}.</div>`
+      : `<div class="rel-warn">⚠ ${esc(shortAuthor(author))} is <strong>not</strong> a party to this agreement — treat this as a reference, not a track record.</div>`;
+  const row = (k, v) => `<div class="rel-row"><span class="rel-k">${esc(k)}</span><span>${v}</span></div>`;
+  const href = `${CONFIG.daemon}/v1/list?${REPO_PARAM}&prefix=${encodeURIComponent(rel.ref)}`;
+  return `${verdict}
+    <div class="rel-detail">
+      ${row("id", `<code>${esc(a.id)}</code>`)}
+      ${row("stage", esc(a.stage))}
+      ${a.parties.map((p, i) => row(i === 0 ? "parties" : "", esc(shortAuthor(p)))).join("")}
+      ${a.adjudicator ? row("adjudicator", esc(shortAuthor(a.adjudicator))) : ""}
+      ${a.block != null ? row("proposed at", `block ${esc(String(a.block))}`) : ""}
+      ${row("evidence", `${a.evidenceCount} object${a.evidenceCount === 1 ? "" : "s"} on chain`)}
+    </div>
+    ${a.sealed ? `<div class="muted rel-note">The terms are sealed — only the parties and their adjudicator can read what was agreed. Who took part, and what happened, are public.</div>` : ""}
+    <div style="margin-top:10px"><a class="muted" href="${esc(href)}" target="_blank" rel="noopener">view the raw objects →</a></div>`;
 }
 
 function feedRow(p, votes, showComm = true) {
@@ -1599,6 +1715,7 @@ async function viewCommunity(commId, askedSpace) {
   if (!c) { main.innerHTML = `<div class="card">Unknown community.</div>`; return; }
   const spaces = await spacesOf(c.id);
   const space = await spaceFor(c.id, askedSpace);
+  rememberSpace(c.id, space);
   const member = session.email ? await hasMembership(c.id) : false;
   currentMods = await moderatedBoards();
   const actionBtn = !session.email
@@ -1641,7 +1758,7 @@ async function viewCommunity(commId, askedSpace) {
   posts.sort((a, b) => (votes.get(b.uri) || 0) - (votes.get(a.uri) || 0) || (b.hlc || "").localeCompare(a.hlc || ""));
   $("#posts").outerHTML = `<div id="posts">${posts.length ? posts.map((p) => feedRow({ ...p, comm: c.id, space }, votes, false)).join("") : `<div class="card muted">No posts in ${esc(space)} yet.</div>`}</div>`;
   wireVoteButtons();
-  wireReceiptButtons();
+  wireReceiptButtons(); wireRelatedChips();
   wireEditButtons();
   wireCardMenus(); wireDeleteButtons();
   startLivePoll(() => pollFeed("community", c.id, space));
@@ -1682,6 +1799,7 @@ async function viewThread(commId, postId, askedSpace) {
   const main = $("#main");
   main.innerHTML = `<div id="thread" class="muted">loading…</div>`;
   const space = await spaceFor(commId, askedSpace);
+  rememberSpace(commId, space);
   const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, space), getVoteCounts()]);
   currentMods = await moderatedBoards(); // enables mod-delete on the post + its comments
   const post = posts.find((p) => p.id === postId);
@@ -1690,7 +1808,7 @@ async function viewThread(commId, postId, askedSpace) {
   // we don't render the orphaned thread at all — the post is the only entry point
   // to it, and the feed already omits the deleted post.
   if (!post) {
-    main.innerHTML = `<a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
+    main.innerHTML = `<a class="muted" href="#/c/${esc(commId)}/s/${esc(space)}">← c/${esc(commId)}</a>
       <div class="card muted">This post was deleted or doesn't exist.</div>`;
     return;
   }
@@ -1698,7 +1816,7 @@ async function viewThread(commId, postId, askedSpace) {
   post.comm = commId;
   const kids = comments.filter((c) => c.parentId === post.id).map((c) => ({ ...c, comm: commId }));
   main.innerHTML = `
-    <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
+    <a class="muted" href="#/c/${esc(commId)}/s/${esc(space)}">← c/${esc(commId)}</a>
     <div class="card feed-row thread-post">
       <div class="fr-vote"><div class="votes"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}" data-space="${esc(space)}">▲</button><span class="n" data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div></div>
       <div class="post-meta">${authorLink(post.authorRef, post.author, 22)}<span class="fr-time">${timeAgo(post.ts)}</span>${editedTag(post)}</div>
@@ -1733,10 +1851,10 @@ async function viewThread(commId, postId, askedSpace) {
     finally { $("#c-submit").disabled = false; }
   };
   wireVoteButtons();
-  wireReceiptButtons();
+  wireReceiptButtons(); wireRelatedChips();
   wireEditButtons();
   wireCardMenus(); wireDeleteButtons();
-  startLivePoll(() => pollThread(commId, post));
+  startLivePoll(() => pollThread(commId, post, space));
 }
 function commentBox(c, votes) {
   return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${editedTag(c)}${receiptLink(c)}${editLink(c)}${deleteLink(c)}</div><div data-body="${esc(c.uri)}">${esc(c.body)}</div>${relatedChips(c)}</div>`;
@@ -1777,7 +1895,7 @@ async function viewModerate(commId) {
   $("#mod-list").outerHTML = `<div id="mod-list">${
     items.length ? items.map((it) => modRow(it, votes)).join("") : `<div class="card muted">Nothing here yet.</div>`
   }</div>`;
-  wireReceiptButtons();
+  wireReceiptButtons(); wireRelatedChips();
   wireDeleteButtons();
   startLivePoll(() => pollModerate(commId));
 }
@@ -2389,7 +2507,7 @@ function liveAppend(container, items, render) {
     container.appendChild(el(render(it)));
     changed = true;
   }
-  if (changed) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); wireCardMenus(); wireDeleteButtons(); }
+  if (changed) { wireVoteButtons(); wireReceiptButtons(); wireRelatedChips(); wireEditButtons(); wireCardMenus(); wireDeleteButtons(); }
 }
 async function pollFeed(kind, commId, space) {
   const votes = await getVoteCounts();
@@ -2412,8 +2530,13 @@ async function pollFeed(kind, commId, space) {
   }
   liveAppend(container, rows, (p) => feedRow(p, votes, kind === "hub"));
 }
-async function pollThread(commId, post) {
-  const sp = await spaceFor(commId, post.space);
+async function pollThread(commId, post, space) {
+  // The space MUST come from the caller (or the post itself). Resolving it
+  // from an undefined `asked` silently falls back to the community's FIRST
+  // space, and this poller then reconciles the thread against the wrong
+  // collection — liveAppend sees no matching comments and removes the ones
+  // the first render had drawn, so replies appeared and then vanished.
+  const sp = await spaceFor(commId, space ?? post.space);
   const [{ comments }, votes] = await Promise.all([getSpaceItems(commId, sp), getVoteCounts()]);
   liveApplyVotes(votes);
   const container = document.getElementById("comments");
