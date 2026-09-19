@@ -163,6 +163,14 @@ function toItem(o) {
     authorRef: o.owner_ref || o.creator,
     body: o.value?.body ?? o.payload_text,
     parent: o.value?.parent,
+    // The two writers of `comment.v1` disagree on how `parent` is spelled:
+    // this SPA writes the full URI (path+id), the agreements SDK writes the
+    // bare id. The schema never pinned it down, so normalize on READ and
+    // compare bare ids. `parent` itself stays untouched so an edit re-signs
+    // exactly what the object already carried.
+    parentId: parentId(o.value?.parent),
+    // `Related` header links (e.g. {rel:"agreement", ref:"/agreements/<id>/"}).
+    related: Array.isArray(o.related) ? o.related : [],
     block: o.block,
     hlc: o.hlc,
     // Current head object hash — an edit rewrites the same (path,id) with this as
@@ -179,6 +187,12 @@ function toItem(o) {
     // false when served from the daemon's unconfirmed overlay (render pending).
     confirmed: o.confirmed !== false,
   };
+}
+// `/communities/x/spaces/y/c_abc` or `c_abc` → `c_abc`.
+function parentId(p) {
+  if (!p) return null;
+  const i = p.lastIndexOf("/");
+  return i < 0 ? p : p.slice(i + 1);
 }
 function shortAuthor(ref) {
   if (!ref) return "unknown";
@@ -1510,6 +1524,23 @@ async function viewHub() {
   startLivePoll(() => pollFeed("hub"));
 }
 
+// `Related` header links, rendered as chips under a post or comment. Only
+// `agreement` has a meaning here so far: the post is talking about a specific
+// agreement on the same chain, and the indexer can say whether the author was
+// actually a party to it. There is no SBO URI renderer yet (mingo-xn6z), so
+// the chip links at the daemon object for now — a raw but verifiable target.
+function relatedChips(item) {
+  if (!item.related?.length) return "";
+  const chip = (r) => {
+    const label = r.rel === "agreement"
+      ? `agreement ${(r.ref || "").split("/").filter(Boolean).pop()}`
+      : `${r.rel}: ${r.ref}`;
+    const href = `${CONFIG.daemon}/v1/list?${REPO_PARAM}&prefix=${encodeURIComponent(r.ref)}`;
+    return `<a class="rel-chip" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(r.ref)}">${esc(label)}</a>`;
+  };
+  return `<div class="rel-chips">${item.related.map(chip).join("")}</div>`;
+}
+
 function feedRow(p, votes, showComm = true) {
   const pending = p.confirmed === false;
   return `<div class="card feed-row${pending ? " pending" : ""}">
@@ -1517,6 +1548,7 @@ function feedRow(p, votes, showComm = true) {
     <div class="post-meta">${showComm ? boardTag(p.comm) : ""}${authorLink(p.authorRef, p.author)}<span class="fr-time">${timeAgo(p.ts)}</span>${editedTag(p)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
     ${cardMenu(p)}
     <div class="post-title" data-body="${esc(p.uri)}"><a href="#/c/${esc(p.comm)}/s/${esc(p.space || CONFIG.space)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
+    ${relatedChips(p)}
   </div>`;
 }
 
@@ -1664,7 +1696,7 @@ async function viewThread(commId, postId, askedSpace) {
   }
   // Stamp the board id so cardMenu/commentBox can offer moderator delete here.
   post.comm = commId;
-  const kids = comments.filter((c) => c.parent === post.uri).map((c) => ({ ...c, comm: commId }));
+  const kids = comments.filter((c) => c.parentId === post.id).map((c) => ({ ...c, comm: commId }));
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
     <div class="card feed-row thread-post">
@@ -1672,6 +1704,7 @@ async function viewThread(commId, postId, askedSpace) {
       <div class="post-meta">${authorLink(post.authorRef, post.author, 22)}<span class="fr-time">${timeAgo(post.ts)}</span>${editedTag(post)}</div>
       ${cardMenu(post)}
       <div class="post-body" data-body="${esc(post.uri)}">${esc(post.body)}</div>
+      ${relatedChips(post)}
     </div>
     <div class="h2">Comments</div>
     <div class="card"><textarea id="c-body" placeholder="Add a comment…"></textarea>
@@ -1693,7 +1726,7 @@ async function viewThread(commId, postId, askedSpace) {
       for (let i = 0; i < 24; i++) {
         await new Promise((r) => setTimeout(r, 5000));
         const { comments: cs } = await getSpaceItems(commId, space);
-        const mine = cs.filter((c) => c.parent === post.uri);
+        const mine = cs.filter((c) => c.parentId === post.id);
         if (mine.length > before && mine.every((c) => c.confirmed)) { toast("comment confirmed."); return void route(); }
       }
     } catch (e) { toast("comment failed: " + e.message); }
@@ -1706,7 +1739,7 @@ async function viewThread(commId, postId, askedSpace) {
   startLivePoll(() => pollThread(commId, post));
 }
 function commentBox(c, votes) {
-  return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${editedTag(c)}${receiptLink(c)}${editLink(c)}${deleteLink(c)}</div><div data-body="${esc(c.uri)}">${esc(c.body)}</div></div>`;
+  return `<div class="comment"><div class="post-meta">${authorLink(c.authorRef, c.author)}${timeAgo(c.ts)} · ${votes.get(c.uri) || 0} ▲${editedTag(c)}${receiptLink(c)}${editLink(c)}${deleteLink(c)}</div><div data-body="${esc(c.uri)}">${esc(c.body)}</div>${relatedChips(c)}</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2385,7 +2418,7 @@ async function pollThread(commId, post) {
   liveApplyVotes(votes);
   const container = document.getElementById("comments");
   if (!container) return;
-  const kids = comments.filter((c) => c.parent === post.uri).map((c) => ({ ...c, comm: post.comm }));
+  const kids = comments.filter((c) => c.parentId === post.id).map((c) => ({ ...c, comm: post.comm }));
   liveAppend(container, kids, (c) => commentBox(c, votes));
 }
 

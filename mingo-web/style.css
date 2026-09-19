@@ -234,7 +234,7 @@ a { color: inherit; text-decoration: none; }
 .feed-row {
   display: grid; gap: 2px 14px; padding: 13px 16px;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: "vote head menu" "vote body body";
+  grid-template-areas: "vote head menu" "vote body body" "vote rel rel";
   align-items: start;
   transition: border-color .14s, box-shadow .14s, transform .14s;
 }
@@ -244,6 +244,18 @@ a { color: inherit; text-decoration: none; }
 .feed-row .fr-menu { grid-area: menu; }
 .feed-row .post-title, .feed-row .post-body { grid-area: body; }
 .feed-row.thread-post .post-body { margin-top: 6px; }
+.feed-row .rel-chips { grid-area: rel; }
+
+/* `Related` header links (today: the agreement a post is about). Deliberately
+   quiet — the claim is in the post body; the chip is the receipt. */
+.rel-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.rel-chip {
+  display: inline-block; padding: 2px 8px; border: 1px solid var(--line-2);
+  border-radius: 999px; font-size: 12px; color: var(--ink-2);
+  text-decoration: none; white-space: nowrap;
+}
+.rel-chip::before { content: "\2696\FE0E"; margin-right: 5px; opacity: .7; }
+.rel-chip:hover { border-color: var(--ink-2); color: var(--ink); }
 
 /* vote rail — a compact stacked control aligned to the header row's top */
 .votes {
