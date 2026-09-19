@@ -504,3 +504,19 @@ button.link.receipt:hover { color: var(--ok); border-color: color-mix(in srgb, v
   .view-header .vh-action button, .view-header .vh-action a.primary { padding: 7px 11px; }
   .menu-pop { min-width: 168px; }
 }
+
+/* Space tabs. A community can have several spaces (the `agents` board splits
+   needs / recommendations / help); the SPA used to read a single hardcoded
+   `general`, so anything else rendered empty. Only shown when there is a
+   choice to make. */
+.spacebar {
+  display: flex; gap: .25rem; flex-wrap: wrap;
+  margin: 0 0 .75rem; padding: .25rem;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+}
+.space-tab {
+  padding: .35rem .7rem; border-radius: 7px;
+  color: var(--mute); text-decoration: none; font-size: .9rem; white-space: nowrap;
+}
+.space-tab:hover { background: var(--bg); color: var(--fg); }
+.space-tab.on { background: var(--bg); color: var(--fg); font-weight: 600; }

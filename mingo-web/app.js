@@ -101,6 +101,39 @@ async function getCommunities() {
     .filter((o) => o.content_schema === "community.v1" && o.id === "community")
     .map((o) => ({ id: o.path.split("/").filter(Boolean)[1], ...o.value }));
 }
+// Spaces a community actually has, read from the `collection.v1` `_config`
+// objects genesis (or `mingo create-community`) writes per space. The SPA used
+// to assume a single hardcoded `general`, so a community with any other layout
+// rendered as empty — which is what the `agents` board did, with three spaces
+// and no `general` (browserid-pay-mrf3).
+//
+// Falls back to `[CONFIG.space]` so a community whose configs are missing, or
+// still unconfirmed, keeps working exactly as before.
+const _spaces = new Map();
+async function spacesOf(commId) {
+  if (_spaces.has(commId)) return _spaces.get(commId);
+  let names = [];
+  try {
+    const objs = await listPrefix(`/communities/${commId}/spaces/`);
+    names = [...new Set(objs
+      .filter((o) => o.id === "_config" && o.content_schema === "collection.v1")
+      .map((o) => o.path.split("/").filter(Boolean)[3])
+      .filter(Boolean))];
+  } catch { /* fall through to the default */ }
+  if (!names.length) names = [CONFIG.space];
+  // `general` first when present, then alphabetical: a stable order, so the
+  // default space does not move about as configs confirm.
+  names.sort((a, b) => (a === CONFIG.space ? -1 : b === CONFIG.space ? 1 : a.localeCompare(b)));
+  _spaces.set(commId, names);
+  return names;
+}
+
+/** The space a route means: the one asked for if the community has it, else its first. */
+async function spaceFor(commId, asked) {
+  const names = await spacesOf(commId);
+  return asked && names.includes(asked) ? asked : names[0];
+}
+
 async function getSpaceItems(commId, space) {
   const objs = await listPrefix(`/communities/${commId}/spaces/${space}/`);
   const posts = [], comments = [];
@@ -1461,8 +1494,12 @@ async function viewHub() {
   currentMods = await moderatedBoards(); // so mod-delete shows on moderated boards in the feed
   const rows = [];
   for (const c of comms) {
-    const { posts } = await getSpaceItems(c.id, CONFIG.space);
-    for (const p of posts) rows.push({ ...p, comm: c.id });
+    // Every space, not just the default: the hub is the whole site's feed, and
+    // a community whose spaces are named anything else used to vanish from it.
+    for (const space of await spacesOf(c.id)) {
+      const { posts } = await getSpaceItems(c.id, space);
+      for (const p of posts) rows.push({ ...p, comm: c.id, space });
+    }
   }
   rows.sort((a, b) => (votes.get(b.uri) || 0) - (votes.get(a.uri) || 0) || (b.hlc || "").localeCompare(a.hlc || ""));
   $("#feed").outerHTML = `<div id="feed">${rows.length ? rows.map((p) => feedRow(p, votes)).join("") : `<div class="card muted">No posts yet. Sign in and create the first one.</div>`}</div>`;
@@ -1476,10 +1513,10 @@ async function viewHub() {
 function feedRow(p, votes, showComm = true) {
   const pending = p.confirmed === false;
   return `<div class="card feed-row${pending ? " pending" : ""}">
-    <div class="fr-vote"><div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div></div>
+    <div class="fr-vote"><div class="votes"><button class="link up" data-vote="${esc(p.comm)}|${esc(p.uri)}" data-space="${esc(p.space || CONFIG.space)}">▲</button><span class="n" data-count="${esc(p.uri)}">${votes.get(p.uri) || 0}</span></div></div>
     <div class="post-meta">${showComm ? boardTag(p.comm) : ""}${authorLink(p.authorRef, p.author)}<span class="fr-time">${timeAgo(p.ts)}</span>${editedTag(p)}${pending ? ` · <span class="muted">pending…</span>` : ""}</div>
     ${cardMenu(p)}
-    <div class="post-title" data-body="${esc(p.uri)}"><a href="#/c/${esc(p.comm)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
+    <div class="post-title" data-body="${esc(p.uri)}"><a href="#/c/${esc(p.comm)}/s/${esc(p.space || CONFIG.space)}/p/${esc(p.id)}">${esc((p.body || "").slice(0, 120))}</a></div>
   </div>`;
 }
 
@@ -1523,11 +1560,13 @@ function wireCardMenus() {
   });
 }
 
-async function viewCommunity(commId) {
+async function viewCommunity(commId, askedSpace) {
   const main = $("#main");
   const comms = window.__comms || (await getCommunities());
   const c = comms.find((x) => x.id === commId);
   if (!c) { main.innerHTML = `<div class="card">Unknown community.</div>`; return; }
+  const spaces = await spacesOf(c.id);
+  const space = await spaceFor(c.id, askedSpace);
   const member = session.email ? await hasMembership(c.id) : false;
   currentMods = await moderatedBoards();
   const actionBtn = !session.email
@@ -1548,9 +1587,11 @@ async function viewCommunity(commId) {
       </div>
       <div class="vh-action">${actionBtn}</div>
     </div>
+    ${spaces.length > 1 ? `<div class="spacebar">${spaces.map((sp) =>
+      `<a class="space-tab${sp === space ? " on" : ""}" href="#/c/${esc(c.id)}/s/${esc(sp)}">${esc(sp)}</a>`).join("")}</div>` : ""}
     <div id="compose"></div>
     <div id="posts" class="muted">loading…</div>`;
-  if (session.email && member) $("#newpost").onclick = () => showCompose(c.id);
+  if (session.email && member) $("#newpost").onclick = () => showCompose(c.id, space);
   else if (session.email) $("#join").onclick = async (e) => {
     if (!(await ensureCanWrite())) return;
     e.target.disabled = true; e.target.textContent = "Joining…";
@@ -1564,19 +1605,19 @@ async function viewCommunity(commId) {
     } catch (err) { toast("join failed: " + err.message); e.target.disabled = false; e.target.textContent = "Join to post"; }
   };
   else $("#signin2").onclick = signIn;
-  const [{ posts }, votes] = await Promise.all([getSpaceItems(c.id, CONFIG.space), getVoteCounts()]);
+  const [{ posts }, votes] = await Promise.all([getSpaceItems(c.id, space), getVoteCounts()]);
   posts.sort((a, b) => (votes.get(b.uri) || 0) - (votes.get(a.uri) || 0) || (b.hlc || "").localeCompare(a.hlc || ""));
-  $("#posts").outerHTML = `<div id="posts">${posts.length ? posts.map((p) => feedRow({ ...p, comm: c.id }, votes, false)).join("") : `<div class="card muted">No posts yet.</div>`}</div>`;
+  $("#posts").outerHTML = `<div id="posts">${posts.length ? posts.map((p) => feedRow({ ...p, comm: c.id, space }, votes, false)).join("") : `<div class="card muted">No posts in ${esc(space)} yet.</div>`}</div>`;
   wireVoteButtons();
   wireReceiptButtons();
   wireEditButtons();
   wireCardMenus(); wireDeleteButtons();
-  startLivePoll(() => pollFeed("community", c.id));
+  startLivePoll(() => pollFeed("community", c.id, space));
 }
 
-function showCompose(commId) {
+function showCompose(commId, space) {
   const box = $("#compose");
-  box.innerHTML = `<div class="card"><div class="h2">New post in c/${esc(commId)}/${esc(CONFIG.space)}</div>
+  box.innerHTML = `<div class="card"><div class="h2">New post in c/${esc(commId)}/${esc(space)}</div>
     <textarea id="post-body" placeholder="Share something…"></textarea>
     <div class="row-between" style="margin-top:8px"><span class="muted tiny">posts to the DA layer</span>
     <span><button id="post-cancel">Cancel</button> <button class="primary" id="post-submit">Post</button></span></div></div>`;
@@ -1587,7 +1628,7 @@ function showCompose(commId) {
     if (!(await ensureCanWrite())) return;
     $("#post-submit").disabled = true;
     try {
-      const id = await composePost(commId, CONFIG.space, body);
+      const id = await composePost(commId, space, body);
       toast("posted — pending confirmation…");
       box.innerHTML = "";
       // The daemon overlay already serves the post (marked pending) to every
@@ -1597,7 +1638,7 @@ function showCompose(commId) {
       route();
       for (let i = 0; i < 24; i++) {
         await new Promise((r) => setTimeout(r, 5000));
-        const { posts: list } = await getSpaceItems(commId, CONFIG.space);
+        const { posts: list } = await getSpaceItems(commId, space);
         const p = list.find((x) => x.id === id);
         if (p && p.confirmed) { toast("post confirmed on-chain."); return void route(); }
       }
@@ -1605,10 +1646,11 @@ function showCompose(commId) {
   };
 }
 
-async function viewThread(commId, postId) {
+async function viewThread(commId, postId, askedSpace) {
   const main = $("#main");
   main.innerHTML = `<div id="thread" class="muted">loading…</div>`;
-  const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
+  const space = await spaceFor(commId, askedSpace);
+  const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, space), getVoteCounts()]);
   currentMods = await moderatedBoards(); // enables mod-delete on the post + its comments
   const post = posts.find((p) => p.id === postId);
   // A deleted post is gone from head state, so it simply isn't in `posts`. Its
@@ -1626,7 +1668,7 @@ async function viewThread(commId, postId) {
   main.innerHTML = `
     <a class="muted" href="#/c/${esc(commId)}">← c/${esc(commId)}</a>
     <div class="card feed-row thread-post">
-      <div class="fr-vote"><div class="votes"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}">▲</button><span class="n" data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div></div>
+      <div class="fr-vote"><div class="votes"><button class="link up" data-vote="${esc(commId)}|${esc(post.uri)}" data-space="${esc(space)}">▲</button><span class="n" data-count="${esc(post.uri)}">${votes.get(post.uri) || 0}</span></div></div>
       <div class="post-meta">${authorLink(post.authorRef, post.author, 22)}<span class="fr-time">${timeAgo(post.ts)}</span>${editedTag(post)}</div>
       ${cardMenu(post)}
       <div class="post-body" data-body="${esc(post.uri)}">${esc(post.body)}</div>
@@ -1640,7 +1682,7 @@ async function viewThread(commId, postId) {
     if (!(await ensureCanWrite())) return;
     $("#c-submit").disabled = true;
     try {
-      await addComment(commId, CONFIG.space, post.uri, body);
+      await addComment(commId, space, post.uri, body);
       toast("commented — pending confirmation…");
       $("#c-body").value = "";
       // Overlay serves the comment immediately; re-render to show it (pending),
@@ -1650,7 +1692,7 @@ async function viewThread(commId, postId) {
       route();
       for (let i = 0; i < 24; i++) {
         await new Promise((r) => setTimeout(r, 5000));
-        const { comments: cs } = await getSpaceItems(commId, CONFIG.space);
+        const { comments: cs } = await getSpaceItems(commId, space);
         const mine = cs.filter((c) => c.parent === post.uri);
         if (mine.length > before && mine.every((c) => c.confirmed)) { toast("comment confirmed."); return void route(); }
       }
@@ -1693,7 +1735,11 @@ async function viewModerate(commId) {
       <div class="muted vh-sub">Recent posts and comments — remove anything that breaks the rules.</div>
     </div></div>
     <div id="mod-list" class="muted">loading…</div>`;
-  const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
+  const spaces = await spacesOf(commId);
+  const per = await Promise.all(spaces.map((sp) => getSpaceItems(commId, sp)));
+  const posts = per.flatMap((x) => x.posts);
+  const comments = per.flatMap((x) => x.comments);
+  const votes = await getVoteCounts();
   const items = modItems(posts, comments, commId);
   $("#mod-list").outerHTML = `<div id="mod-list">${
     items.length ? items.map((it) => modRow(it, votes)).join("") : `<div class="card muted">Nothing here yet.</div>`
@@ -1724,7 +1770,11 @@ function modRow(it, votes) {
   </div>`;
 }
 async function pollModerate(commId) {
-  const [{ posts, comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
+  const spaces = await spacesOf(commId);
+  const per = await Promise.all(spaces.map((sp) => getSpaceItems(commId, sp)));
+  const posts = per.flatMap((x) => x.posts);
+  const comments = per.flatMap((x) => x.comments);
+  const votes = await getVoteCounts();
   const container = document.getElementById("mod-list");
   if (!container) return;
   liveAppend(container, modItems(posts, comments, commId), (it) => modRow(it, votes));
@@ -1743,7 +1793,7 @@ function wireVoteButtons() {
       const prev = span ? span.textContent : null;
       if (span) span.textContent = String((parseInt(span.textContent, 10) || 0) + 1);
       b.dataset.voted = "1"; b.classList.add("voted");
-      try { await upvote(comm, CONFIG.space, uri); toast("vote counted — confirming on-chain…"); }
+      try { await upvote(comm, b.dataset.space || CONFIG.space, uri); toast("vote counted — confirming on-chain…"); }
       catch (e) {
         if (span && prev !== null) span.textContent = prev; // revert
         delete b.dataset.voted; b.classList.remove("voted");
@@ -2308,7 +2358,7 @@ function liveAppend(container, items, render) {
   }
   if (changed) { wireVoteButtons(); wireReceiptButtons(); wireEditButtons(); wireCardMenus(); wireDeleteButtons(); }
 }
-async function pollFeed(kind, commId) {
+async function pollFeed(kind, commId, space) {
   const votes = await getVoteCounts();
   liveApplyVotes(votes);
   const container = document.getElementById(kind === "hub" ? "feed" : "posts");
@@ -2317,17 +2367,21 @@ async function pollFeed(kind, commId) {
   if (kind === "hub") {
     const comms = window.__comms || (await getCommunities());
     for (const c of comms) {
-      const { posts } = await getSpaceItems(c.id, CONFIG.space);
-      for (const p of posts) rows.push({ ...p, comm: c.id });
+      for (const sp of await spacesOf(c.id)) {
+        const { posts } = await getSpaceItems(c.id, sp);
+        for (const p of posts) rows.push({ ...p, comm: c.id, space: sp });
+      }
     }
   } else {
-    const { posts } = await getSpaceItems(commId, CONFIG.space);
-    rows = posts.map((p) => ({ ...p, comm: commId }));
+    const sp = await spaceFor(commId, space);
+    const { posts } = await getSpaceItems(commId, sp);
+    rows = posts.map((p) => ({ ...p, comm: commId, space: sp }));
   }
   liveAppend(container, rows, (p) => feedRow(p, votes, kind === "hub"));
 }
 async function pollThread(commId, post) {
-  const [{ comments }, votes] = await Promise.all([getSpaceItems(commId, CONFIG.space), getVoteCounts()]);
+  const sp = await spaceFor(commId, post.space);
+  const [{ comments }, votes] = await Promise.all([getSpaceItems(commId, sp), getVoteCounts()]);
   liveApplyVotes(votes);
   const container = document.getElementById("comments");
   if (!container) return;
@@ -2345,6 +2399,12 @@ async function route() {
   const parts = h.slice(2).split("/"); // after "#/"
   try {
     if (h === "#/" || h === "") return void (await viewHub());
+    // `#/c/<comm>/s/<space>` and `#/c/<comm>/s/<space>/p/<post>`. The older
+    // `#/c/<comm>/p/<post>` still resolves — it just falls back to the
+    // community's first space — so links shared before spaces existed keep
+    // working.
+    if (parts[0] === "c" && parts[2] === "s" && parts[4] === "p") return void (await viewThread(parts[1], parts[5], parts[3]));
+    if (parts[0] === "c" && parts[2] === "s") return void (await viewCommunity(parts[1], parts[3]));
     if (parts[0] === "c" && parts[2] === "p") return void (await viewThread(parts[1], parts[3]));
     if (parts[0] === "c" && parts[2] === "mod") return void (await viewModerate(parts[1]));
     if (parts[0] === "c") return void (await viewCommunity(parts[1]));
