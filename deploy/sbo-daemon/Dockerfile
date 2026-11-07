@@ -23,7 +23,9 @@
 # and recompiles only the changed sbo workspace crates. recipe.json is a
 # content-stable projection of the deps, so it changes (and re-cooks) only when
 # Cargo.lock/manifests change, not on every source edit.
-FROM rust:1.93-bookworm AS chef
+# Pinned by digest (the tag names the rustc the digest carries); the
+# release-candidate rc / rust job requires tag = image RUST_VERSION = CI rustc.
+FROM rust:1.93.1-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31 AS chef
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler git \

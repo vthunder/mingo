@@ -44,14 +44,17 @@ step() {
 }
 
 dockerfile_rust() { sed -nE 's/^FROM rust:([0-9.]+)-.*/\1/p' "$1" | head -1; }
+dockerfile_image() { sed -nE 's/^FROM (rust:[^ ]+) AS chef.*/\1/p' "$1" | head -1; }
 
 # Same assertions as the first step of rc / rust.
 pins() {
   local a b ci core revs
-  a="$(dockerfile_rust deploy/mingo/Dockerfile)"; b="$(dockerfile_rust deploy/sbo-daemon/Dockerfile)"
-  [ -n "$a" ] && [ "$a" = "$b" ] || { echo "Dockerfiles disagree on the rust toolchain (mingo $a, sbo-daemon $b)"; return 1; }
+  [ "$(dockerfile_image deploy/mingo/Dockerfile)" = "$(dockerfile_image deploy/sbo-daemon/Dockerfile)" ] \
+    || { echo "Dockerfiles disagree on the rust image"; return 1; }
+  a="$(dockerfile_rust deploy/mingo/Dockerfile)"
   ci="$(grep -oE 'rust-toolchain@[0-9a-f]+ # [0-9.]+' .github/workflows/release-candidate.yml | sed 's/.*# //' | sort -u)"
-  [ "$ci" = "$a.0" ] || [ "$ci" = "$a" ] || { echo "release-candidate.yml pins rust $ci, the Dockerfiles $a"; return 1; }
+  [ "$ci" = "$a" ] || { echo "release-candidate.yml pins rust $ci, the Dockerfiles $a"; return 1; }
+  # (CI also checks the digest really carries $a; that needs docker.)
   core="$(sed -nE 's/^sbo-core = .*rev = "([0-9a-f]+)".*/\1/p' Cargo.toml)"
   revs="$(sed -nE 's/^ARG SBO_REV=([0-9a-f]+)/\1/p' deploy/sbo-daemon/Dockerfile | sort -u)"
   [ -n "$core" ] && [ "$revs" = "$core" ] || { echo "SBO_REV ($revs) differs from the sbo-core rev ($core)"; return 1; }
@@ -63,8 +66,8 @@ pins() {
 rust_pinned() {
   local v tc
   v="$(dockerfile_rust deploy/mingo/Dockerfile)"
-  rustup toolchain install "$v" --profile minimal >/dev/null 2>&1 || rustup toolchain install "$v.0" --profile minimal || return 1
-  tc="$(rustup toolchain list | grep -oE "^$v(\.[0-9]+)?-" | head -1 | sed 's/-$//')"
+  rustup toolchain install "$v" --profile minimal >/dev/null 2>&1 || return 1
+  tc="$(rustup toolchain list | grep -oE "^$v-" | head -1 | sed 's/-$//')"
   [ -n "$tc" ] || { echo "toolchain $v not installed"; return 1; }
   echo "testing with $tc"
   cargo "+$tc" test --workspace --locked

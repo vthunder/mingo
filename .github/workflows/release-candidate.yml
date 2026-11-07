@@ -32,22 +32,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The same toolchain as both Dockerfiles' builder stages; checked below.
-      - uses: dtolnay/rust-toolchain@48b64ba94bc1a6fe819fd9afc0799a7647efdc65 # 1.93.0
+      # Exactly the rustc both Dockerfiles' pinned image carries; checked below.
+      - uses: dtolnay/rust-toolchain@633c1125191e55c620c8ae7d364073c0ead621c1 # 1.93.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: toolchain and sbo pins agree across the Dockerfiles
+      - name: toolchain is exactly the one both Dockerfiles' pinned image carries; sbo pins agree
         run: |
           set -euo pipefail
-          a="$(sed -nE 's/^FROM rust:([0-9.]+)-.*/\1/p' deploy/mingo/Dockerfile | head -1)"
-          b="$(sed -nE 's/^FROM rust:([0-9.]+)-.*/\1/p' deploy/sbo-daemon/Dockerfile | head -1)"
-          [ -n "$a" ] && [ "$a" = "$b" ] || { echo "::error::Dockerfiles disagree on the rust toolchain (mingo $a, sbo-daemon $b)"; exit 1; }
-          rustc --version | grep -q " $a\." || { echo "::error::Dockerfiles build with rust $a, this job with $(rustc --version)"; exit 1; }
+          a="$(sed -nE 's/^FROM (rust:[^ ]+) AS chef.*/\1/p' deploy/mingo/Dockerfile | head -1)"
+          b="$(sed -nE 's/^FROM (rust:[^ ]+) AS chef.*/\1/p' deploy/sbo-daemon/Dockerfile | head -1)"
+          [ -n "$a" ] && [ "$a" = "$b" ] || { echo "::error::Dockerfiles disagree on the rust image (mingo $a, sbo-daemon $b)"; exit 1; }
+          tag="$(sed -nE 's/^rust:([0-9.]+)-.*/\1/p' <<<"$a")"
+          img="$(docker buildx imagetools inspect "$a" --format '{{json .Image}}' | jq -r '."linux/amd64".config.Env[]? // .config.Env[]?' | sed -n 's/^RUST_VERSION=//p')"
+          have="$(rustc --version | awk '{print $2}')"
+          echo "Dockerfile tag $tag, image carries $img, this job runs $have"
+          [ "$tag" = "$img" ] && [ "$img" = "$have" ] || { echo "::error::toolchain mismatch: tag $tag, image $img, CI $have"; exit 1; }
           # deploy/sbo-daemon/Dockerfile says to keep SBO_REV in sync with the
           # sbo-core git pin in Cargo.toml.
           core="$(sed -nE 's/^sbo-core = .*rev = "([0-9a-f]+)".*/\1/p' Cargo.toml)"
           revs="$(sed -nE 's/^ARG SBO_REV=([0-9a-f]+)/\1/p' deploy/sbo-daemon/Dockerfile | sort -u)"
           [ -n "$core" ] && [ "$revs" = "$core" ] || { echo "::error::SBO_REV ($revs) in deploy/sbo-daemon/Dockerfile differs from the sbo-core rev ($core) in Cargo.toml"; exit 1; }
-          echo "rust $a, sbo $core"
+          echo "sbo $core"
       - name: build the tests (network allowed for the crate fetch)
         run: cargo test --workspace --locked --no-run
       # The test binaries then run in a fresh network namespace with only
@@ -66,7 +70,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # gitleaks scans every commit
-      - uses: dtolnay/rust-toolchain@48b64ba94bc1a6fe819fd9afc0799a7647efdc65 # 1.93.0
+      - uses: dtolnay/rust-toolchain@633c1125191e55c620c8ae7d364073c0ead621c1 # 1.93.1
       - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           tool: cargo-audit
