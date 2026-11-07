@@ -1,0 +1,154 @@
+# Release candidate: every check that decides a merge AND a deploy, run on
+# the exact commit (sandmill-infra/ip-approval/PLAN.md). The public staging
+# mirror (vthunder/mingo-staging) runs it on every push, and
+# sandmill-infra/bin/ip-submit.sh refuses a commit unless all of these jobs
+# passed there. The canonical repo runs the identical workflow on every pull
+# request to main, and branch protection requires every job. No path
+# filters: a job that does not run is a failure, never a pass by absence.
+#
+# Jobs: the workspace tests under the pinned toolchain (with no network but
+# loopback, so no test can lean on DNS, a chain RPC or a third-party API),
+# the supply-chain audit, and every image the deploy workflows build, built
+# the same way and then started with a throwaway config and probed.
+name: release-candidate
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: rc / rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The same toolchain as both Dockerfiles' builder stages; checked below.
+      - uses: dtolnay/rust-toolchain@48b64ba94bc1a6fe819fd9afc0799a7647efdc65 # 1.93.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: toolchain and sbo pins agree across the Dockerfiles
+        run: |
+          set -euo pipefail
+          a="$(sed -nE 's/^FROM rust:([0-9.]+)-.*/\1/p' deploy/mingo/Dockerfile | head -1)"
+          b="$(sed -nE 's/^FROM rust:([0-9.]+)-.*/\1/p' deploy/sbo-daemon/Dockerfile | head -1)"
+          [ -n "$a" ] && [ "$a" = "$b" ] || { echo "::error::Dockerfiles disagree on the rust toolchain (mingo $a, sbo-daemon $b)"; exit 1; }
+          rustc --version | grep -q " $a\." || { echo "::error::Dockerfiles build with rust $a, this job with $(rustc --version)"; exit 1; }
+          # deploy/sbo-daemon/Dockerfile says to keep SBO_REV in sync with the
+          # sbo-core git pin in Cargo.toml.
+          core="$(sed -nE 's/^sbo-core = .*rev = "([0-9a-f]+)".*/\1/p' Cargo.toml)"
+          revs="$(sed -nE 's/^ARG SBO_REV=([0-9a-f]+)/\1/p' deploy/sbo-daemon/Dockerfile | sort -u)"
+          [ -n "$core" ] && [ "$revs" = "$core" ] || { echo "::error::SBO_REV ($revs) in deploy/sbo-daemon/Dockerfile differs from the sbo-core rev ($core) in Cargo.toml"; exit 1; }
+          echo "rust $a, sbo $core"
+      - name: build the tests (network allowed for the crate fetch)
+        run: cargo test --workspace --locked --no-run
+      # The test binaries then run in a fresh network namespace with only
+      # loopback up: a test that needs public DNS, a live chain RPC or a
+      # third-party API fails here every time instead of 1 run in N.
+      - name: workspace tests, offline (loopback only)
+        run: |
+          # -E keeps the job's environment (cargo/rustup homes, the flags
+          # rust-cache sets) so the binaries built above are reused as-is.
+          sudo -E env "PATH=$PATH" unshare --net -- sh -c 'ip link set lo up && exec setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups -- cargo test --workspace --locked --offline'
+
+  audit:
+    name: rc / audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans every commit
+      - uses: dtolnay/rust-toolchain@48b64ba94bc1a6fe819fd9afc0799a7647efdc65 # 1.93.0
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-audit
+      - run: scripts/supply-chain-audit.sh rust
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_SUMMARY: "false"
+
+  # Every image a deploy workflow builds, built the way it builds it (same
+  # action, file, context, platform; no build args in either), loaded
+  # instead of pushed. Then each is started with a throwaway config and NO
+  # network (`--network none`), and its health endpoints are probed from
+  # inside its own network namespace. A dependency needing a newer compiler,
+  # a missing COPY, or a startup refusal fails here instead of at deploy.
+  image:
+    name: rc / image ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # deploy-mingo.yml. mingo-idp has no dedicated health route; the
+          # discovery document, the SPA index and a static IdP page together
+          # prove the binary, the SPA layer and the static layer.
+          - app: mingo
+            file: deploy/mingo/Dockerfile
+            port: 5000
+            probes: "/.well-known/browserid / /device-authorize"
+            env: "-e MINGO_IDP_DB=/tmp/rc/idp.sqlite -e MINGO_IDP_KEY_FILE=/tmp/rc/idp-key.json -e MINGO_POSTER_KEY_FILE=/tmp/rc/poster-key.json -e MINGO_ADMIN_TOKEN=rc-throwaway"
+          # deploy-daemon.yml. Throwaway checkpoint and attestor keys, so the
+          # entrypoint's key-file path runs as it does in production.
+          - app: sbo-daemon
+            file: deploy/sbo-daemon/Dockerfile
+            port: 5000
+            probes: "/health"
+            env: "-e SBO_CHECKPOINT_KEY=GEN -e SBO_ATTEST_KEY=GEN"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: build (as the deploy workflow does, loaded instead of pushed)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: rc-${{ matrix.app }}
+          # Read the deploy workflow's cache (default scope) and this job's
+          # own; write only this job's, so a branch run never overwrites the
+          # cache the deploy relies on.
+          cache-from: |
+            type=gha
+            type=gha,scope=rc-${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=rc-${{ matrix.app }}
+      - name: start offline and probe
+        env:
+          APP_ENV: ${{ matrix.env }}
+          PORT: ${{ matrix.port }}
+          PROBES: ${{ matrix.probes }}
+        run: |
+          set -uo pipefail
+          envargs="${APP_ENV//=GEN/=$(openssl rand -hex 32)}"
+          # shellcheck disable=SC2086
+          docker run -d --name rc --network none $envargs rc-${{ matrix.app }}
+          pid="$(docker inspect -f '{{.State.Pid}}' rc)"
+          probe() { sudo nsenter -t "$pid" -n curl -sf -o /dev/null "http://127.0.0.1:${PORT}$1"; }
+          first="${PROBES%% *}"; up=0
+          for i in $(seq 1 60); do
+            probe "$first" && { echo "$first answered after ${i}s"; up=1; break; }
+            [ "$(docker inspect -f '{{.State.Running}}' rc)" = true ] || break
+            sleep 1
+          done
+          [ "$up" = 1 ] || { echo "::error::${{ matrix.app }} image did not answer $first"; docker logs rc 2>&1 | tail -60; exit 1; }
+          for p in $PROBES; do
+            probe "$p" || { echo "::error::${{ matrix.app }}: $p did not answer 200"; docker logs rc 2>&1 | tail -60; exit 1; }
+            echo "ok $p"
+          done
+          # Still up a few seconds later: catches a crash after the bind.
+          sleep 5
+          [ "$(docker inspect -f '{{.State.Running}}' rc)" = true ] && probe "$first" || { echo "::error::${{ matrix.app }} exited after starting"; docker logs rc 2>&1 | tail -60; exit 1; }
+          docker logs rc 2>&1 | tail -20
+          docker rm -f rc >/dev/null

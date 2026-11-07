@@ -1,0 +1,35 @@
+# cargo-audit configuration. Read by `cargo audit` from the workspace root;
+# the gate is scripts/supply-chain-audit.sh (rc / audit in
+# .github/workflows/release-candidate.yml, and `make release-check`).
+#
+# Policy: every RUSTSEC *vulnerability* fails the gate unless listed here with
+# a reason and a review date. Unsound/unmaintained *warnings* are reported but
+# do not fail. Everything fixable by a semver-compatible lockfile update was
+# updated on 2026-11-07; what is left cannot be fixed from this repo alone.
+
+[advisories]
+ignore = [
+    # --- Reached only through sbo-core (git rev 30e267c, Cargo.toml) ---
+    # sbo-core at that rev depends on reqwest 0.11 (hyper 0.14, h2 0.3,
+    # rustls 0.21, rustls-webpki 0.101, webpki-roots 0.25) and on
+    # hickory-resolver 0.24. Fixed versions are major bumps inside sbo; sbo's
+    # audit-2026-11 branch moves to reqwest 0.12. Remove these once the
+    # sbo-core rev (and SBO_REV in deploy/sbo-daemon/Dockerfile) moves past
+    # that fix. Review: 2027-02-01.
+    "RUSTSEC-2026-0258", # h2 0.3.27: unbounded empty DATA frames
+    "RUSTSEC-2026-0346", # rustls 0.21.12: Debug impls expose TLS secrets
+    "RUSTSEC-2026-0349", # rustls 0.21.12: ServerHello downgrade to classical KEX
+    "RUSTSEC-2026-0098", # rustls-webpki 0.101.7
+    "RUSTSEC-2026-0099", # rustls-webpki 0.101.7
+    "RUSTSEC-2026-0104", # rustls-webpki 0.101.7
+    "RUSTSEC-2026-0382", # rustls-webpki 0.101.7
+    "RUSTSEC-2026-0381", # webpki-roots 0.25.4
+    # --- hickory-proto, also reached through browserid-dnssec (0.25.2) ---
+    # Same two entries and reasoning as browserid-ng's .cargo/audit.toml:
+    # NSEC3 closest-encloser loop has no patched release; the O(n^2) name
+    # compression is fixed only in 0.26.1, a major bump of hickory-client.
+    # Encode side is our own short queries; the lookup runs under a timeout.
+    # Review: 2027-02-01.
+    "RUSTSEC-2026-0118",
+    "RUSTSEC-2026-0119",
+]

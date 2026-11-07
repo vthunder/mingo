@@ -3,6 +3,8 @@
 #
 #   make build            compile the deployed binaries locally
 #   make test             run the workspace test suite
+#   make release-check    the local equivalent of the release-candidate CI
+#                         workflow (pinned-toolchain tests, pins, audits)
 #   make push             push HEAD to origin (triggers the CI image builds)
 #   make watch            watch CI runs for HEAD until they all finish
 #   make release          re-release HEAD's images to dokku (manual fallback)
@@ -23,7 +25,7 @@ SSH  := ssh -i $(KEY) -o StrictHostKeyChecking=accept-new
 SHA  := $(shell git rev-parse HEAD)
 REG  := ghcr.io/vthunder
 
-.PHONY: build test push watch release release-mingo release-daemon deploy \
+.PHONY: build test release-check push watch release release-mingo release-daemon deploy \
         deploy-daemon deploy-mingo deploy-mingo-onhost deploy-daemon-onhost
 
 ## Build the two deployed binaries locally (validates before pushing).
@@ -32,6 +34,11 @@ build:
 
 test:
 	cargo test --workspace
+
+## Before pushing a branch to the staging mirror. On the dev box:
+##   ssh localtest 'cd <repo> && make release-check'
+release-check:
+	scripts/release-check.sh
 
 push:
 	git push origin HEAD
