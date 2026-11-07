@@ -8,7 +8,7 @@
 #   rust    `cargo audit` fails on any RUSTSEC vulnerability not ignored in
 #           .cargo/audit.toml (warnings for unsound/unmaintained are printed).
 #   secrets `gitleaks git` over the full history (default rules). In CI the
-#           gitleaks action runs this instead.
+#           same scan runs with a pinned, checksummed gitleaks 8.30.1.
 #
 # Tools: cargo-audit (`cargo install cargo-audit --locked`), gitleaks
 # (`brew install gitleaks`). A missing tool fails its section rather than
