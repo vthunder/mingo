@@ -16,7 +16,9 @@
 # changes the image digest and invalidates every cached layer below — including
 # the slow cargo-chef install and the dependency build. Bump deliberately on
 # Rust upgrades (keep in sync with deploy/sbo-daemon/Dockerfile).
-FROM rust:1.93-bookworm AS chef
+# Pinned by digest (the tag names the rustc the digest carries); the
+# release-candidate rc / rust job requires tag = image RUST_VERSION = CI rustc.
+FROM rust:1.93.1-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31 AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /src
 

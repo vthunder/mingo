@@ -23,7 +23,9 @@
 # and recompiles only the changed sbo workspace crates. recipe.json is a
 # content-stable projection of the deps, so it changes (and re-cooks) only when
 # Cargo.lock/manifests change, not on every source edit.
-FROM rust:1.93-bookworm AS chef
+# Pinned by digest (the tag names the rustc the digest carries); the
+# release-candidate rc / rust job requires tag = image RUST_VERSION = CI rustc.
+FROM rust:1.93.1-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31 AS chef
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler git \
@@ -35,8 +37,11 @@ WORKDIR /src
 # Planner: clone the pinned source and distill the dependency graph to recipe.json.
 FROM chef AS planner
 ARG SBO_REV=30e267c
+# vendor/ always exists (empty for an sbo rev without one) so the build stage
+# can copy it unconditionally; see the cook step below.
 RUN git clone https://github.com/vthunder/sbo . \
-    && git checkout "$SBO_REV"
+    && git checkout "$SBO_REV" \
+    && mkdir -p vendor
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Builder: cook deps (cached image layer, invalidated only by recipe.json), then
@@ -44,6 +49,11 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS build
 ARG SBO_REV=30e267c
 COPY --from=planner /src/recipe.json recipe.json
+# sbo patches crates-io deps with local copies under vendor/ ([patch.crates-io]
+# dnssec-prover = { path = "vendor/dnssec-prover" }, outside its workspace).
+# cargo-chef's recipe skeleton omits them, so cook fails reading
+# vendor/*/Cargo.toml unless the vendored sources are present first.
+COPY --from=planner /src/vendor vendor
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo chef cook --release --package sbo-daemon --recipe-path recipe.json
